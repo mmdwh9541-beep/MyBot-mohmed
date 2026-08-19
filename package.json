@@ -2,6 +2,7 @@
   "dependencies": {
     "ccxt": "^4.5.74",
     "cors": "^2.8.6",
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "node-telegram-bot-api": "^0.66.0"
   }
 }
