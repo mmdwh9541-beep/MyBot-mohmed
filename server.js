@@ -50,7 +50,7 @@ let liveWalletBalance = "0.00";
 async function binancePrivateRequest(endpoint, method = 'GET', params = {}) {
     if (!API_KEY) return null;
     params.timestamp = Date.now();
-    params.recvWindow = 60000; // Fixes Binance Time Sync Errors
+    params.recvWindow = 60000; 
 
     const queryString = Object.keys(params).map(key => `${key}=${encodeURIComponent(params[key])}`).join('&');
     const signature = crypto.createHmac('sha256', API_SECRET).update(queryString).digest('hex');
@@ -93,7 +93,7 @@ async function recoverActivePositions() {
             if (b.asset !== 'USDT' && qty > 0.001) {
                 const symbol = b.asset + 'USDT';
                 try {
-                    const priceRes = await axios.get(`https://api.binance.com/api/v3/ticker/price?symbol=${symbol}`);
+                    const priceRes = await axios.get(`${TESTNET_URL}/api/v3/ticker/price?symbol=${symbol}`);
                     const currentPrice = parseFloat(priceRes.data.price);
                     
                     activePositions[symbol] = {
@@ -145,7 +145,7 @@ function calculateCMO(data, period) {
 
 async function getTopActiveCoins(limit = 15) {
     try {
-        const response = await axios.get('https://api.binance.com/api/v3/ticker/24hr');
+        const response = await axios.get(`${TESTNET_URL}/api/v3/ticker/24hr`);
         const usdtPairs = response.data.filter(t => t.symbol.endsWith('USDT') && !t.symbol.includes('USDC'));
         usdtPairs.sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume));
         return usdtPairs.slice(0, limit).map(t => t.symbol);
@@ -216,7 +216,7 @@ async function managePosition(symbol, currentPrice, decision) {
 
 async function analyzeMarket(symbol, interval) {
     try {
-        const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=30`;
+        const url = `${TESTNET_URL}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=30`;
         const response = await axios.get(url);
         const candles = response.data.map(c => ({ open: parseFloat(c[1]), high: parseFloat(c[2]), low: parseFloat(c[3]), close: parseFloat(c[4]), volume: parseFloat(c[5]) }));
 
@@ -251,7 +251,7 @@ async function runFullScan() {
 }
 
 // 7. Core Loops & Timers
-setTimeout(recoverActivePositions, 3000); // Recover 3 seconds after boot
+setTimeout(recoverActivePositions, 3000); 
 setTimeout(updateWalletBalance, 2000); 
 setInterval(updateWalletBalance, 60000);
 setInterval(runFullScan, 15000);
@@ -261,19 +261,16 @@ runFullScan();
 // 🌐 8. Web Routes (Webhook + Dashboard)
 // ==========================================
 
-// Webhook for TradingView Custom Alerts
 app.post('/webhook', (req, res) => {
     const alertData = req.body;
     sendTelegramMessage(`🚨 <b>TradingView Alert</b> 🚨\n<b>Symbol:</b> ${alertData.symbol || 'N/A'}\n<b>Action:</b> ${alertData.action || 'N/A'}\n<b>Price:</b> ${alertData.price || 'N/A'}`);
     res.status(200).send('Alert Received');
 });
 
-// API for Website Data
 app.get('/api/data', (req, res) => {
     res.json({ live: latestResults, stats: testStats, history: tradeHistory, balance: liveWalletBalance });
 });
 
-// Main Dashboard (Also keeps UptimeRobot happy!)
 app.get('/', (req, res) => {
     res.send(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Binance Testnet Bot</title><style>body{background-color:#0b0e11;color:#eaecef;font-family:Arial;text-align:center;padding:20px;}h1{color:#f3ba2f;}.wallet{font-size:24px;color:#0ecb81;margin-bottom:20px;font-weight:bold;border:2px dashed #2b3139;padding:10px;display:inline-block;border-radius:10px;}.stats-container{display:flex;justify-content:center;gap:20px;margin-bottom:20px;}.stat-box{background-color:#1e2329;padding:15px 30px;border-radius:8px;font-weight:bold;border:1px solid #2b3139;}table{width:90%;max-width:1000px;margin:10px auto;border-collapse:collapse;background-color:#1e2329;border-radius:8px;}th,td{padding:12px;border-bottom:1px solid #2b3139;}th{background-color:#2b3139;color:#848e9c;}.buy{color:#0ecb81;font-weight:bold;}.sell{color:#f6465d;font-weight:bold;}.wait{color:#848e9c;}.spike{color:#f3ba2f;font-weight:bold;}</style></head><body><h1>🤖 LOMY Ultra-Fast Engine</h1><div class="wallet">💰 Balance: $<span id="wallet-balance">Loading...</span> USDT</div><div class="stats-container"><div class="stat-box">Trades: <span id="tot-trades">0</span></div><div class="stat-box">Profit: <span id="net-profit">0.00%</span></div></div><table><thead><tr><th>Symbol</th><th>Status</th><th>CMO</th><th>Whale</th></tr></thead><tbody id="live-table"><tr><td colspan="4">Scanning...</td></tr></tbody></table><script>async function loadData(){try{const res=await fetch('/api/data');const data=await res.json();document.getElementById('wallet-balance').innerText=data.balance;document.getElementById('tot-trades').innerText=data.stats.totalTrades;let profitEl=document.getElementById('net-profit');profitEl.innerText=data.stats.totalProfitPct.toFixed(2)+'%';profitEl.className=data.stats.totalProfitPct>=0?'buy':'sell';if(data.live.length>0){let liveTbody=document.getElementById('live-table');liveTbody.innerHTML='';data.live.forEach(item=>{let decClass=item.decision.includes('BOUGHT')||item.decision.includes('HOLDING')?'buy':item.decision.includes('SELL')||item.decision.includes('CLOSED')?'sell':'wait';liveTbody.innerHTML+=\`<tr><td>\${item.symbol}</td><td class="\${decClass}">\${item.decision}</td><td>\${item.cmo}</td><td class="\${item.spike.includes('YES')?'spike':''}">\${item.spike}</td></tr>\`;});}}catch(e){}}setInterval(loadData,4000);loadData();</script></body></html>`);
 });
