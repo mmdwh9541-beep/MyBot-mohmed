@@ -40,15 +40,14 @@ const RISK_RULES = {
     stopLossPct: 0.015,          
     trailingActivationPct: 0.03, 
     trailingDistancePct: 0.01,   
-    allocationNormalPct: 0.5,    // 50% Normal Trades
-    allocationGemPct: 0.5,       // 50% Gem Trades
+    allocationNormalPct: 0.5,    
+    allocationGemPct: 0.5,       
     maxNormalTrades: 10,
     maxGemTrades: 5
 };
 
 let latestResults = [];
 let activePositions = {}; 
-let testStats = { totalTrades: 0, winningTrades: 0, totalProfitPct: 0 };
 let liveWalletBalance = "0.00"; 
 
 // ==========================================
@@ -105,8 +104,12 @@ async function managePosition(symbol, currentPrice, decision, tradeType = 'NORMA
         if (order && order.status === 'FILLED') {
             const entryPrice = parseFloat(order.fills[0].price);
             activePositions[symbol] = { entryPrice, qty: parseFloat(order.executedQty), highestPrice: entryPrice, stopLoss: entryPrice * (1 - RISK_RULES.stopLossPct), trailingActive: false, type: tradeType };
+            
+            // رسالة الشراء بالعربي
             const icon = tradeType === 'GEM' ? '💎' : '📊';
-            sendTelegramMessage(`${icon} <b>BUY EXECUTED</b>\n<b>Symbol:</b> ${symbol}\n<b>Amount:</b> $${tradeAmountUSDT.toFixed(2)}\n<b>Type:</b> ${tradeType}`);
+            const tradeName = tradeType === 'GEM' ? 'شراء جوهرة' : 'شراء عادي';
+            sendTelegramMessage(`${icon} <b>تم ${tradeName}</b>\n<b>العملة:</b> ${symbol}\n<b>المبلغ:</b> $${tradeAmountUSDT.toFixed(2)}`);
+            
             updateWalletBalance(); return 'BOUGHT';
         }
     }
@@ -124,8 +127,12 @@ async function managePosition(symbol, currentPrice, decision, tradeType = 'NORMA
             const order = await executeTrade(symbol, 'SELL', null, trade.qty);
             if (order && order.status === 'FILLED') {
                 const profit = (((currentPrice - trade.entryPrice) / trade.entryPrice) * 100).toFixed(2);
+                
+                // رسالة البيع بالعربي وتحديد الربح أو الخسارة
                 const icon = trade.type === 'GEM' ? '💎' : '📊';
-                sendTelegramMessage(`🔴 <b>SELL EXECUTED</b> ${icon}\n<b>Symbol:</b> ${symbol}\n<b>Result:</b> ${profit}%`);
+                const resultStatus = profit > 0 ? '✅ <b>ربح</b>' : '❌ <b>خسارة</b>';
+                sendTelegramMessage(`🔴 <b>تم البيع</b> ${icon}\n<b>العملة:</b> ${symbol}\n<b>الحالة:</b> ${resultStatus}\n<b>النتيجة:</b> ${profit}%`);
+                
                 delete activePositions[symbol]; updateWalletBalance(); return 'CLOSED';
             }
         }
