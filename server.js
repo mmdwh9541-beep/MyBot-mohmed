@@ -1,6 +1,7 @@
 const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
+const fs = require('fs'); 
 
 const app = express();
 app.use(express.json());
@@ -34,7 +35,7 @@ function getBaseUrl() {
 }
 
 // ==========================================
-// 3. Risk & Portfolio Management
+// 3. Risk Management & MEMORY SYSTEM
 // ==========================================
 const RISK_RULES = {
     stopLossPct: 0.015,          
@@ -49,6 +50,22 @@ const RISK_RULES = {
 let latestResults = [];
 let activePositions = {}; 
 let liveWalletBalance = "0.00"; 
+const POSITIONS_FILE = './positions.json'; 
+
+function loadPositions() {
+    if (fs.existsSync(POSITIONS_FILE)) {
+        try {
+            const data = fs.readFileSync(POSITIONS_FILE, 'utf8');
+            activePositions = JSON.parse(data);
+        } catch (e) { }
+    }
+}
+
+function savePositions() {
+    try {
+        fs.writeFileSync(POSITIONS_FILE, JSON.stringify(activePositions));
+    } catch (e) { }
+}
 
 // ==========================================
 // 4. API Functions
@@ -105,7 +122,8 @@ async function managePosition(symbol, currentPrice, decision, tradeType = 'NORMA
             const entryPrice = parseFloat(order.fills[0].price);
             activePositions[symbol] = { entryPrice, qty: parseFloat(order.executedQty), highestPrice: entryPrice, stopLoss: entryPrice * (1 - RISK_RULES.stopLossPct), trailingActive: false, type: tradeType };
             
-            // رسالة الشراء بالعربي
+            savePositions(); 
+
             const icon = tradeType === 'GEM' ? '💎' : '📊';
             const tradeName = tradeType === 'GEM' ? 'شراء جوهرة' : 'شراء عادي';
             sendTelegramMessage(`${icon} <b>تم ${tradeName}</b>\n<b>العملة:</b> ${symbol}\n<b>المبلغ:</b> $${tradeAmountUSDT.toFixed(2)}`);
@@ -116,24 +134,30 @@ async function managePosition(symbol, currentPrice, decision, tradeType = 'NORMA
 
     if (activePositions[symbol]) {
         let trade = activePositions[symbol];
-        if (currentPrice > trade.highestPrice) trade.highestPrice = currentPrice;
-        if (!trade.trailingActive && (currentPrice - trade.entryPrice) / trade.entryPrice >= RISK_RULES.trailingActivationPct) trade.trailingActive = true;
+        let memoryNeedsUpdate = false;
+
+        if (currentPrice > trade.highestPrice) { trade.highestPrice = currentPrice; memoryNeedsUpdate = true; }
+        if (!trade.trailingActive && (currentPrice - trade.entryPrice) / trade.entryPrice >= RISK_RULES.trailingActivationPct) { trade.trailingActive = true; memoryNeedsUpdate = true; }
         if (trade.trailingActive) {
             const newSL = trade.highestPrice * (1 - RISK_RULES.trailingDistancePct);
-            if (newSL > trade.stopLoss) trade.stopLoss = newSL;
+            if (newSL > trade.stopLoss) { trade.stopLoss = newSL; memoryNeedsUpdate = true; }
         }
+
+        if (memoryNeedsUpdate) savePositions(); 
 
         if (currentPrice <= trade.stopLoss || decision === 'SELL') {
             const order = await executeTrade(symbol, 'SELL', null, trade.qty);
             if (order && order.status === 'FILLED') {
                 const profit = (((currentPrice - trade.entryPrice) / trade.entryPrice) * 100).toFixed(2);
-                
-                // رسالة البيع بالعربي وتحديد الربح أو الخسارة
                 const icon = trade.type === 'GEM' ? '💎' : '📊';
                 const resultStatus = profit > 0 ? '✅ <b>ربح</b>' : '❌ <b>خسارة</b>';
+                
                 sendTelegramMessage(`🔴 <b>تم البيع</b> ${icon}\n<b>العملة:</b> ${symbol}\n<b>الحالة:</b> ${resultStatus}\n<b>النتيجة:</b> ${profit}%`);
                 
-                delete activePositions[symbol]; updateWalletBalance(); return 'CLOSED';
+                delete activePositions[symbol]; 
+                savePositions(); 
+                
+                updateWalletBalance(); return 'CLOSED';
             }
         }
         return `HOLDING (SL: $${trade.stopLoss.toFixed(4)})`;
@@ -158,11 +182,7 @@ async function runFullScan() {
             let decision = 'WAIT';
             let type = 'NORMAL';
 
-            // Gem Detection Logic
-            if (currentVol > (avgVol * 5)) {
-                decision = 'BUY';
-                type = 'GEM';
-            }
+            if (currentVol > (avgVol * 5)) { decision = 'BUY'; type = 'GEM'; }
 
             const status = await managePosition(pair.symbol, parseFloat(pair.lastPrice), decision, type);
             scan.push({ symbol: pair.symbol, decision: status, type: type });
@@ -171,11 +191,12 @@ async function runFullScan() {
     } catch (e) {}
 }
 
+loadPositions();
 setInterval(runFullScan, 30000);
 setInterval(updateWalletBalance, 60000);
 
 // ==========================================
-// 7. Dashboard API & Web UI
+// 7. Dashboard API & Web UI 
 // ==========================================
 app.post('/api/config', (req, res) => {
     const { isBotActive } = req.body;
@@ -190,24 +211,27 @@ app.get('/api/data', (req, res) => {
 app.get('/', (req, res) => {
     res.send(`<!DOCTYPE html><html><head><title>LOMY Dashboard</title><style>body{background:#0b0e11;color:white;font-family:Arial;text-align:center;padding:20px;} .panel{background:#1e2329;padding:20px;border-radius:8px;display:inline-block;margin:10px;} table{width:100%;max-width:600px;margin:20px auto;border-collapse:collapse;} td,th{padding:10px;border:1px solid #2b3139;} </style></head><body>
     <h1>🤖 LOMY Ultra-Fast Engine</h1>
-    <div class="panel">Balance: $${liveWalletBalance}</div>
+    <div class="panel">Balance: $<span id="bal">${liveWalletBalance}</span></div>
     <button onclick="fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({isBotActive:true})})">START</button>
     <button onclick="fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({isBotActive:false})})">STOP</button>
     <table><thead><tr><th>Symbol</th><th>Status</th></tr></thead><tbody id="tbl"></tbody></table>
     <script>
     async function load(){
-        const res = await (await fetch('/api/data')).json();
-        let html = '';
-        res.live.forEach(item => {
-            let symbolText = item.symbol;
-            if(activePositions[item.symbol] && activePositions[item.symbol].type === 'GEM') symbolText = '💎 ' + symbolText;
-            html += \`<tr><td>\${symbolText}</td><td>\${item.decision}</td></tr>\`;
-        });
-        document.getElementById('tbl').innerHTML = html;
+        try {
+            const res = await (await fetch('/api/data')).json();
+            document.getElementById('bal').innerText = res.balance;
+            let html = '';
+            res.live.forEach(item => {
+                let symbolText = item.symbol;
+                if(item.type === 'GEM') symbolText = '💎 ' + symbolText;
+                html += \`<tr><td>\${symbolText}</td><td>\${item.decision}</td></tr>\`;
+            });
+            document.getElementById('tbl').innerHTML = html;
+        } catch(e) {}
     }
     setInterval(load, 5000); load();
     </script>
     </body></html>`);
 });
 
-app.listen(PORT);
+app.listen(PORT, () => console.log('Bot is running...'));
