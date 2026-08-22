@@ -2,135 +2,71 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
-const fs = require('fs').promises;
-const path = require('path');
 
 const app = express();
 app.use(express.json());
 const PORT = process.env.PORT || 5000;
 
 // ==========================================
-// 1. Configuration & Global Variables
+// 📱 1. Telegram Settings (From Environment)
 // ==========================================
-const CONFIG = {
-    API_KEY: process.env.BINANCE_API_KEY,
-    API_SECRET: process.env.BINANCE_API_SECRET,
-    isTestnet: process.env.USE_TESTNET === 'true',
-    isBotActive: process.env.BOT_ACTIVE === 'true'
-};
+const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
+const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-const TELEGRAM = {
-    TOKEN: process.env.TELEGRAM_TOKEN,
-    CHAT_ID: process.env.TELEGRAM_CHAT_ID
-};
-
-const RISK_RULES = {
-    stopLossPct: 0.015,          // 1.5% Stop Loss
-    trailingActivationPct: 0.03, // Activate trailing at 3% profit
-    trailingDistancePct: 0.015,  // Trailing distance 1.5%
-    allocationNormalPct: 0.5,    // 50% Capital for Normal Scalping
-    allocationGemPct: 0.5,       // 50% Capital for Breakout Gems
-    maxNormalTrades: 10,
-    maxGemTrades: 5
-};
-
-let activePositions = {}; 
-let cooldowns = {}; 
-let liveWalletBalance = "0.00"; 
-let latestMarketPrices = {}; 
-let symbolRules = {}; 
-const POSITIONS_FILE = path.join(__dirname, 'positions.json'); 
-
-function getBaseUrl() { 
-    return CONFIG.isTestnet ? 'https://testnet.binance.vision' : 'https://api.binance.com'; 
-}
-
-// ==========================================
-// 2. Utility & Technical Indicators
-// ==========================================
 async function sendTelegramMessage(text) {
-    if (!TELEGRAM.TOKEN || !TELEGRAM.CHAT_ID) return;
-    try { 
-        await axios.post(`https://api.telegram.org/bot${TELEGRAM.TOKEN}/sendMessage`, { 
-            chat_id: TELEGRAM.CHAT_ID, text: text, parse_mode: 'HTML' 
-        }); 
-    } catch (e) { console.error('Telegram Error:', e.message); }
-}
-
-function calculateSMA(data, period) {
-    if (data.length < period) return null;
-    let sum = 0;
-    for (let i = data.length - period; i < data.length; i++) sum += data[i].close;
-    return sum / period;
-}
-
-function calculateRSI(data, period = 14) {
-    if (data.length <= period) return 50;
-    let gains = 0, losses = 0;
-    for (let i = data.length - period; i < data.length; i++) {
-        const diff = data[i].close - data[i-1].close;
-        if (diff > 0) gains += diff;
-        else losses -= diff;
+    if (!TELEGRAM_TOKEN || !CHAT_ID) return;
+    const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
+    try {
+        await axios.post(url, { chat_id: CHAT_ID, text: text, parse_mode: 'HTML' });
+    } catch (error) {
+        console.error('❌ Telegram Error:', error.message);
     }
-    const avgGain = gains / period;
-    const avgLoss = losses / period;
-    if (avgLoss === 0) return 100;
-    const rs = avgGain / avgLoss;
-    return 100 - (100 / (1 + rs));
 }
 
 // ==========================================
-// 3. Binance API & Precision Limits
+// 🔑 2. Binance API Settings (From Environment)
+// ==========================================
+const API_KEY = process.env.BINANCE_API_KEY;
+const API_SECRET = process.env.BINANCE_API_SECRET;
+const TESTNET_URL = process.env.USE_TESTNET === 'false' ? 'https://api.binance.com' : 'https://testnet.binance.vision';
+
+// ==========================================
+// ⚙️ 3. Risk Management & Global Variables
+// ==========================================
+const RISK_RULES = {
+    tradeAmountUSDT: 100,        
+    stopLossPct: 0.03,           
+    trailingActivationPct: 0.05, 
+    trailingDistancePct: 0.025   
+};
+
+let latestResults = [];
+let activePositions = {}; 
+let tradeHistory = []; 
+let testStats = { totalTrades: 0, winningTrades: 0, totalProfitPct: 0 };
+let liveWalletBalance = "0.00"; 
+
+// ==========================================
+// 🔐 4. Binance API Request Functions
 // ==========================================
 async function binancePrivateRequest(endpoint, method = 'GET', params = {}) {
-    if (!CONFIG.API_KEY || !CONFIG.API_SECRET) return null;
+    if (!API_KEY || !API_SECRET) return null;
     params.timestamp = Date.now();
+    params.recvWindow = 60000; 
+
     const queryString = Object.keys(params).map(key => `${key}=${encodeURIComponent(params[key])}`).join('&');
-    const signature = crypto.createHmac('sha256', CONFIG.API_SECRET).update(queryString).digest('hex');
-    const url = `${getBaseUrl()}${endpoint}?${queryString}&signature=${signature}`;
-    
+    const signature = crypto.createHmac('sha256', API_SECRET).update(queryString).digest('hex');
+    const url = `${TESTNET_URL}${endpoint}?${queryString}&signature=${signature}`;
+
     try {
-        const response = await axios({ method, url, headers: { 'X-MBX-APIKEY': CONFIG.API_KEY } });
+        const response = await axios({ method: method, url: url, headers: { 'X-MBX-APIKEY': API_KEY } });
         return response.data;
-    } catch (e) { return null; }
+    } catch (error) {
+        console.error(`❌ API Error (${endpoint}):`, error.response ? error.response.data.msg : error.message);
+        return null;
+    }
 }
 
-async function loadExchangeRules() {
-    try {
-        const response = await axios.get(`${getBaseUrl()}/api/v3/exchangeInfo`);
-        response.data.symbols.forEach(s => {
-            const lotSize = s.filters.find(f => f.filterType === 'LOT_SIZE');
-            if (lotSize) symbolRules[s.symbol] = { stepSize: parseFloat(lotSize.stepSize) };
-        });
-    } catch (e) { console.error('Error loading exchange rules.'); }
-}
-
-function formatQuantity(symbol, qty) {
-    if (!symbolRules[symbol]) return qty.toString();
-    const stepSize = symbolRules[symbol].stepSize;
-    const precision = stepSize.toString().includes('.') ? stepSize.toString().split('.')[1].length : 0;
-    const factor = Math.pow(10, precision);
-    return (Math.floor(qty * factor) / factor).toFixed(precision);
-}
-
-// ==========================================
-// 4. File I/O & Memory
-// ==========================================
-async function loadPositions() {
-    try {
-        const data = await fs.readFile(POSITIONS_FILE, 'utf8');
-        activePositions = JSON.parse(data);
-    } catch (e) { activePositions = {}; }
-}
-
-async function savePositions() {
-    try { await fs.writeFile(POSITIONS_FILE, JSON.stringify(activePositions, null, 2)); } 
-    catch (e) { console.error('Error saving positions.'); }
-}
-
-// ==========================================
-// 5. Order Management
-// ==========================================
 async function updateWalletBalance() {
     const data = await binancePrivateRequest('/api/v3/account', 'GET');
     if (data && data.balances) {
@@ -139,238 +75,206 @@ async function updateWalletBalance() {
     }
 }
 
-async function executeTrade(symbol, side, quoteQty = null, coinQty = null) {
-    if (!CONFIG.isBotActive && side === 'BUY') return null;
-    let params = { symbol, side, type: 'MARKET' };
-    if (side === 'BUY') params.quoteOrderQty = parseFloat(quoteQty).toFixed(2);
-    else params.quantity = formatQuantity(symbol, coinQty);
+async function executeTrade(symbol, side, quantity = null) {
+    let params = { symbol: symbol, side: side, type: 'MARKET' };
+    if (side === 'BUY') params.quoteOrderQty = RISK_RULES.tradeAmountUSDT; 
+    else params.quantity = quantity; 
     return await binancePrivateRequest('/api/v3/order', 'POST', params);
 }
 
-async function managePosition(symbol, currentPrice, decision, tradeType = 'NORMAL') {
-    const activeNormal = Object.values(activePositions).filter(p => p.type === 'NORMAL').length;
-    const activeGems = Object.values(activePositions).filter(p => p.type === 'GEM').length;
+// ==========================================
+// 🔄 5. Recover Lost Positions (Memory Rescue)
+// ==========================================
+async function recoverActivePositions() {
+    console.log('🔄 Checking wallet to recover lost positions...');
+    const data = await binancePrivateRequest('/api/v3/account', 'GET');
     
-    // EXECUTE BUY
-    if (decision === 'BUY' && !activePositions[symbol] && CONFIG.isBotActive) {
-        if (tradeType === 'NORMAL' && activeNormal >= RISK_RULES.maxNormalTrades) return;
-        if (tradeType === 'GEM' && activeGems >= RISK_RULES.maxGemTrades) return;
+    if (data && data.balances) {
+        for (let b of data.balances) {
+            const qty = parseFloat(b.free);
+            if (b.asset !== 'USDT' && qty > 0.001) {
+                const symbol = b.asset + 'USDT';
+                try {
+                    const priceRes = await axios.get(`${TESTNET_URL}/api/v3/ticker/price?symbol=${symbol}`);
+                    const currentPrice = parseFloat(priceRes.data.price);
+                    
+                    activePositions[symbol] = {
+                        entryPrice: currentPrice,
+                        qty: qty,
+                        highestPrice: currentPrice,
+                        stopLoss: currentPrice * (1 - RISK_RULES.stopLossPct),
+                        trailingActive: false,
+                        time: new Date().toLocaleString()
+                    };
+                    console.log(`✅ Recovered: ${symbol} | Qty: ${qty} | Price: $${currentPrice}`);
+                    
+                    const msg = `🔄 <b>Position Recovered</b>\n<b>Symbol:</b> ${symbol}\n<b>Quantity:</b> ${qty}\n<b>Tracking Price:</b> $${currentPrice}`;
+                    sendTelegramMessage(msg);
+                } catch (e) { console.error(`⚠️ Could not recover ${symbol}:`, e.message); }
+            }
+        }
+    }
+}
 
-        let totalInvested = Object.values(activePositions).reduce((sum, p) => sum + (p.qty * p.entryPrice), 0);
-        let totalCapital = parseFloat(liveWalletBalance) + totalInvested;
-        let tradeAmountUSDT = (totalCapital * (tradeType === 'GEM' ? RISK_RULES.allocationGemPct : RISK_RULES.allocationNormalPct)) / (tradeType === 'GEM' ? RISK_RULES.maxGemTrades : RISK_RULES.maxNormalTrades);
+// ==========================================
+// 🧠 6. Auto-Trading Engine (Analysis & Execution)
+// ==========================================
+function calculateSMA(data, period, key = 'volume') {
+    let smaArray = [];
+    for (let i = 0; i < data.length; i++) {
+        if (i < period - 1) { smaArray.push(null); continue; }
+        let sum = 0;
+        for (let j = 0; j < period; j++) { sum += data[i - j][key]; }
+        smaArray.push(sum / period);
+    }
+    return smaArray;
+}
 
-        if (parseFloat(liveWalletBalance) < tradeAmountUSDT) return;
+function calculateCMO(data, period) {
+    let cmoArray = [];
+    for (let i = 0; i < data.length; i++) {
+        if (i < period) { cmoArray.push(null); continue; }
+        let sumUp = 0, sumDown = 0;
+        for (let j = 0; j < period; j++) {
+            let diff = data[i - j].close - data[i - j - 1].close;
+            if (diff > 0) sumUp += diff; else sumDown += Math.abs(diff);
+        }
+        let cmo = (sumUp + sumDown === 0) ? 0 : 100 * ((sumUp - sumDown) / (sumUp + sumDown));
+        cmoArray.push(cmo);
+    }
+    return cmoArray;
+}
 
-        const order = await executeTrade(symbol, 'BUY', tradeAmountUSDT);
-        if (order && order.status === 'FILLED') {
-            const entryPrice = parseFloat(order.fills[0] ? order.fills[0].price : currentPrice);
-            activePositions[symbol] = { 
-                entryPrice, 
-                qty: parseFloat(order.executedQty), 
-                highestPrice: entryPrice, 
-                stopLoss: entryPrice * (1 - RISK_RULES.stopLossPct), 
-                trailingActive: false, 
-                type: tradeType 
+async function getTopActiveCoins(limit = 15) {
+    try {
+        const response = await axios.get(`${TESTNET_URL}/api/v3/ticker/24hr`);
+        const usdtPairs = response.data.filter(t => t.symbol.endsWith('USDT') && !t.symbol.includes('USDC'));
+        usdtPairs.sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume));
+        return usdtPairs.slice(0, limit).map(t => t.symbol);
+    } catch (e) { return ['BTCUSDT']; }
+}
+
+async function managePosition(symbol, currentPrice, decision) {
+    if (decision === 'BUY' && !activePositions[symbol]) {
+        console.log(`\n⏳ [ATTEMPTING BUY] ${symbol}...`);
+        const orderResult = await executeTrade(symbol, 'BUY');
+        if (orderResult && orderResult.status === 'FILLED') {
+            const entryPrice = parseFloat(orderResult.fills[0] ? orderResult.fills[0].price : currentPrice);
+            const qtyBought = parseFloat(orderResult.executedQty);
+            
+            activePositions[symbol] = {
+                entryPrice, qty: qtyBought, highestPrice: entryPrice,
+                stopLoss: entryPrice * (1 - RISK_RULES.stopLossPct),
+                trailingActive: false, time: new Date().toLocaleString()
             };
-            await savePositions(); 
-            const icon = tradeType === 'GEM' ? '💎' : '📊';
-            sendTelegramMessage(`${icon} <b>BUY EXECUTED</b>\n<b>Symbol:</b> ${symbol}\n<b>Type:</b> ${tradeType}\n<b>Price:</b> $${entryPrice}\n<b>Amount:</b> $${tradeAmountUSDT.toFixed(2)}`);
-            await updateWalletBalance(); 
+            
+            sendTelegramMessage(`🟢 <b>BUY EXECUTED</b>\n<b>Symbol:</b> ${symbol}\n<b>Price:</b> $${entryPrice}\n<b>Quantity:</b> ${qtyBought}`);
+            updateWalletBalance(); 
+            return 'BOUGHT';
         }
     }
 
-    // MANAGE HOLD/SELL
     if (activePositions[symbol]) {
         let trade = activePositions[symbol];
-        let memoryNeedsUpdate = false;
+        if (currentPrice > trade.highestPrice) trade.highestPrice = currentPrice;
 
-        if (currentPrice > trade.highestPrice) { 
-            trade.highestPrice = currentPrice; 
-            memoryNeedsUpdate = true; 
+        const profitPct = (currentPrice - trade.entryPrice) / trade.entryPrice;
+        if (!trade.trailingActive && profitPct >= RISK_RULES.trailingActivationPct) {
+            trade.trailingActive = true;
         }
-        
-        if (!trade.trailingActive && (currentPrice - trade.entryPrice) / trade.entryPrice >= RISK_RULES.trailingActivationPct) { 
-            trade.trailingActive = true; 
-            memoryNeedsUpdate = true; 
-        }
-        
         if (trade.trailingActive) {
             const newSL = trade.highestPrice * (1 - RISK_RULES.trailingDistancePct);
-            if (newSL > trade.stopLoss) { trade.stopLoss = newSL; memoryNeedsUpdate = true; }
+            if (newSL > trade.stopLoss) trade.stopLoss = newSL;
         }
-        
-        if (memoryNeedsUpdate) await savePositions(); 
 
         if (currentPrice <= trade.stopLoss || decision === 'SELL') {
-            const order = await executeTrade(symbol, 'SELL', null, trade.qty);
-            if (order && (order.status === 'FILLED' || order.status === 'NEW')) {
-                const profit = (((currentPrice - trade.entryPrice) / trade.entryPrice) * 100).toFixed(2);
-                cooldowns[symbol] = Date.now() + (15 * 60 * 1000); // 15 mins cooldown
-                const icon = trade.type === 'GEM' ? '💎' : '📊';
-                const statusText = profit > 0 ? '✅ PROFIT' : '❌ LOSS';
-                sendTelegramMessage(`🔴 <b>SELL EXECUTED</b> ${icon}\n<b>Symbol:</b> ${symbol}\n<b>Status:</b> ${statusText}\n<b>Result:</b> ${profit}%`);
+            console.log(`\n⏳ [ATTEMPTING SELL] ${symbol}...`);
+            const safeQty = Math.floor(trade.qty * 1000) / 1000; 
+            const orderResult = await executeTrade(symbol, 'SELL', safeQty);
+            
+            if (orderResult && orderResult.status === 'FILLED') {
+                const finalProfitPct = parseFloat(((currentPrice - trade.entryPrice) / trade.entryPrice * 100).toFixed(2));
+                const exitReason = currentPrice <= trade.stopLoss ? 'Stop Loss Hit' : 'SELL Signal';
+                
+                testStats.totalTrades++;
+                if (finalProfitPct > 0) testStats.winningTrades++;
+                testStats.totalProfitPct += finalProfitPct;
+
+                tradeHistory.unshift({ time: new Date().toLocaleTimeString(), symbol, reason: exitReason, profitPct: finalProfitPct });
+                if (tradeHistory.length > 50) tradeHistory.pop();
+                
+                const emoji = finalProfitPct >= 0 ? '✅ PROFIT' : '❌ LOSS';
+                sendTelegramMessage(`🔴 <b>SELL EXECUTED</b>\n<b>Symbol:</b> ${symbol}\n<b>Reason:</b> ${exitReason}\n<b>Result:</b> ${emoji} (${finalProfitPct}%)`);
+
                 delete activePositions[symbol]; 
-                await savePositions(); 
-                await updateWalletBalance();
+                updateWalletBalance(); 
+                return `CLOSED (${finalProfitPct}%)`;
             }
         }
+        return `HOLDING (SL: $${trade.stopLoss.toFixed(4)})`;
     }
+    return decision; 
 }
 
-// ==========================================
-// 6. Market Scanner (Dual Engine)
-// ==========================================
-let isScanning = false;
+async function analyzeMarket(symbol, interval) {
+    try {
+        const url = `${TESTNET_URL}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=30`;
+        const response = await axios.get(url);
+        const candles = response.data.map(c => ({ open: parseFloat(c[1]), high: parseFloat(c[2]), low: parseFloat(c[3]), close: parseFloat(c[4]), volume: parseFloat(c[5]) }));
+
+        const currentPrice = candles[candles.length - 1].close; 
+        const volSMA = calculateSMA(candles, 10, 'volume');
+        const cmo = calculateCMO(candles, 9);
+        const candle = candles[candles.length - 2];
+
+        const highVolume = candle.volume > (volSMA[volSMA.length - 2] * 1.3);
+        const bodyRatio = (candle.high - candle.low) > 0 ? (Math.abs(candle.close - candle.open) / (candle.high - candle.low)) : 0;
+        const bullish = candle.close > candle.open && bodyRatio > 0.5 && highVolume;
+        const bearish = candle.close < candle.open && bodyRatio > 0.5 && highVolume;
+
+        let decision = 'WAIT';
+        if (bullish && cmo[cmo.length - 2] > 30) decision = 'BUY';
+        if (bearish && cmo[cmo.length - 2] < -30) decision = 'SELL';
+
+        const tradeStatus = await managePosition(symbol, currentPrice, decision);
+        return { symbol, decision: tradeStatus, cmo: cmo[cmo.length - 2].toFixed(2), spike: highVolume ? 'YES' : 'NO' };
+    } catch (e) { return null; }
+}
 
 async function runFullScan() {
-    if (isScanning) return; 
-    isScanning = true;
-
-    try {
-        const tickers = await axios.get(`${getBaseUrl()}/api/v3/ticker/24hr`);
-        // Filter out dead volume coins, keep top 50
-        const pairs = tickers.data
-            .filter(t => t.symbol.endsWith('USDT') && parseFloat(t.quoteVolume) > 2000000)
-            .sort((a,b) => b.quoteVolume - a.quoteVolume)
-            .slice(0, 50);
-        
-        pairs.forEach(p => { latestMarketPrices[p.symbol] = parseFloat(p.lastPrice); });
-
-        for (let pair of pairs) {
-            if (cooldowns[pair.symbol] && Date.now() < cooldowns[pair.symbol]) continue; 
-
-            // Using 3m timeframe for higher accuracy, less noise
-            const klines = await axios.get(`${getBaseUrl()}/api/v3/klines?symbol=${pair.symbol}&interval=3m&limit=30`);
-            if (!klines.data || klines.data.length < 30) continue;
-
-            const candles = klines.data.map(c => ({
-                open: parseFloat(c[1]), high: parseFloat(c[2]), low: parseFloat(c[3]),
-                close: parseFloat(c[4]), volume: parseFloat(c[5])
-            }));
-
-            const current = candles[candles.length - 1];
-            const previous = candles[candles.length - 2];
-            
-            const rsi = calculateRSI(candles, 14);
-            const sma9 = calculateSMA(candles, 9);
-            const sma21 = calculateSMA(candles, 21);
-            const avgVol = candles.slice(-10, -1).reduce((s,c) => s + c.volume, 0) / 9;
-
-            let decision = 'WAIT';
-            let type = 'NORMAL';
-
-            // --- STRATEGY 1: BREAKOUT GEMS (50%) ---
-            // Catching volume buildup before the massive pump
-            const volumeBuildup = current.volume > (avgVol * 2.5) && current.volume < (avgVol * 6);
-            const priceBreakout = current.close > previous.high && current.close > sma21;
-            
-            if (volumeBuildup && priceBreakout && rsi > 55 && rsi < 75) { 
-                decision = 'BUY'; 
-                type = 'GEM'; 
-            }
-            // --- STRATEGY 2: NORMAL SCALPING (50%) ---
-            // Catching strong coins on temporary dips
-            else {
-                const uptrend = sma9 > sma21;
-                const oversoldDip = rsi < 40 && rsi > 25; // Prevent catching falling knives
-                const greenReversal = current.close > current.open && current.close > (current.open + (current.high - current.low) * 0.5);
-
-                if (uptrend && oversoldDip && greenReversal) {
-                    decision = 'BUY';
-                    type = 'NORMAL';
-                }
-            }
-
-            if (decision === 'BUY') {
-                await managePosition(pair.symbol, parseFloat(pair.lastPrice), decision, type);
-            }
-        }
-        
-        // Check active positions for stop loss/take profit updates
-        for (let symbol in activePositions) {
-            if (!latestMarketPrices[symbol]) {
-                try {
-                    const tick = await axios.get(`${getBaseUrl()}/api/v3/ticker/price?symbol=${symbol}`);
-                    latestMarketPrices[symbol] = parseFloat(tick.data.price);
-                } catch(e) { continue; }
-            }
-            await managePosition(symbol, latestMarketPrices[symbol], 'WAIT', activePositions[symbol].type);
-        }
-
-    } catch (e) {
-        // Silent catch to prevent crashing loop
-    } finally {
-        isScanning = false;
-        setTimeout(runFullScan, 15000); // 15 seconds delay after scan completes
+    const topCoins = await getTopActiveCoins(15);
+    let currentScan = [];
+    for (const coin of topCoins) {
+        const result = await analyzeMarket(coin, '15m');
+        if (result) currentScan.push(result);
+        await new Promise(resolve => setTimeout(resolve, 200));
     }
+    latestResults = currentScan; 
 }
 
+// 7. Core Loops & Timers
+setTimeout(recoverActivePositions, 3000); 
+setTimeout(updateWalletBalance, 2000); 
+setInterval(updateWalletBalance, 60000);
+setInterval(runFullScan, 15000);
+runFullScan();
+
 // ==========================================
-// 7. Initialization & Web Dashboard
+// 🌐 8. Web Routes (Webhook + Dashboard)
 // ==========================================
-async function startBot() {
-    await loadExchangeRules();
-    await loadPositions();
-    await updateWalletBalance();
-    
-    runFullScan(); 
-    setInterval(updateWalletBalance, 60000); 
-}
+
+app.post('/webhook', (req, res) => {
+    const alertData = req.body;
+    sendTelegramMessage(`🚨 <b>TradingView Alert</b> 🚨\n<b>Symbol:</b> ${alertData.symbol || 'N/A'}\n<b>Action:</b> ${alertData.action || 'N/A'}\n<b>Price:</b> ${alertData.price || 'N/A'}`);
+    res.status(200).send('Alert Received');
+});
 
 app.get('/api/data', (req, res) => {
-    let positionsData = Object.keys(activePositions).map(sym => {
-        const entry = activePositions[sym].entryPrice;
-        const current = latestMarketPrices[sym] || entry;
-        const pnl = (((current - entry) / entry) * 100).toFixed(2);
-        return { symbol: sym, type: activePositions[sym].type, pnl: parseFloat(pnl), sl: activePositions[sym].stopLoss.toFixed(4) };
-    });
-    res.json({ positions: positionsData, balance: liveWalletBalance });
+    res.json({ live: latestResults, stats: testStats, history: tradeHistory, balance: liveWalletBalance });
 });
 
 app.get('/', (req, res) => {
-    res.send(`<!DOCTYPE html><html><head><title>LOMY Dual Engine</title><style>
-        body{background:#0b0e11;color:#eaecef;font-family:Arial,sans-serif;text-align:center;padding:20px;margin:0;} 
-        .header h1{color:#f3ba2f;margin-bottom:5px;}
-        .panel{background:#1e2329;padding:15px 30px;border-radius:8px;display:inline-block;margin-bottom:20px;font-size:22px;font-weight:bold;border:1px solid #2b3139;} 
-        .bal{color:#0ecb81;}
-        table{width:100%;max-width:700px;margin:0 auto;border-collapse:collapse;background:#1e2329;border-radius:8px;overflow:hidden;} 
-        th,td{padding:15px;border-bottom:1px solid #2b3139;} 
-        th{background:#2b3139;color:#848e9c;}
-        .profit{color:#0ecb81;font-weight:bold;} 
-        .loss{color:#f6465d;font-weight:bold;}
-        .empty{color:#848e9c;padding:30px;}
-        .badge-gem{background:rgba(243,186,47,0.2);color:#f3ba2f;padding:3px 8px;border-radius:4px;font-size:12px;}
-        .badge-norm{background:rgba(14,203,129,0.2);color:#0ecb81;padding:3px 8px;border-radius:4px;font-size:12px;}
-    </style></head><body>
-    <div class="header"><h1>🤖 LOMY Dual Engine</h1><p>Algorithmic Sniper Bot</p></div>
-    <div class="panel">Wallet: <span class="bal">$<span id="bal">${liveWalletBalance}</span></span></div>
-    <table><thead><tr><th>Asset</th><th>Strategy</th><th>Stop Loss</th><th>Live P&L</th></tr></thead><tbody id="tbl"></tbody></table>
-    <script>
-    async function load(){
-        try {
-            const res = await (await fetch('/api/data')).json();
-            document.getElementById('bal').innerText = res.balance;
-            let html = '';
-            if(res.positions.length === 0){
-                html = '<tr><td colspan="4" class="empty">Scanning markets for precise entry... 📡</td></tr>';
-            } else {
-                res.positions.forEach(p => {
-                    let badge = p.type === 'GEM' ? '<span class="badge-gem">💎 GEM</span>' : '<span class="badge-norm">📊 NORMAL</span>';
-                    let pnlClass = p.pnl >= 0 ? 'profit' : 'loss';
-                    let pnlSign = p.pnl > 0 ? '+' : '';
-                    html += \`<tr><td><strong>\${p.symbol}</strong></td><td>\${badge}</td><td>$\${p.sl}</td><td class="\${pnlClass}">\${pnlSign}\${p.pnl}%</td></tr>\`;
-                });
-            }
-            document.getElementById('tbl').innerHTML = html;
-        } catch(e) {}
-    }
-    setInterval(load, 3000); load();
-    </script>
-    </body></html>`);
+    res.send(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Binance Testnet Bot</title><style>body{background-color:#0b0e11;color:#eaecef;font-family:Arial;text-align:center;padding:20px;}h1{color:#f3ba2f;}.wallet{font-size:24px;color:#0ecb81;margin-bottom:20px;font-weight:bold;border:2px dashed #2b3139;padding:10px;display:inline-block;border-radius:10px;}.stats-container{display:flex;justify-content:center;gap:20px;margin-bottom:20px;}.stat-box{background-color:#1e2329;padding:15px 30px;border-radius:8px;font-weight:bold;border:1px solid #2b3139;}table{width:90%;max-width:1000px;margin:10px auto;border-collapse:collapse;background-color:#1e2329;border-radius:8px;}th,td{padding:12px;border-bottom:1px solid #2b3139;}th{background-color:#2b3139;color:#848e9c;}.buy{color:#0ecb81;font-weight:bold;}.sell{color:#f6465d;font-weight:bold;}.wait{color:#848e9c;}.spike{color:#f3ba2f;font-weight:bold;}</style></head><body><h1>🤖 LOMY Ultra-Fast Engine</h1><div class="wallet">💰 Balance: $<span id="wallet-balance">Loading...</span> USDT</div><div class="stats-container"><div class="stat-box">Trades: <span id="tot-trades">0</span></div><div class="stat-box">Profit: <span id="net-profit">0.00%</span></div></div><table><thead><tr><th>Symbol</th><th>Status</th><th>CMO</th><th>Whale</th></tr></thead><tbody id="live-table"><tr><td colspan="4">Scanning...</td></tr></tbody></table><script>async function loadData(){try{const res=await fetch('/api/data');const data=await res.json();document.getElementById('wallet-balance').innerText=data.balance;document.getElementById('tot-trades').innerText=data.stats.totalTrades;let profitEl=document.getElementById('net-profit');profitEl.innerText=data.stats.totalProfitPct.toFixed(2)+'%';profitEl.className=data.stats.totalProfitPct>=0?'buy':'sell';if(data.live.length>0){let liveTbody=document.getElementById('live-table');liveTbody.innerHTML='';data.live.forEach(item=>{let decClass=item.decision.includes('BOUGHT')||item.decision.includes('HOLDING')?'buy':item.decision.includes('SELL')||item.decision.includes('CLOSED')?'sell':'wait';liveTbody.innerHTML+=\`<tr><td>\${item.symbol}</td><td class="\${decClass}">\${item.decision}</td><td>\${item.cmo}</td><td class="\${item.spike.includes('YES')?'spike':''}">\${item.spike}</td></tr>\`;});}}catch(e){}}setInterval(loadData,4000);loadData();</script></body></html>`);
 });
 
-app.listen(PORT, () => {
-    console.log(`🚀 LOMY Server is running on port ${PORT}...`);
-    startBot();
-});
+app.listen(PORT, () => { console.log('🚀 LOMY Server running on port ' + PORT); });
