@@ -31,7 +31,7 @@ const API_SECRET = process.env.BINANCE_API_SECRET;
 const TESTNET_URL = process.env.USE_TESTNET === 'false' ? 'https://api.binance.com' : 'https://testnet.binance.vision';
 
 // ==========================================
-// ⚙️ 3. Risk Management & Global Variables (UPDATED)
+// ⚙️ 3. Risk Management & Global Variables 
 // ==========================================
 const RISK_RULES = {
     tradeAmountUSDT: 100,        
@@ -83,8 +83,10 @@ async function executeTrade(symbol, side, quantity = null) {
 }
 
 // ==========================================
-// 🔄 5. Recover Lost Positions (Memory Rescue)
+// 🔄 5. Recover Lost Positions (Memory Rescue) - FIXED FOR 429
 // ==========================================
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
 async function recoverActivePositions() {
     console.log('🔄 Checking wallet to recover lost positions...');
     const data = await binancePrivateRequest('/api/v3/account', 'GET');
@@ -92,22 +94,32 @@ async function recoverActivePositions() {
     if (data && data.balances) {
         for (let b of data.balances) {
             const qty = parseFloat(b.free);
-            if (b.asset !== 'USDT' && qty > 0.001) {
+            if (b.asset !== 'USDT' && qty > 0) {
                 const symbol = b.asset + 'USDT';
                 try {
                     const priceRes = await axios.get(`${TESTNET_URL}/api/v3/ticker/price?symbol=${symbol}`);
                     const currentPrice = parseFloat(priceRes.data.price);
-                    
-                    activePositions[symbol] = {
-                        entryPrice: currentPrice,
-                        qty: qty,
-                        highestPrice: currentPrice,
-                        stopLoss: currentPrice * (1 - RISK_RULES.fallbackStopLossPct),
-                        trailingActive: false,
-                        time: new Date().toLocaleString()
-                    };
-                    console.log(`✅ Recovered: ${symbol} | Qty: ${qty}`);
-                } catch (e) { console.error(`⚠️ Could not recover ${symbol}:`, e.message); }
+                    const positionValueUSDT = qty * currentPrice;
+
+                    // استرجاع الصفقات اللي قيمتها أكبر من 10 دولار فقط (لتجاهل بواقي العملات)
+                    if (positionValueUSDT > 10) {
+                        activePositions[symbol] = {
+                            entryPrice: currentPrice,
+                            qty: qty,
+                            highestPrice: currentPrice,
+                            stopLoss: currentPrice * (1 - RISK_RULES.fallbackStopLossPct),
+                            trailingActive: false,
+                            time: new Date().toLocaleString()
+                        };
+                        console.log(`✅ Recovered: ${symbol} | Value: $${positionValueUSDT.toFixed(2)}`);
+                        sendTelegramMessage(`🔄 <b>Recovered:</b> ${symbol}\n<b>Value:</b> $${positionValueUSDT.toFixed(2)}`);
+                        
+                        // انتظار 1.5 ثانية قبل إرسال الرسالة اللي بعدها عشان تيليجرام
+                        await sleep(1500); 
+                    }
+                } catch (e) { 
+                    // تجاهل الأخطاء البسيطة
+                }
             }
         }
     }
@@ -263,7 +275,7 @@ async function runFullScan() {
     const topCoins = await getTopActiveCoins(15);
     let currentScan = [];
     for (const coin of topCoins) {
-        // Timeframe changed back to 15m as requested
+        // Timeframe 15m
         const result = await analyzeMarket(coin, '15m'); 
         if (result) currentScan.push(result);
         await new Promise(resolve => setTimeout(resolve, 200));
