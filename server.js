@@ -35,9 +35,9 @@ const TESTNET_URL = process.env.USE_TESTNET === 'false' ? 'https://api.binance.c
 // ==========================================
 const RISK_RULES = {
     tradeAmountUSDT: 100,        
-    stopLossPct: 0.03,           
-    trailingActivationPct: 0.05, 
-    trailingDistancePct: 0.025   
+    stopLossPct: 0.015,          // وقف الخسارة 1.5%
+    trailingActivationPct: 0.03, // جني الأرباح / تفعيل التتبع عند 3%
+    trailingDistancePct: 0.015   // مسافة التتبع المتحرك 1.5%
 };
 
 let latestResults = [];
