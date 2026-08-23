@@ -21,8 +21,8 @@ const TESTNET_URL = 'https://testnet.binance.vision';
 // ==========================================
 const RISK_RULES = {
     tradeAmountUSDT: 100,        
-    stopLossPct: 0.02,    // وقف خسارة ثابت 2%
-    takeProfitPct: 0.04   // جني أرباح ثابت 4%
+    stopLossPct: 0.02,    // 2%
+    takeProfitPct: 0.04   // 4%
 };
 
 let exchangeRules = {}; 
@@ -33,19 +33,40 @@ let testStats = { totalTrades: 0, winningTrades: 0, totalProfitUSDT: 0 };
 let liveWalletBalance = "0.00"; 
 
 // ==========================================
-// 🔔 3. Utilities (Telegram & Precision)
+// 🔔 3. Telegram Queue System (Anti-Ban)
 // ==========================================
-async function sendTelegramMessage(text) {
-    if (!TELEGRAM_TOKEN || !CHAT_ID) return;
+const telegramQueue = [];
+let isSendingTelegram = false;
+
+async function processTelegramQueue() {
+    if (isSendingTelegram || telegramQueue.length === 0) return;
+    isSendingTelegram = true;
+    
+    const text = telegramQueue.shift(); 
     const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
+    
     try {
         await axios.post(url, { chat_id: CHAT_ID, text: text, parse_mode: 'HTML' });
-    } catch (error) {}
+    } catch (error) {
+        if (error.response && error.response.status === 429) {
+            telegramQueue.unshift(text); 
+            await new Promise(r => setTimeout(r, 3000)); 
+        }
+    }
+    isSendingTelegram = false;
+}
+setInterval(processTelegramQueue, 1500);
+
+function sendTelegramMessage(text) {
+    if (!TELEGRAM_TOKEN || !CHAT_ID) return;
+    telegramQueue.push(text);
 }
 
+// ==========================================
+// 🛠️ 4. Binance Precision Rules
+// ==========================================
 async function loadExchangeRules() {
     try {
-        console.log('🔄 Loading Binance Exchange Rules (Lot Sizes)...');
         const res = await axios.get(`${TESTNET_URL}/api/v3/exchangeInfo`);
         res.data.symbols.forEach(s => {
             const lotSize = s.filters.find(f => f.filterType === 'LOT_SIZE');
@@ -53,8 +74,8 @@ async function loadExchangeRules() {
                 stepSize: lotSize ? parseFloat(lotSize.stepSize) : 1
             };
         });
-        console.log('✅ Exchange Rules Loaded Successfully.');
-    } catch (e) { console.error('❌ Error loading exchange rules'); }
+        console.log('✅ Exchange Rules Loaded.');
+    } catch (e) { }
 }
 
 function formatQuantity(symbol, qty) {
@@ -66,13 +87,12 @@ function formatQuantity(symbol, qty) {
 }
 
 // ==========================================
-// 🔐 4. Binance API Request Functions
+// 🔐 5. Binance API Functions
 // ==========================================
 async function binancePrivateRequest(endpoint, method = 'GET', params = {}) {
     if (!API_KEY || !API_SECRET) return null;
     params.timestamp = Date.now();
     params.recvWindow = 60000; 
-
     const queryString = Object.keys(params).map(key => `${key}=${encodeURIComponent(params[key])}`).join('&');
     const signature = crypto.createHmac('sha256', API_SECRET).update(queryString).digest('hex');
     const url = `${TESTNET_URL}${endpoint}?${queryString}&signature=${signature}`;
@@ -93,16 +113,13 @@ async function updateWalletBalance() {
 
 async function executeTrade(symbol, side, quantity = null) {
     let params = { symbol: symbol, side: side, type: 'MARKET' };
-    if (side === 'BUY') {
-        params.quoteOrderQty = RISK_RULES.tradeAmountUSDT; 
-    } else {
-        params.quantity = formatQuantity(symbol, quantity);
-    }
+    if (side === 'BUY') params.quoteOrderQty = RISK_RULES.tradeAmountUSDT; 
+    else params.quantity = formatQuantity(symbol, quantity);
     return await binancePrivateRequest('/api/v3/order', 'POST', params);
 }
 
 // ==========================================
-// 🔄 5. Bulletproof Recovery System
+// 🔄 6. Position Recovery
 // ==========================================
 async function recoverActivePositions() {
     const data = await binancePrivateRequest('/api/v3/account', 'GET');
@@ -116,8 +133,7 @@ async function recoverActivePositions() {
                     if (myTrades && myTrades.length > 0) {
                         const realEntryPrice = parseFloat(myTrades[0].price);
                         activePositions[symbol] = {
-                            entryPrice: realEntryPrice,
-                            qty: qty,
+                            entryPrice: realEntryPrice, qty: qty,
                             stopLoss: realEntryPrice * (1 - RISK_RULES.stopLossPct),
                             takeProfit: realEntryPrice * (1 + RISK_RULES.takeProfitPct),
                             time: new Date().toLocaleString()
@@ -130,12 +146,10 @@ async function recoverActivePositions() {
 }
 
 // ==========================================
-// 🧠 6. Auto-Trading Engine (Execution)
+// 🧠 7. Auto-Trading Engine
 // ==========================================
 async function processTradeAction(symbol, currentPrice, decision) {
-    // 1. الشراء عند ظهور الإشارة من المؤشر الداخلي
     if (decision === 'BUY' && !activePositions[symbol]) {
-        console.log(`\n⏳ [MARKET BUY - Scanner Signal] ${symbol}...`);
         const orderResult = await executeTrade(symbol, 'BUY');
         if (orderResult && orderResult.status === 'FILLED') {
             const entryPrice = parseFloat(orderResult.fills[0] ? orderResult.fills[0].price : currentPrice);
@@ -144,42 +158,32 @@ async function processTradeAction(symbol, currentPrice, decision) {
             activePositions[symbol] = {
                 entryPrice, qty: qtyBought,
                 stopLoss: entryPrice * (1 - RISK_RULES.stopLossPct),
-                takeProfit: entryPrice * (1 + RISK_RULES.takeProfitPct),
-                time: new Date().toLocaleString()
+                takeProfit: entryPrice * (1 + RISK_RULES.takeProfitPct)
             };
-            
-            sendTelegramMessage(`🟢 <b>شراء جديد (المؤشر الداخلي)</b>\n<b>العملة:</b> ${symbol}\n<b>الدخول:</b> $${entryPrice}\n<b>الهدف:</b> $${activePositions[symbol].takeProfit.toFixed(4)}\n<b>الوقف:</b> $${activePositions[symbol].stopLoss.toFixed(4)}`);
+            sendTelegramMessage(`🟢 <b>شراء جديد</b>\n<b>العملة:</b> ${symbol}\n<b>الدخول:</b> $${entryPrice}`);
             updateWalletBalance(); 
             return 'BOUGHT';
         }
     }
 
-    // 2. إدارة الصفقات والبيع
     if (activePositions[symbol]) {
         let trade = activePositions[symbol];
-        
         const hitSL = currentPrice <= trade.stopLoss;
         const hitTP = currentPrice >= trade.takeProfit;
         const forceSell = decision === 'SELL';
 
         if (hitSL || hitTP || forceSell) {
-            console.log(`\n⏳ [MARKET SELL] ${symbol}...`);
             const orderResult = await executeTrade(symbol, 'SELL', trade.qty);
-            
             if (orderResult && orderResult.status === 'FILLED') {
                 const profitUSDT = (currentPrice - trade.entryPrice) * trade.qty; 
-                let exitReason = hitSL ? 'ضرب وقف الخسارة (2%)' : (hitTP ? 'ضرب هدف الربح (4%)' : 'إشارة بيع عكسية من المؤشر');
+                let exitReason = hitSL ? 'ضرب وقف الخسارة' : (hitTP ? 'ضرب هدف الربح' : 'إشارة عكسية');
                 
                 testStats.totalTrades++;
                 if (profitUSDT > 0) testStats.winningTrades++;
                 testStats.totalProfitUSDT += profitUSDT;
-
-                tradeHistory.unshift({ time: new Date().toLocaleTimeString(), symbol, reason: exitReason, profitUSDT: profitUSDT.toFixed(2) });
-                if (tradeHistory.length > 50) tradeHistory.pop();
                 
                 const emoji = profitUSDT >= 0 ? '✅ ربح' : '❌ خسارة';
-                sendTelegramMessage(`🔴 <b>تم البيع</b>\n<b>العملة:</b> ${symbol}\n<b>السبب:</b> ${exitReason}\n<b>النتيجة:</b> ${emoji} ($${profitUSDT.toFixed(2)} USDT)`);
-
+                sendTelegramMessage(`🔴 <b>تم البيع</b>\n<b>العملة:</b> ${symbol}\n<b>النتيجة:</b> ${emoji} ($${profitUSDT.toFixed(2)})`);
                 delete activePositions[symbol]; 
                 updateWalletBalance(); 
                 return `CLOSED ($${profitUSDT.toFixed(2)})`;
@@ -191,7 +195,7 @@ async function processTradeAction(symbol, currentPrice, decision) {
 }
 
 // ==========================================
-// 📊 7. Internal Scanner Logic (The Brain)
+// 📊 8. Super Scanner (Sweeping 300 Coins)
 // ==========================================
 function calculateSMA(data, period, key = 'volume') {
     let smaArray = [];
@@ -217,6 +221,7 @@ function calculateCMO(data, period) {
     }
     return cmoArray;
 }
+
 async function analyzeMarket(symbol) {
     try {
         const res = await axios.get(`${TESTNET_URL}/api/v3/klines?symbol=${symbol}&interval=15m&limit=30`);
@@ -230,8 +235,6 @@ async function analyzeMarket(symbol) {
         const bodyRatio = (candle.high - candle.low) > 0 ? (Math.abs(candle.close - candle.open) / (candle.high - candle.low)) : 0;
         
         let decision = 'WAIT';
-        
-        // شروط الدخول بناءً على المؤشر المدمج
         if (candle.close > candle.open && bodyRatio > 0.5 && highVolume && cmo[cmo.length - 2] > 30) decision = 'BUY';
         if (candle.close < candle.open && bodyRatio > 0.5 && highVolume && cmo[cmo.length - 2] < -30) decision = 'SELL';
 
@@ -243,32 +246,101 @@ async function analyzeMarket(symbol) {
 async function runFullScan() {
     try {
         const response = await axios.get(`${TESTNET_URL}/api/v3/ticker/24hr`);
-        let topCoins = response.data.filter(t => t.symbol.endsWith('USDT') && !t.symbol.includes('USDC'))
-            .sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume)).slice(0, 10).map(t => t.symbol);
+        
+        const ignoredCoins = ['USDC', 'FDUSD', 'TUSD', 'USDP', 'BUSD', 'EUR', 'USD1'];
+        
+        // جلب أفضل 300 عملة في السوق كله
+        let topCoins = response.data
+            .filter(t => t.symbol.endsWith('USDT') && !ignoredCoins.some(stable => t.symbol.includes(stable)))
+            .sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume))
+            .slice(0, 300).map(t => t.symbol);
         
         let currentScan = [];
+        
         for (const coin of topCoins) {
             const result = await analyzeMarket(coin);
-            if (result) currentScan.push(result);
-            await new Promise(resolve => setTimeout(resolve, 200));
+            
+            // فلترة الشاشة: عرض العملات المشتراة، أو اللي فيها حيتان، أو إشارات
+            if (result && (result.decision !== 'WAIT' || result.spike === 'YES' || activePositions[result.symbol])) {
+                currentScan.push(result);
+            }
+            
+            // تأخير 80 ملي ثانية لتجنب الحظر من باينانس
+            await new Promise(resolve => setTimeout(resolve, 80));
         }
+
+        // إضافة أول 5 عملات دايماً للشاشة عشان تتأكد إن الفحص شغال
+        for (let i = 0; i < 5; i++) {
+            if (topCoins[i] && !currentScan.find(c => c.symbol === topCoins[i])) {
+                currentScan.push({ symbol: topCoins[i], decision: 'WAIT', cmo: '0.00', spike: 'NO' });
+            }
+        }
+
         latestResults = currentScan; 
-    } catch(e) {}
+    } catch (e) { 
+        console.error("Scanner error:", e.message); 
+    } finally {
+        // تشغيل الفحص الجديد بعد 5 ثواني من انتهاء الفحص الحالي (Loop)
+        setTimeout(runFullScan, 5000);
+    }
 }
 
 // ==========================================
-// 🌐 8. Web Server (Dashboard Only)
+// 🚨 9. API Endpoints (Emergency Close)
+// ==========================================
+app.post('/api/emergency-close', async (req, res) => {
+    let closedCount = 0;
+    const symbolsToClose = Object.keys(activePositions);
+    
+    if (symbolsToClose.length === 0) {
+        return res.json({ success: false, msg: 'لا توجد صفقات مفتوحة حالياً.' });
+    }
+
+    sendTelegramMessage(`🚨 <b>جاري تنفيذ الإغلاق الطارئ لـ ${symbolsToClose.length} صفقات...</b>`);
+
+    for (let symbol of symbolsToClose) {
+        try {
+            let trade = activePositions[symbol];
+            const priceRes = await axios.get(`${TESTNET_URL}/api/v3/ticker/price?symbol=${symbol}`);
+            const currentPrice = parseFloat(priceRes.data.price);
+            
+            const orderResult = await executeTrade(symbol, 'SELL', trade.qty);
+            if (orderResult && (orderResult.status === 'FILLED' || orderResult.status === 'NEW')) {
+                const profitUSDT = (currentPrice - trade.entryPrice) * trade.qty; 
+                testStats.totalTrades++;
+                if (profitUSDT > 0) testStats.winningTrades++;
+                testStats.totalProfitUSDT += profitUSDT;
+                delete activePositions[symbol];
+                closedCount++;
+            }
+        } catch (e) { console.error(`Error closing ${symbol}`, e.message); }
+        await new Promise(resolve => setTimeout(resolve, 200));
+    }
+    
+    updateWalletBalance();
+    sendTelegramMessage(`✅ <b>اكتمل الإغلاق الطارئ!</b>\nتم إغلاق ${closedCount} صفقات.`);
+    res.json({ success: true, msg: `تم إغلاق ${closedCount} صفقات بنجاح.` });
+});
+
+// ==========================================
+// 🌐 10. Web Server (Dashboard)
 // ==========================================
 app.get('/api/data', (req, res) => {
-    res.json({ live: latestResults, stats: testStats, history: tradeHistory, balance: liveWalletBalance });
+    res.json({ live: latestResults, stats: testStats, balance: liveWalletBalance });
 });
 
 app.get('/', (req, res) => {
-    res.send(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Pro Binance Bot</title><style>body{background-color:#0b0e11;color:#eaecef;font-family:Arial;text-align:center;padding:20px;}h1{color:#f3ba2f;}.wallet{font-size:24px;color:#0ecb81;margin-bottom:20px;font-weight:bold;border:2px dashed #2b3139;padding:10px;display:inline-block;border-radius:10px;}.stats-container{display:flex;justify-content:center;gap:20px;margin-bottom:20px;}.stat-box{background-color:#1e2329;padding:15px 30px;border-radius:8px;font-weight:bold;border:1px solid #2b3139;}table{width:90%;max-width:1000px;margin:10px auto;border-collapse:collapse;background-color:#1e2329;border-radius:8px;}th,td{padding:12px;border-bottom:1px solid #2b3139;}th{background-color:#2b3139;color:#848e9c;}.buy{color:#0ecb81;font-weight:bold;}.sell{color:#f6465d;font-weight:bold;}.wait{color:#848e9c;}.spike{color:#f3ba2f;font-weight:bold;}</style></head><body><h1>🤖 LOMY Ultra-Fast Engine</h1><div class="wallet">💰 Balance: $<span id="wallet-balance">Loading...</span> USDT</div><div class="stats-container"><div class="stat-box">Trades: <span id="tot-trades">0</span></div><div class="stat-box">Profit: <span id="net-profit">$0.00</span></div></div><table><thead><tr><th>Symbol</th><th>Status</th><th>CMO</th><th>Whale</th></tr></thead><tbody id="live-table"><tr><td colspan="4">Scanning...</td></tr></tbody></table><script>async function loadData(){try{const res=await fetch('/api/data');const data=await res.json();document.getElementById('wallet-balance').innerText=data.balance;document.getElementById('tot-trades').innerText=data.stats.totalTrades;let profitEl=document.getElementById('net-profit');profitEl.innerText='$' + data.stats.totalProfitUSDT.toFixed(2);profitEl.className=data.stats.totalProfitUSDT>=0?'buy':'sell';if(data.live.length>0){let liveTbody=document.getElementById('live-table');liveTbody.innerHTML='';data.live.forEach(item=>{let decClass=item.decision.includes('BOUGHT')||item.decision.includes('HOLDING')?'buy':item.decision.includes('SELL')||item.decision.includes('CLOSED')?'sell':'wait';liveTbody.innerHTML+=\`<tr><td>\${item.symbol}</td><td class="\${decClass}">\${item.decision}</td><td>\${item.cmo}</td><td class="\${item.spike.includes('YES')?'spike':''}">\${item.spike}</td></tr>\`;});}}catch(e){}}setInterval(loadData,4000);loadData();</script></body></html>`);
+    res.send(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Pro Binance Bot</title><style>body{background-color:#0b0e11;color:#eaecef;font-family:Arial;text-align:center;padding:20px;}h1{color:#f3ba2f;}.wallet{font-size:24px;color:#0ecb81;margin-bottom:20px;font-weight:bold;border:2px dashed #2b3139;padding:10px;display:inline-block;border-radius:10px;}.stats-container{display:flex;justify-content:center;gap:20px;margin-bottom:20px;}.stat-box{background-color:#1e2329;padding:15px 30px;border-radius:8px;font-weight:bold;border:1px solid #2b3139;}table{width:100%;max-width:1000px;margin:10px auto;border-collapse:collapse;background-color:#1e2329;border-radius:8px;font-size:14px;}th,td{padding:12px;border-bottom:1px solid #2b3139;}th{background-color:#2b3139;color:#848e9c;}.buy{color:#0ecb81;font-weight:bold;}.sell{color:#f6465d;font-weight:bold;}.wait{color:#848e9c;}.spike{color:#f3ba2f;font-weight:bold;}.btn-danger{background-color:#f6465d;color:#fff;border:none;padding:12px 25px;border-radius:5px;font-weight:bold;cursor:pointer;font-size:16px;margin-bottom:20px;}.btn-danger:hover{background-color:#c93346;}</style></head><body><h1>🤖 LOMY Ultra-Fast Engine</h1><div class="wallet">💰 Balance: $<span id="wallet-balance">Loading...</span> USDT</div>
+    
+    <div><button class="btn-danger" onclick="emergencyClose()">🚨 إغلاق كل الصفقات (بسعر السوق)</button></div>
+    
+    <div class="stats-container"><div class="stat-box">Trades: <span id="tot-trades">0</span></div><div class="stat-box">Profit: <span id="net-profit">$0.00</span></div></div><div style="overflow-x:auto;"><table><thead><tr><th>Symbol</th><th>Status</th><th>CMO</th><th>Whale</th></tr></thead><tbody id="live-table"><tr><td colspan="4">Scanning Market (Top 300)... 📡</td></tr></tbody></table></div><script>async function loadData(){try{const res=await fetch('/api/data');const data=await res.json();document.getElementById('wallet-balance').innerText=data.balance;document.getElementById('tot-trades').innerText=data.stats.totalTrades;let profitEl=document.getElementById('net-profit');profitEl.innerText='$' + data.stats.totalProfitUSDT.toFixed(2);profitEl.className=data.stats.totalProfitUSDT>=0?'buy':'sell';if(data.live.length>0){let liveTbody=document.getElementById('live-table');liveTbody.innerHTML='';data.live.forEach(item=>{let decClass=item.decision.includes('BOUGHT')||item.decision.includes('HOLDING')?'buy':item.decision.includes('SELL')||item.decision.includes('CLOSED')?'sell':'wait';liveTbody.innerHTML+=\`<tr><td>\${item.symbol}</td><td class="\${decClass}">\${item.decision}</td><td>\${item.cmo}</td><td class="\${item.spike.includes('YES')?'spike':''}">\${item.spike}</td></tr>\`;});}}catch(e){}}setInterval(loadData,4000);loadData();
+    async function emergencyClose(){if(!confirm('هل أنت متأكد من إغلاق جميع الصفقات المفتوحة فوراً بسعر السوق الحالي؟')) return;try{const res=await fetch('/api/emergency-close',{method:'POST'});const data=await res.json();alert(data.msg);loadData();}catch(e){alert('حدث خطأ بالاتصال بالسيرفر');}}
+    </script></body></html>`);
 });
 
 // ==========================================
-// 🚀 9. Initialization
+// 🚀 11. Initialization
 // ==========================================
 app.listen(PORT, async () => { 
     console.log('🚀 Server is running on port ' + PORT); 
@@ -276,6 +348,7 @@ app.listen(PORT, async () => {
     setTimeout(recoverActivePositions, 3000); 
     setTimeout(updateWalletBalance, 2000); 
     setInterval(updateWalletBalance, 60000);
-    setInterval(runFullScan, 15000);
+    
+    // بدء الفحص الشامل
     runFullScan();
 });
