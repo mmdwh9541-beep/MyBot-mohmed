@@ -24,12 +24,15 @@ const TELEGRAM = {
     CHAT_ID: process.env.TELEGRAM_CHAT_ID
 };
 
+// --- STRATEGY SETTINGS ---
 const RISK_RULES = {
     tradeAmountUSDT: 100,        
-    fallbackStopLossPct: 0.025,   // 2.5% fallback SL
-    trailingActivationPct: 0.025, // Activate trailing at 2.5% profit
-    trailingDistancePct: 0.01,    // Trailing distance 1% 
-    maxTrades: 10                 // الحد الأقصى للصفقات المفتوحة في نفس الوقت
+    fallbackStopLossPct: 0.02,    // 2% Stop Loss
+    trailingActivationPct: 0.04,  // 4% Take Profit (Activation)
+    trailingDistancePct: 0.01,    // 1% Trailing Distance
+    pullbackEntryPct: 0.005,      // 0.5% Pullback entry (Limit Order)
+    maxTrades: 10,
+    orderExpiryMinutes: 30        // Cancel Limit Order if not filled in 30 mins
 };
 
 let activePositions = {}; 
@@ -37,13 +40,13 @@ let cooldowns = {};
 let liveWalletBalance = "0.00"; 
 let latestMarketPrices = {}; 
 let symbolRules = {}; 
-let testStats = { totalTrades: 0, winningTrades: 0, totalProfitPct: 0 };
+let testStats = { totalTrades: 0, winningTrades: 0, totalProfitUSDT: 0 };
 
 const POSITIONS_FILE = path.join(__dirname, 'positions.json'); 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 // ==========================================
-// 2. Utility & Technical Indicators (LOMY AI Logic)
+// 2. Utility & Technical Indicators (LOMY AI)
 // ==========================================
 async function sendTelegramMessage(text) {
     if (!TELEGRAM.TOKEN || !TELEGRAM.CHAT_ID) return;
@@ -81,7 +84,7 @@ function calculateCMO(data, period) {
 }
 
 // ==========================================
-// 3. Binance API & Precision Limits (The Muscles)
+// 3. Binance API & Precision Limits
 // ==========================================
 async function binancePrivateRequest(endpoint, method = 'GET', params = {}) {
     if (!CONFIG.API_KEY || !CONFIG.API_SECRET) return null;
@@ -94,7 +97,10 @@ async function binancePrivateRequest(endpoint, method = 'GET', params = {}) {
     try {
         const response = await axios({ method, url, headers: { 'X-MBX-APIKEY': CONFIG.API_KEY } });
         return response.data;
-    } catch (e) { return null; }
+    } catch (e) { 
+        console.error(`❌ API Error (${endpoint}):`, e.response ? e.response.data.msg : e.message);
+        return null; 
+    }
 }
 
 async function loadExchangeRules() {
@@ -102,7 +108,11 @@ async function loadExchangeRules() {
         const response = await axios.get(`${TESTNET_URL}/api/v3/exchangeInfo`);
         response.data.symbols.forEach(s => {
             const lotSize = s.filters.find(f => f.filterType === 'LOT_SIZE');
-            if (lotSize) symbolRules[s.symbol] = { stepSize: parseFloat(lotSize.stepSize) };
+            const priceFilter = s.filters.find(f => f.filterType === 'PRICE_FILTER');
+            symbolRules[s.symbol] = { 
+                stepSize: lotSize ? parseFloat(lotSize.stepSize) : 1,
+                tickSize: priceFilter ? parseFloat(priceFilter.tickSize) : 0.0001
+            };
         });
         console.log('✅ Exchange precision rules loaded.');
     } catch (e) { console.error('❌ Error loading exchange rules.'); }
@@ -116,6 +126,13 @@ function formatQuantity(symbol, qty) {
     return (Math.floor(qty * factor) / factor).toFixed(precision);
 }
 
+function formatPrice(symbol, price) {
+    if (!symbolRules[symbol]) return price.toFixed(4);
+    const tickSize = symbolRules[symbol].tickSize;
+    const precision = tickSize.toString().includes('.') ? tickSize.toString().split('.')[1].length : 0;
+    return price.toFixed(precision);
+}
+
 // ==========================================
 // 4. File I/O (The Memory)
 // ==========================================
@@ -125,8 +142,7 @@ async function loadPositions() {
         activePositions = JSON.parse(data);
         const count = Object.keys(activePositions).length;
         if (count > 0) {
-            console.log(`✅ Loaded ${count} active positions from memory.`);
-            sendTelegramMessage(`🔄 <b>Bot Restarted!</b>\nRestored ${count} active trades from memory seamlessly.`);
+            console.log(`✅ Loaded ${count} active/pending positions from memory.`);
         }
     } catch (e) { activePositions = {}; }
 }
@@ -137,7 +153,7 @@ async function savePositions() {
 }
 
 // ==========================================
-// 5. Order Management
+// 5. Order Execution
 // ==========================================
 async function updateWalletBalance() {
     const data = await binancePrivateRequest('/api/v3/account', 'GET');
@@ -147,97 +163,143 @@ async function updateWalletBalance() {
     }
 }
 
-async function executeTrade(symbol, side, quoteQty = null, coinQty = null) {
-    let params = { symbol, side, type: 'MARKET' };
-    if (side === 'BUY') params.quoteOrderQty = parseFloat(quoteQty).toFixed(2);
-    else params.quantity = formatQuantity(symbol, coinQty);
+async function executeTrade(symbol, side, quoteQty = null, coinQty = null, limitPrice = null) {
+    let params = { symbol, side };
+    
+    if (limitPrice) {
+        params.type = 'LIMIT';
+        params.timeInForce = 'GTC';
+        params.price = formatPrice(symbol, limitPrice);
+        params.quantity = formatQuantity(symbol, quoteQty / limitPrice);
+    } else {
+        params.type = 'MARKET';
+        if (side === 'BUY') params.quoteOrderQty = parseFloat(quoteQty).toFixed(2);
+        else params.quantity = formatQuantity(symbol, coinQty);
+    }
+    
     return await binancePrivateRequest('/api/v3/order', 'POST', params);
 }
 
-async function managePosition(symbol, currentPrice, decision, dynamicSL = null) {
-    // EXECUTE BUY
-    if (decision === 'BUY' && !activePositions[symbol]) {
-        if (Object.keys(activePositions).length >= RISK_RULES.maxTrades) return 'MAX_TRADES_REACHED';
-        if (parseFloat(liveWalletBalance) < RISK_RULES.tradeAmountUSDT) return 'INSUFFICIENT_FUNDS';
+async function cancelOrder(symbol, orderId) {
+    return await binancePrivateRequest('/api/v3/order', 'DELETE', { symbol, orderId });
+}
 
-        console.log(`\n⏳ [ATTEMPTING BUY] ${symbol}...`);
-        const order = await executeTrade(symbol, 'BUY', RISK_RULES.tradeAmountUSDT);
+// ==========================================
+// 6. Advanced Position Management (Limit Orders)
+// ==========================================
+async function managePosition(symbol, currentPrice, decision, dynamicSL = null) {
+    
+    // 1. EXECUTE PENDING BUY (Limit Order at Support)
+    if (decision === 'BUY' && !activePositions[symbol]) {
+        if (Object.keys(activePositions).length >= RISK_RULES.maxTrades) return;
+        if (parseFloat(liveWalletBalance) < RISK_RULES.tradeAmountUSDT) return;
+
+        // Calculate support level for entry
+        const entrySupportPrice = currentPrice * (1 - RISK_RULES.pullbackEntryPct);
+        console.log(`\n⏳ [PLACING LIMIT BUY] ${symbol} at $${entrySupportPrice.toFixed(4)}...`);
         
-        if (order && order.status === 'FILLED') {
-            const entryPrice = parseFloat(order.fills[0] ? order.fills[0].price : currentPrice);
-            const qtyBought = parseFloat(order.executedQty);
-            const finalSL = dynamicSL ? dynamicSL : entryPrice * (1 - RISK_RULES.fallbackStopLossPct);
+        const order = await executeTrade(symbol, 'BUY', RISK_RULES.tradeAmountUSDT, null, entrySupportPrice);
+        
+        if (order && order.status === 'NEW') {
+            const finalSL = dynamicSL ? dynamicSL : entrySupportPrice * (1 - RISK_RULES.fallbackStopLossPct);
 
             activePositions[symbol] = { 
-                entryPrice, qty: qtyBought, highestPrice: entryPrice, 
-                stopLoss: finalSL, trailingActive: false, time: new Date().toLocaleString() 
+                status: 'PENDING',
+                orderId: order.orderId,
+                targetEntryPrice: entrySupportPrice,
+                highestPrice: entrySupportPrice, 
+                stopLoss: finalSL, 
+                trailingActive: false, 
+                time: Date.now() 
             };
             await savePositions(); 
             
-            sendTelegramMessage(`🟢 <b>LOMY SNIPER: BUY EXECUTED</b>\n<b>Symbol:</b> ${symbol}\n<b>Price:</b> $${entryPrice.toFixed(4)}\n<b>Dynamic SL:</b> $${finalSL.toFixed(4)}`);
-            await updateWalletBalance(); 
-            return 'BOUGHT';
+            sendTelegramMessage(`🎣 <b>LIMIT ORDER PLACED</b>\n<b>Symbol:</b> ${symbol}\n<b>Waiting to Buy at:</b> $${entrySupportPrice.toFixed(4)}\n<b>SL:</b> $${finalSL.toFixed(4)}`);
+            return;
         }
     }
 
-    // MANAGE HOLD/SELL
     if (activePositions[symbol]) {
         let trade = activePositions[symbol];
         let memoryNeedsUpdate = false;
 
-        if (currentPrice > trade.highestPrice) { 
-            trade.highestPrice = currentPrice; 
-            memoryNeedsUpdate = true; 
-        }
-        
-        const profitPct = (currentPrice - trade.entryPrice) / trade.entryPrice;
-
-        // Trailing Activation
-        if (!trade.trailingActive && profitPct >= RISK_RULES.trailingActivationPct) { 
-            trade.trailingActive = true; 
-            memoryNeedsUpdate = true; 
-            sendTelegramMessage(`🚀 <b>Target Hit! Trailing Stop Activated</b>\n<b>Symbol:</b> ${symbol}\n<b>Profit:</b> ${(profitPct*100).toFixed(2)}%`);
-        }
-        
-        // Update Trailing SL
-        if (trade.trailingActive) {
-            const newSL = trade.highestPrice * (1 - RISK_RULES.trailingDistancePct);
-            if (newSL > trade.stopLoss) { trade.stopLoss = newSL; memoryNeedsUpdate = true; }
-        }
-        
-        if (memoryNeedsUpdate) await savePositions(); 
-
-        // SELL Logic
-        if (currentPrice <= trade.stopLoss || decision === 'SELL') {
-            console.log(`\n⏳ [ATTEMPTING SELL] ${symbol}...`);
-            const order = await executeTrade(symbol, 'SELL', null, trade.qty);
+        // 2. CHECK PENDING ORDERS
+        if (trade.status === 'PENDING') {
+            const checkOrder = await binancePrivateRequest('/api/v3/order', 'GET', { symbol, orderId: trade.orderId });
             
-            if (order && (order.status === 'FILLED' || order.status === 'NEW')) {
-                const finalProfitPct = parseFloat(((currentPrice - trade.entryPrice) / trade.entryPrice * 100).toFixed(2));
-                const exitReason = currentPrice <= trade.stopLoss ? 'Stop Loss / Trailing Hit' : 'SELL Signal';
-                
-                testStats.totalTrades++;
-                if (finalProfitPct > 0) testStats.winningTrades++;
-                testStats.totalProfitPct += finalProfitPct;
-                
-                cooldowns[symbol] = Date.now() + (15 * 60 * 1000); // 15 mins cooldown so it doesn't re-enter immediately
-                
-                const emoji = finalProfitPct > 0 ? '✅ PROFIT' : '❌ LOSS';
-                sendTelegramMessage(`🔴 <b>SELL EXECUTED</b>\n<b>Symbol:</b> ${symbol}\n<b>Reason:</b> ${exitReason}\n<b>Result:</b> ${emoji} (${finalProfitPct}%)`);
-                
-                delete activePositions[symbol]; 
-                await savePositions(); 
+            if (checkOrder && checkOrder.status === 'FILLED') {
+                trade.status = 'ACTIVE';
+                trade.entryPrice = parseFloat(checkOrder.price || trade.targetEntryPrice);
+                trade.qty = parseFloat(checkOrder.executedQty);
+                memoryNeedsUpdate = true;
+                sendTelegramMessage(`🟢 <b>ORDER FILLED!</b>\n<b>Symbol:</b> ${symbol} bought at $${trade.entryPrice.toFixed(4)}`);
                 await updateWalletBalance();
-                return `CLOSED (${finalProfitPct}%)`;
+            } else {
+                const orderAgeMinutes = (Date.now() - trade.time) / (1000 * 60);
+                if (orderAgeMinutes >= RISK_RULES.orderExpiryMinutes) {
+                    await cancelOrder(symbol, trade.orderId);
+                    delete activePositions[symbol];
+                    await savePositions();
+                    sendTelegramMessage(`⌛ <b>ORDER CANCELLED</b>\n<b>Symbol:</b> ${symbol}\nReason: Price did not reach support in ${RISK_RULES.orderExpiryMinutes} mins.`);
+                    return;
+                }
             }
         }
-        return `HOLDING (SL: $${trade.stopLoss.toFixed(4)})`;
+
+        // 3. MANAGE ACTIVE POSITIONS
+        if (trade.status === 'ACTIVE') {
+            if (currentPrice > trade.highestPrice) { 
+                trade.highestPrice = currentPrice; 
+                memoryNeedsUpdate = true; 
+            }
+            
+            const profitPct = (currentPrice - trade.entryPrice) / trade.entryPrice;
+            const profitUSDT = (currentPrice - trade.entryPrice) * trade.qty;
+
+            // Take Profit Activation
+            if (!trade.trailingActive && profitPct >= RISK_RULES.trailingActivationPct) { 
+                trade.trailingActive = true; 
+                memoryNeedsUpdate = true; 
+                sendTelegramMessage(`🚀 <b>TARGET HIT (4%)</b>\n<b>Symbol:</b> ${symbol}\n<b>Current Profit:</b> +$${profitUSDT.toFixed(2)} USDT\nTrailing Stop Activated!`);
+            }
+            
+            // Trailing Stop Logic
+            if (trade.trailingActive) {
+                const newSL = trade.highestPrice * (1 - RISK_RULES.trailingDistancePct);
+                if (newSL > trade.stopLoss) { trade.stopLoss = newSL; memoryNeedsUpdate = true; }
+            }
+            
+            if (memoryNeedsUpdate) await savePositions(); 
+
+            // Execute Sell
+            if (currentPrice <= trade.stopLoss || decision === 'SELL') {
+                const order = await executeTrade(symbol, 'SELL', null, trade.qty);
+                
+                if (order && (order.status === 'FILLED' || order.status === 'NEW')) {
+                    const finalProfitPct = (profitPct * 100).toFixed(2);
+                    const finalProfitUSDT = profitUSDT.toFixed(2);
+                    const exitReason = currentPrice <= trade.stopLoss ? 'Stop Loss / Trailing Hit' : 'SELL Signal';
+                    
+                    testStats.totalTrades++;
+                    if (profitUSDT > 0) testStats.winningTrades++;
+                    testStats.totalProfitUSDT += parseFloat(finalProfitUSDT);
+                    
+                    cooldowns[symbol] = Date.now() + (15 * 60 * 1000); 
+                    
+                    const emoji = profitUSDT >= 0 ? '✅ PROFIT' : '❌ LOSS';
+                    sendTelegramMessage(`🔴 <b>SELL EXECUTED</b>\n<b>Symbol:</b> ${symbol}\n<b>Reason:</b> ${exitReason}\n<b>Result:</b> ${emoji}\n<b>PnL:</b> ${finalProfitUSDT} USDT (${finalProfitPct}%)`);
+                    
+                    delete activePositions[symbol]; 
+                    await savePositions(); 
+                    await updateWalletBalance();
+                }
+            }
+        }
     }
-    return decision;
 }
 
 // ==========================================
-// 6. Market Scanner (LOMY AI Whale Hunter)
+// 7. Market Scanner (LOMY AI Whale Hunter)
 // ==========================================
 let isScanning = false;
 
@@ -250,12 +312,11 @@ async function runFullScan() {
         const usdtPairs = response.data
             .filter(t => t.symbol.endsWith('USDT') && !t.symbol.includes('USDC'))
             .sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume))
-            .slice(0, 20); // Scan top 20 active coins
+            .slice(0, 20); 
 
         for (let pair of usdtPairs) {
             latestMarketPrices[pair.symbol] = parseFloat(pair.lastPrice);
             
-            // Skip if on cooldown (recently sold)
             if (cooldowns[pair.symbol] && Date.now() < cooldowns[pair.symbol]) continue; 
 
             try {
@@ -285,18 +346,18 @@ async function runFullScan() {
 
                 if (bullish && cmo[cmo.length - 2] > 30) {
                     decision = 'BUY';
-                    dynamicSL = signalLow * 0.998; // Dynamic SL under signal candle
+                    dynamicSL = signalLow * 0.998; 
                 }
                 
                 if (bearish && cmo[cmo.length - 2] < -30) { decision = 'SELL'; }
 
                 await managePosition(pair.symbol, currentPrice, decision, dynamicSL);
-                await sleep(150); // Prevent API weight limits
+                await sleep(150); 
 
-            } catch (e) {} // Ignore single coin error to continue loop
+            } catch (e) {} 
         }
 
-        // Always check active positions even if they dropped out of Top 20
+        // Maintain Active & Pending Orders
         for (let symbol in activePositions) {
             if (!latestMarketPrices[symbol]) {
                 try {
@@ -315,7 +376,7 @@ async function runFullScan() {
 }
 
 // ==========================================
-// 7. Initialization & Web Dashboard
+// 8. Initialization & Web Dashboard
 // ==========================================
 async function startBot() {
     await loadExchangeRules();
@@ -328,10 +389,14 @@ async function startBot() {
 
 app.get('/api/data', (req, res) => {
     let positionsData = Object.keys(activePositions).map(sym => {
-        const entry = activePositions[sym].entryPrice;
-        const current = latestMarketPrices[sym] || entry;
-        const pnl = (((current - entry) / entry) * 100).toFixed(2);
-        return { symbol: sym, pnl: parseFloat(pnl), sl: activePositions[sym].stopLoss.toFixed(4) };
+        let trade = activePositions[sym];
+        if (trade.status === 'PENDING') {
+            return { symbol: sym, status: 'PENDING', pnl: 0, pnlUsdt: 0, sl: trade.stopLoss.toFixed(4) };
+        }
+        const current = latestMarketPrices[sym] || trade.entryPrice;
+        const pnlPct = (((current - trade.entryPrice) / trade.entryPrice) * 100).toFixed(2);
+        const pnlUsdt = ((current - trade.entryPrice) * trade.qty).toFixed(2);
+        return { symbol: sym, status: 'ACTIVE', pnl: parseFloat(pnlPct), pnlUsdt: parseFloat(pnlUsdt), sl: trade.stopLoss.toFixed(4) };
     });
     res.json({ positions: positionsData, balance: liveWalletBalance, stats: testStats });
 });
@@ -344,23 +409,24 @@ app.get('/', (req, res) => {
         .bal{color:#0ecb81;}
         .stats-container{display:flex;justify-content:center;gap:20px;margin-bottom:20px;}
         .stat-box{background-color:#1e2329;padding:15px 30px;border-radius:8px;font-weight:bold;border:1px solid #2b3139;}
-        table{width:100%;max-width:800px;margin:0 auto;border-collapse:collapse;background:#1e2329;border-radius:8px;overflow:hidden;} 
+        table{width:100%;max-width:900px;margin:0 auto;border-collapse:collapse;background:#1e2329;border-radius:8px;overflow:hidden;} 
         th,td{padding:15px;border-bottom:1px solid #2b3139;} 
         th{background:#2b3139;color:#848e9c;}
         .profit{color:#0ecb81;font-weight:bold;} 
         .loss{color:#f6465d;font-weight:bold;}
         .empty{color:#848e9c;padding:30px;}
-        .badge{background:rgba(243,186,47,0.2);color:#f3ba2f;padding:3px 8px;border-radius:4px;font-size:12px;}
+        .badge-act{background:rgba(14,203,129,0.2);color:#0ecb81;padding:3px 8px;border-radius:4px;font-size:12px;}
+        .badge-pend{background:rgba(243,186,47,0.2);color:#f3ba2f;padding:3px 8px;border-radius:4px;font-size:12px;}
     </style></head><body>
-    <div class="header"><h1>🤖 LOMY Super Bot (Whale Hunter Engine)</h1><p>Running on 15m Timeframe</p></div>
+    <div class="header"><h1>🤖 LOMY Super Bot (Pro Version)</h1><p>Timeframe: 15m | Risk: 2% SL / 4% TP | Pullback Entry</p></div>
     <div class="panel">Wallet: <span class="bal">$<span id="bal">${liveWalletBalance}</span></span></div>
     
     <div class="stats-container">
         <div class="stat-box">Total Trades: <span id="tot-trades">0</span></div>
-        <div class="stat-box">Net PnL: <span id="net-profit">0.00%</span></div>
+        <div class="stat-box">Net PnL: $<span id="net-profit">0.00</span> USDT</div>
     </div>
 
-    <table><thead><tr><th>Asset</th><th>Status</th><th>Stop Loss</th><th>Live P&L</th></tr></thead><tbody id="tbl"></tbody></table>
+    <table><thead><tr><th>Asset</th><th>Status</th><th>Stop Loss</th><th>PnL (USDT)</th><th>PnL (%)</th></tr></thead><tbody id="tbl"></tbody></table>
     <script>
     async function load(){
         try {
@@ -369,18 +435,21 @@ app.get('/', (req, res) => {
             document.getElementById('tot-trades').innerText = res.stats.totalTrades;
             
             let profitEl = document.getElementById('net-profit');
-            profitEl.innerText = res.stats.totalProfitPct.toFixed(2) + '%';
-            profitEl.className = res.stats.totalProfitPct >= 0 ? 'profit' : 'loss';
+            profitEl.innerText = res.stats.totalProfitUSDT.toFixed(2);
+            profitEl.className = res.stats.totalProfitUSDT >= 0 ? 'profit' : 'loss';
 
             let html = '';
             if(res.positions.length === 0){
-                html = '<tr><td colspan="4" class="empty">Scanning markets using LOMY Logic... 📡</td></tr>';
+                html = '<tr><td colspan="5" class="empty">Scanning markets using LOMY Logic... 📡</td></tr>';
             } else {
                 res.positions.forEach(p => {
-                    let badge = '<span class="badge">🔥 ACTIVE</span>';
+                    let badge = p.status === 'ACTIVE' ? '<span class="badge-act">🔥 ACTIVE</span>' : '<span class="badge-pend">⏳ PENDING</span>';
                     let pnlClass = p.pnl >= 0 ? 'profit' : 'loss';
                     let pnlSign = p.pnl > 0 ? '+' : '';
-                    html += \`<tr><td><strong>\${p.symbol}</strong></td><td>\${badge}</td><td>$\${p.sl}</td><td class="\${pnlClass}">\${pnlSign}\${p.pnl}%</td></tr>\`;
+                    let pnlText = p.status === 'PENDING' ? 'Waiting' : \`\${pnlSign}\${p.pnlUsdt} USDT\`;
+                    let pctText = p.status === 'PENDING' ? '-' : \`\${pnlSign}\${p.pnl}%\`;
+                    
+                    html += \`<tr><td><strong>\${p.symbol}</strong></td><td>\${badge}</td><td>$\${p.sl}</td><td class="\${pnlClass}">\${pnlText}</td><td class="\${pnlClass}">\${pctText}</td></tr>\`;
                 });
             }
             document.getElementById('tbl').innerHTML = html;
