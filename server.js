@@ -36,7 +36,7 @@ const TESTNET_URL = process.env.USE_TESTNET === 'false' ? 'https://api.binance.c
 const RISK_RULES = {
     tradeAmountUSDT: 100,        
     stopLossPct: 0.015,          // وقف الخسارة 1.5%
-    trailingActivationPct: 0.03, // تفعيل التتبع وجني الأرباح عند 3%
+    trailingActivationPct: 0.03, // جني الأرباح / تفعيل التتبع عند 3%
     trailingDistancePct: 0.015   // مسافة التتبع المتحرك 1.5%
 };
 
@@ -83,65 +83,36 @@ async function executeTrade(symbol, side, quantity = null) {
 }
 
 // ==========================================
-// 🚨 5. Emergency Liquidate All (بيع كل الصفقات الحالية فوراً)
+// 🔄 5. Recover Lost Positions (Memory Rescue)
 // ==========================================
-async function emergencyLiquidateAll() {
-    console.log('🚨 EMERGENCY: Starting liquidation of all open balances to USDT...');
-    sendTelegramMessage('🚨 <b>EMERGENCY LIQUIDATION STARTED</b>\nSelling all open assets to USDT...');
+async function recoverActivePositions() {
+    console.log('🔄 Checking wallet to recover lost positions...');
+    const data = await binancePrivateRequest('/api/v3/account', 'GET');
     
-    try {
-        const account = await binancePrivateRequest('/api/v3/account', 'GET');
-        if (!account || !account.balances) return;
-
-        // جلب قواعد العملات لمعرفة دقة الكميات (Precision)
-        const exchangeInfo = await axios.get(`${TESTNET_URL}/api/v3/exchangeInfo`);
-        const rules = {};
-        exchangeInfo.data.symbols.forEach(s => {
-            const lotSize = s.filters.find(f => f.filterType === 'LOT_SIZE');
-            if (lotSize) rules[s.symbol] = { stepSize: parseFloat(lotSize.stepSize) };
-        });
-
-        for (let b of account.balances) {
-            const freeQty = parseFloat(b.free);
-            if (b.asset !== 'USDT' && freeQty > 0) {
+    if (data && data.balances) {
+        for (let b of data.balances) {
+            const qty = parseFloat(b.free);
+            if (b.asset !== 'USDT' && qty > 0.001) {
                 const symbol = b.asset + 'USDT';
                 try {
                     const priceRes = await axios.get(`${TESTNET_URL}/api/v3/ticker/price?symbol=${symbol}`);
-                    const price = parseFloat(priceRes.data.price);
-                    const notional = freeQty * price;
-
-                    // لو العملة قيمتها أكبر من 1 دولار يتم بيعها
-                    if (notional > 1.0) {
-                        let qtyStr = freeQty.toString();
-                        if (rules[symbol]) {
-                            const stepSize = rules[symbol].stepSize;
-                            const precision = stepSize.toString().includes('.') ? stepSize.toString().split('.')[1].length : 0;
-                            const factor = Math.pow(10, precision);
-                            qtyStr = (Math.floor(freeQty * factor) / factor).toFixed(precision);
-                        }
-
-                        console.log(`Selling all ${qtyStr} of ${symbol}...`);
-                        const order = await binancePrivateRequest('/api/v3/order', 'POST', {
-                            symbol: symbol,
-                            side: 'SELL',
-                            type: 'MARKET',
-                            quantity: qtyStr
-                        });
-
-                        if (order && order.status === 'FILLED') {
-                            console.log(`✅ Successfully sold ${symbol}`);
-                            sendTelegramMessage(`✅ <b>Liquidated:</b> Sold all ${symbol} to USDT successfully.`);
-                        }
-                    }
-                } catch (err) {
-                    console.error(`⚠️ Could not sell ${symbol}:`, err.message);
-                }
+                    const currentPrice = parseFloat(priceRes.data.price);
+                    
+                    activePositions[symbol] = {
+                        entryPrice: currentPrice,
+                        qty: qty,
+                        highestPrice: currentPrice,
+                        stopLoss: currentPrice * (1 - RISK_RULES.stopLossPct),
+                        trailingActive: false,
+                        time: new Date().toLocaleString()
+                    };
+                    console.log(`✅ Recovered: ${symbol} | Qty: ${qty} | Price: $${currentPrice}`);
+                    
+                    const msg = `🔄 <b>Position Recovered</b>\n<b>Symbol:</b> ${symbol}\n<b>Quantity:</b> ${qty}\n<b>Tracking Price:</b> $${currentPrice}`;
+                    sendTelegramMessage(msg);
+                } catch (e) { console.error(`⚠️ Could not recover ${symbol}:`, e.message); }
             }
         }
-        console.log('✨ All open assets have been liquidated to USDT!');
-        sendTelegramMessage('✨ <b>Liquidation Complete!</b> All assets converted to USDT. Ready for fresh trades.');
-    } catch (e) {
-        console.error('❌ Liquidation Error:', e.message);
     }
 }
 
@@ -223,7 +194,7 @@ async function managePosition(symbol, currentPrice, decision) {
             
             if (orderResult && orderResult.status === 'FILLED') {
                 const finalProfitPct = parseFloat(((currentPrice - trade.entryPrice) / trade.entryPrice * 100).toFixed(2));
-                const exitReason = currentPrice <= trade.stopLoss ? 'Stop Loss Hit (1.5%)' : 'SELL Signal';
+                const exitReason = currentPrice <= trade.stopLoss ? 'Stop Loss Hit' : 'SELL Signal';
                 
                 testStats.totalTrades++;
                 if (finalProfitPct > 0) testStats.winningTrades++;
@@ -282,11 +253,11 @@ async function runFullScan() {
 }
 
 // 7. Core Loops & Timers
-setTimeout(updateWalletBalance, 1000); 
-setTimeout(emergencyLiquidateAll, 4000); // تنفذ بيع كل الصفقات مرة واحدة بعد 4 ثوانٍ من التشغيل
+setTimeout(recoverActivePositions, 3000); 
+setTimeout(updateWalletBalance, 2000); 
 setInterval(updateWalletBalance, 60000);
 setInterval(runFullScan, 15000);
-setTimeout(() => { runFullScan(); }, 8000); // تبدأ المسح بعد انتهاء التصفية
+runFullScan();
 
 // ==========================================
 // 🌐 8. Web Routes (Webhook + Dashboard)
@@ -303,7 +274,7 @@ app.get('/api/data', (req, res) => {
 });
 
 app.get('/', (req, res) => {
-    res.send(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Binance Testnet Bot</title><style>body{background-color:#0b0e11;color:#eaecef;font-family:Arial;text-align:center;padding:20px;}h1{color:#f3ba2f;}.wallet{font-size:24px;color:#0ecb81;margin-bottom:20px;font-weight:bold;border:2px dashed #2b3139;padding:10px;display:inline-block;border-radius:10px;}.stats-container{display:flex;justify-content:center;gap:20px;margin-bottom:20px;}.stat-box{background-color:#1e2329;padding:15px 30px;border-radius:8px;font-weight:bold;border:1px solid #2b3139;}table{width:90%;max-width:1000px;margin:10px auto;border-collapse:collapse;background-color:#1e2329;border-radius:8px;}th,td{padding:12px;border-bottom:1px solid #2b3139;}th{background-color:#2b3139;color:#848e9c;}.buy{color:#0ecb81;font-weight:bold;}.sell{color:#f6465d;font-weight:bold;}.wait{color:#848e9c;}.spike{color:#f3ba2f;font-weight:bold;}</style></head><body><h1>🤖 LOMY Ultra-Fast Engine</h1><div class="wallet">💰 Balance: $<span id="wallet-balance">Loading...</span> USDT</div><div class="stats-container"><div class="stat-box">Trades: <span id="tot-trades">0</span></div><div class="stat-box">Profit: <span id="net-profit">0.00%</span></div></div><table><thead><tr><th>Symbol</th><th>Status</th><th>CMO</th><th>Whale</th></tr></thead><tbody id="live-table"><tr><td colspan="4">Scanning & Liquidating...</td></tr></tbody></table><script>async function loadData(){try{const res=await fetch('/api/data');const data=await res.json();document.getElementById('wallet-balance').innerText=data.balance;document.getElementById('tot-trades').innerText=data.stats.totalTrades;let profitEl=document.getElementById('net-profit');profitEl.innerText=data.stats.totalProfitPct.toFixed(2)+'%';profitEl.className=data.stats.totalProfitPct>=0?'buy':'sell';if(data.live.length>0){let liveTbody=document.getElementById('live-table');liveTbody.innerHTML='';data.live.forEach(item=>{let decClass=item.decision.includes('BOUGHT')||item.decision.includes('HOLDING')?'buy':item.decision.includes('SELL')||item.decision.includes('CLOSED')?'sell':'wait';liveTbody.innerHTML+=\`<tr><td>\${item.symbol}</td><td class="\${decClass}">\${item.decision}</td><td>\${item.cmo}</td><td class="\${item.spike.includes('YES')?'spike':''}">\${item.spike}</td></tr>\`;});}}catch(e){}}setInterval(loadData,4000);loadData();</script></body></html>`);
+    res.send(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Binance Testnet Bot</title><style>body{background-color:#0b0e11;color:#eaecef;font-family:Arial;text-align:center;padding:20px;}h1{color:#f3ba2f;}.wallet{font-size:24px;color:#0ecb81;margin-bottom:20px;font-weight:bold;border:2px dashed #2b3139;padding:10px;display:inline-block;border-radius:10px;}.stats-container{display:flex;justify-content:center;gap:20px;margin-bottom:20px;}.stat-box{background-color:#1e2329;padding:15px 30px;border-radius:8px;font-weight:bold;border:1px solid #2b3139;}table{width:90%;max-width:1000px;margin:10px auto;border-collapse:collapse;background-color:#1e2329;border-radius:8px;}th,td{padding:12px;border-bottom:1px solid #2b3139;}th{background-color:#2b3139;color:#848e9c;}.buy{color:#0ecb81;font-weight:bold;}.sell{color:#f6465d;font-weight:bold;}.wait{color:#848e9c;}.spike{color:#f3ba2f;font-weight:bold;}</style></head><body><h1>🤖 LOMY Ultra-Fast Engine</h1><div class="wallet">💰 Balance: $<span id="wallet-balance">Loading...</span> USDT</div><div class="stats-container"><div class="stat-box">Trades: <span id="tot-trades">0</span></div><div class="stat-box">Profit: <span id="net-profit">0.00%</span></div></div><table><thead><tr><th>Symbol</th><th>Status</th><th>CMO</th><th>Whale</th></tr></thead><tbody id="live-table"><tr><td colspan="4">Scanning...</td></tr></tbody></table><script>async function loadData(){try{const res=await fetch('/api/data');const data=await res.json();document.getElementById('wallet-balance').innerText=data.balance;document.getElementById('tot-trades').innerText=data.stats.totalTrades;let profitEl=document.getElementById('net-profit');profitEl.innerText=data.stats.totalProfitPct.toFixed(2)+'%';profitEl.className=data.stats.totalProfitPct>=0?'buy':'sell';if(data.live.length>0){let liveTbody=document.getElementById('live-table');liveTbody.innerHTML='';data.live.forEach(item=>{let decClass=item.decision.includes('BOUGHT')||item.decision.includes('HOLDING')?'buy':item.decision.includes('SELL')||item.decision.includes('CLOSED')?'sell':'wait';liveTbody.innerHTML+=\`<tr><td>\${item.symbol}</td><td class="\${decClass}">\${item.decision}</td><td>\${item.cmo}</td><td class="\${item.spike.includes('YES')?'spike':''}">\${item.spike}</td></tr>\`;});}}catch(e){}}setInterval(loadData,4000);loadData();</script></body></html>`);
 });
 
 app.listen(PORT, () => { console.log('🚀 LOMY Server running on port ' + PORT); });
