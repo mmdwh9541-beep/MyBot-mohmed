@@ -129,8 +129,11 @@ function formatQuantity(symbol, qty) {
 function formatPrice(symbol, price) {
     if (!symbolRules[symbol]) return price.toFixed(4);
     const tickSize = symbolRules[symbol].tickSize;
-    const precision = tickSize.toString().includes('.') ? tickSize.toString().split('.')[1].length : 0;
-    return price.toFixed(precision);
+    let precision = tickSize.toString().includes('.') ? tickSize.toString().split('.')[1].length : 0;
+    
+    // Fallback to ensure we don't truncate extremely small coins to zero
+    if (precision < 4) precision = 4;
+    return Number.parseFloat(price).toFixed(precision);
 }
 
 // ==========================================
@@ -196,12 +199,16 @@ async function managePosition(symbol, currentPrice, decision, dynamicSL = null) 
 
         // Calculate support level for entry
         const entrySupportPrice = currentPrice * (1 - RISK_RULES.pullbackEntryPct);
-        console.log(`\n⏳ [PLACING LIMIT BUY] ${symbol} at $${entrySupportPrice.toFixed(4)}...`);
+        console.log(`\n⏳ [PLACING LIMIT BUY] ${symbol} at $${formatPrice(symbol, entrySupportPrice)}...`);
         
         const order = await executeTrade(symbol, 'BUY', RISK_RULES.tradeAmountUSDT, null, entrySupportPrice);
         
         if (order && order.status === 'NEW') {
-            const finalSL = dynamicSL ? dynamicSL : entrySupportPrice * (1 - RISK_RULES.fallbackStopLossPct);
+            // Ensure dynamic SL is not higher than or equal to the actual buying price
+            let finalSL = dynamicSL ? dynamicSL : entrySupportPrice * (1 - RISK_RULES.fallbackStopLossPct);
+            if (finalSL >= entrySupportPrice) {
+                finalSL = entrySupportPrice * (1 - RISK_RULES.fallbackStopLossPct);
+            }
 
             activePositions[symbol] = { 
                 status: 'PENDING',
@@ -214,7 +221,7 @@ async function managePosition(symbol, currentPrice, decision, dynamicSL = null) 
             };
             await savePositions(); 
             
-            sendTelegramMessage(`🎣 <b>LIMIT ORDER PLACED</b>\n<b>Symbol:</b> ${symbol}\n<b>Waiting to Buy at:</b> $${entrySupportPrice.toFixed(4)}\n<b>SL:</b> $${finalSL.toFixed(4)}`);
+            sendTelegramMessage(`🎣 <b>LIMIT ORDER PLACED</b>\n<b>Symbol:</b> ${symbol}\n<b>Waiting to Buy at:</b> $${formatPrice(symbol, entrySupportPrice)}\n<b>SL:</b> $${formatPrice(symbol, finalSL)}`);
             return;
         }
     }
@@ -232,7 +239,7 @@ async function managePosition(symbol, currentPrice, decision, dynamicSL = null) 
                 trade.entryPrice = parseFloat(checkOrder.price || trade.targetEntryPrice);
                 trade.qty = parseFloat(checkOrder.executedQty);
                 memoryNeedsUpdate = true;
-                sendTelegramMessage(`🟢 <b>ORDER FILLED!</b>\n<b>Symbol:</b> ${symbol} bought at $${trade.entryPrice.toFixed(4)}`);
+                sendTelegramMessage(`🟢 <b>ORDER FILLED!</b>\n<b>Symbol:</b> ${symbol} bought at $${formatPrice(symbol, trade.entryPrice)}`);
                 await updateWalletBalance();
             } else {
                 const orderAgeMinutes = (Date.now() - trade.time) / (1000 * 60);
@@ -391,12 +398,12 @@ app.get('/api/data', (req, res) => {
     let positionsData = Object.keys(activePositions).map(sym => {
         let trade = activePositions[sym];
         if (trade.status === 'PENDING') {
-            return { symbol: sym, status: 'PENDING', pnl: 0, pnlUsdt: 0, sl: trade.stopLoss.toFixed(4) };
+            return { symbol: sym, status: 'PENDING', pnl: 0, pnlUsdt: 0, sl: formatPrice(sym, trade.stopLoss) };
         }
         const current = latestMarketPrices[sym] || trade.entryPrice;
         const pnlPct = (((current - trade.entryPrice) / trade.entryPrice) * 100).toFixed(2);
         const pnlUsdt = ((current - trade.entryPrice) * trade.qty).toFixed(2);
-        return { symbol: sym, status: 'ACTIVE', pnl: parseFloat(pnlPct), pnlUsdt: parseFloat(pnlUsdt), sl: trade.stopLoss.toFixed(4) };
+        return { symbol: sym, status: 'ACTIVE', pnl: parseFloat(pnlPct), pnlUsdt: parseFloat(pnlUsdt), sl: formatPrice(sym, trade.stopLoss) };
     });
     res.json({ positions: positionsData, balance: liveWalletBalance, stats: testStats });
 });
