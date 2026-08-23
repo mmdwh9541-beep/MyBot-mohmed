@@ -8,7 +8,7 @@ app.use(express.json());
 const PORT = process.env.PORT || 5000;
 
 // ==========================================
-// 📱 1. Telegram Settings (From Environment)
+// 📱 1. Telegram Settings
 // ==========================================
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
@@ -24,20 +24,20 @@ async function sendTelegramMessage(text) {
 }
 
 // ==========================================
-// 🔑 2. Binance API Settings (From Environment)
+// 🔑 2. Binance API Settings
 // ==========================================
 const API_KEY = process.env.BINANCE_API_KEY;
 const API_SECRET = process.env.BINANCE_API_SECRET;
 const TESTNET_URL = process.env.USE_TESTNET === 'false' ? 'https://api.binance.com' : 'https://testnet.binance.vision';
 
 // ==========================================
-// ⚙️ 3. Risk Management & Global Variables
+// ⚙️ 3. Risk Management & Global Variables (UPDATED)
 // ==========================================
 const RISK_RULES = {
     tradeAmountUSDT: 100,        
-    stopLossPct: 0.015,          // وقف الخسارة 1.5%
-    trailingActivationPct: 0.03, // جني الأرباح / تفعيل التتبع عند 3%
-    trailingDistancePct: 0.015   // مسافة التتبع المتحرك 1.5%
+    fallbackStopLossPct: 0.025,  // 2.5% fallback SL
+    trailingActivationPct: 0.025, // Activate trailing at 2.5% profit (Take Profit Start)
+    trailingDistancePct: 0.01    // Trailing distance 1% for 15m timeframe
 };
 
 let latestResults = [];
@@ -102,14 +102,11 @@ async function recoverActivePositions() {
                         entryPrice: currentPrice,
                         qty: qty,
                         highestPrice: currentPrice,
-                        stopLoss: currentPrice * (1 - RISK_RULES.stopLossPct),
+                        stopLoss: currentPrice * (1 - RISK_RULES.fallbackStopLossPct),
                         trailingActive: false,
                         time: new Date().toLocaleString()
                     };
-                    console.log(`✅ Recovered: ${symbol} | Qty: ${qty} | Price: $${currentPrice}`);
-                    
-                    const msg = `🔄 <b>Position Recovered</b>\n<b>Symbol:</b> ${symbol}\n<b>Quantity:</b> ${qty}\n<b>Tracking Price:</b> $${currentPrice}`;
-                    sendTelegramMessage(msg);
+                    console.log(`✅ Recovered: ${symbol} | Qty: ${qty}`);
                 } catch (e) { console.error(`⚠️ Could not recover ${symbol}:`, e.message); }
             }
         }
@@ -154,7 +151,7 @@ async function getTopActiveCoins(limit = 15) {
     } catch (e) { return ['BTCUSDT']; }
 }
 
-async function managePosition(symbol, currentPrice, decision) {
+async function managePosition(symbol, currentPrice, decision, dynamicSL = null) {
     if (decision === 'BUY' && !activePositions[symbol]) {
         console.log(`\n⏳ [ATTEMPTING BUY] ${symbol}...`);
         const orderResult = await executeTrade(symbol, 'BUY');
@@ -162,13 +159,16 @@ async function managePosition(symbol, currentPrice, decision) {
             const entryPrice = parseFloat(orderResult.fills[0] ? orderResult.fills[0].price : currentPrice);
             const qtyBought = parseFloat(orderResult.executedQty);
             
+            // Set Stop Loss: Use Dynamic SL if available, else use fallback
+            const finalSL = dynamicSL ? dynamicSL : entryPrice * (1 - RISK_RULES.fallbackStopLossPct);
+            
             activePositions[symbol] = {
                 entryPrice, qty: qtyBought, highestPrice: entryPrice,
-                stopLoss: entryPrice * (1 - RISK_RULES.stopLossPct),
+                stopLoss: finalSL,
                 trailingActive: false, time: new Date().toLocaleString()
             };
             
-            sendTelegramMessage(`🟢 <b>BUY EXECUTED</b>\n<b>Symbol:</b> ${symbol}\n<b>Price:</b> $${entryPrice}\n<b>Quantity:</b> ${qtyBought}`);
+            sendTelegramMessage(`🟢 <b>BUY EXECUTED</b>\n<b>Symbol:</b> ${symbol}\n<b>Price:</b> $${entryPrice}\n<b>SL Set At:</b> $${finalSL.toFixed(4)}`);
             updateWalletBalance(); 
             return 'BOUGHT';
         }
@@ -179,9 +179,14 @@ async function managePosition(symbol, currentPrice, decision) {
         if (currentPrice > trade.highestPrice) trade.highestPrice = currentPrice;
 
         const profitPct = (currentPrice - trade.entryPrice) / trade.entryPrice;
+        
+        // Check for trailing activation (Take profit logic)
         if (!trade.trailingActive && profitPct >= RISK_RULES.trailingActivationPct) {
             trade.trailingActive = true;
+            sendTelegramMessage(`🚀 <b>Target Hit! Trailing Stop Activated</b>\n<b>Symbol:</b> ${symbol}\n<b>Current Profit:</b> ${(profitPct*100).toFixed(2)}%`);
         }
+        
+        // Update Stop Loss if trailing is active
         if (trade.trailingActive) {
             const newSL = trade.highestPrice * (1 - RISK_RULES.trailingDistancePct);
             if (newSL > trade.stopLoss) trade.stopLoss = newSL;
@@ -194,7 +199,7 @@ async function managePosition(symbol, currentPrice, decision) {
             
             if (orderResult && orderResult.status === 'FILLED') {
                 const finalProfitPct = parseFloat(((currentPrice - trade.entryPrice) / trade.entryPrice * 100).toFixed(2));
-                const exitReason = currentPrice <= trade.stopLoss ? 'Stop Loss Hit' : 'SELL Signal';
+                const exitReason = currentPrice <= trade.stopLoss ? 'Stop Loss / Trailing Hit' : 'SELL Signal';
                 
                 testStats.totalTrades++;
                 if (finalProfitPct > 0) testStats.winningTrades++;
@@ -203,7 +208,7 @@ async function managePosition(symbol, currentPrice, decision) {
                 tradeHistory.unshift({ time: new Date().toLocaleTimeString(), symbol, reason: exitReason, profitPct: finalProfitPct });
                 if (tradeHistory.length > 50) tradeHistory.pop();
                 
-                const emoji = finalProfitPct >= 0 ? '✅ PROFIT' : '❌ LOSS';
+                const emoji = finalProfitPct > 0 ? '✅ PROFIT' : '❌ LOSS';
                 sendTelegramMessage(`🔴 <b>SELL EXECUTED</b>\n<b>Symbol:</b> ${symbol}\n<b>Reason:</b> ${exitReason}\n<b>Result:</b> ${emoji} (${finalProfitPct}%)`);
 
                 delete activePositions[symbol]; 
@@ -225,18 +230,31 @@ async function analyzeMarket(symbol, interval) {
         const currentPrice = candles[candles.length - 1].close; 
         const volSMA = calculateSMA(candles, 10, 'volume');
         const cmo = calculateCMO(candles, 9);
+        
+        // Signal is based on the closed candle
         const candle = candles[candles.length - 2];
+        const signalLow = candle.low; // To be used for dynamic stop loss
 
         const highVolume = candle.volume > (volSMA[volSMA.length - 2] * 1.3);
         const bodyRatio = (candle.high - candle.low) > 0 ? (Math.abs(candle.close - candle.open) / (candle.high - candle.low)) : 0;
+        
         const bullish = candle.close > candle.open && bodyRatio > 0.5 && highVolume;
         const bearish = candle.close < candle.open && bodyRatio > 0.5 && highVolume;
 
         let decision = 'WAIT';
-        if (bullish && cmo[cmo.length - 2] > 30) decision = 'BUY';
-        if (bearish && cmo[cmo.length - 2] < -30) decision = 'SELL';
+        let dynamicSL = null;
 
-        const tradeStatus = await managePosition(symbol, currentPrice, decision);
+        if (bullish && cmo[cmo.length - 2] > 30) {
+            decision = 'BUY';
+            // Set dynamic stop loss slightly below the signal candle's low (0.2% buffer)
+            dynamicSL = signalLow * 0.998; 
+        }
+        
+        if (bearish && cmo[cmo.length - 2] < -30) {
+            decision = 'SELL';
+        }
+
+        const tradeStatus = await managePosition(symbol, currentPrice, decision, dynamicSL);
         return { symbol, decision: tradeStatus, cmo: cmo[cmo.length - 2].toFixed(2), spike: highVolume ? 'YES' : 'NO' };
     } catch (e) { return null; }
 }
@@ -245,7 +263,8 @@ async function runFullScan() {
     const topCoins = await getTopActiveCoins(15);
     let currentScan = [];
     for (const coin of topCoins) {
-        const result = await analyzeMarket(coin, '15m');
+        // Timeframe changed back to 15m as requested
+        const result = await analyzeMarket(coin, '15m'); 
         if (result) currentScan.push(result);
         await new Promise(resolve => setTimeout(resolve, 200));
     }
@@ -256,13 +275,12 @@ async function runFullScan() {
 setTimeout(recoverActivePositions, 3000); 
 setTimeout(updateWalletBalance, 2000); 
 setInterval(updateWalletBalance, 60000);
-setInterval(runFullScan, 15000);
+setInterval(runFullScan, 15000); // Scans every 15 seconds
 runFullScan();
 
 // ==========================================
 // 🌐 8. Web Routes (Webhook + Dashboard)
 // ==========================================
-
 app.post('/webhook', (req, res) => {
     const alertData = req.body;
     sendTelegramMessage(`🚨 <b>TradingView Alert</b> 🚨\n<b>Symbol:</b> ${alertData.symbol || 'N/A'}\n<b>Action:</b> ${alertData.action || 'N/A'}\n<b>Price:</b> ${alertData.price || 'N/A'}`);
@@ -274,7 +292,7 @@ app.get('/api/data', (req, res) => {
 });
 
 app.get('/', (req, res) => {
-    res.send(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Binance Testnet Bot</title><style>body{background-color:#0b0e11;color:#eaecef;font-family:Arial;text-align:center;padding:20px;}h1{color:#f3ba2f;}.wallet{font-size:24px;color:#0ecb81;margin-bottom:20px;font-weight:bold;border:2px dashed #2b3139;padding:10px;display:inline-block;border-radius:10px;}.stats-container{display:flex;justify-content:center;gap:20px;margin-bottom:20px;}.stat-box{background-color:#1e2329;padding:15px 30px;border-radius:8px;font-weight:bold;border:1px solid #2b3139;}table{width:90%;max-width:1000px;margin:10px auto;border-collapse:collapse;background-color:#1e2329;border-radius:8px;}th,td{padding:12px;border-bottom:1px solid #2b3139;}th{background-color:#2b3139;color:#848e9c;}.buy{color:#0ecb81;font-weight:bold;}.sell{color:#f6465d;font-weight:bold;}.wait{color:#848e9c;}.spike{color:#f3ba2f;font-weight:bold;}</style></head><body><h1>🤖 LOMY Ultra-Fast Engine</h1><div class="wallet">💰 Balance: $<span id="wallet-balance">Loading...</span> USDT</div><div class="stats-container"><div class="stat-box">Trades: <span id="tot-trades">0</span></div><div class="stat-box">Profit: <span id="net-profit">0.00%</span></div></div><table><thead><tr><th>Symbol</th><th>Status</th><th>CMO</th><th>Whale</th></tr></thead><tbody id="live-table"><tr><td colspan="4">Scanning...</td></tr></tbody></table><script>async function loadData(){try{const res=await fetch('/api/data');const data=await res.json();document.getElementById('wallet-balance').innerText=data.balance;document.getElementById('tot-trades').innerText=data.stats.totalTrades;let profitEl=document.getElementById('net-profit');profitEl.innerText=data.stats.totalProfitPct.toFixed(2)+'%';profitEl.className=data.stats.totalProfitPct>=0?'buy':'sell';if(data.live.length>0){let liveTbody=document.getElementById('live-table');liveTbody.innerHTML='';data.live.forEach(item=>{let decClass=item.decision.includes('BOUGHT')||item.decision.includes('HOLDING')?'buy':item.decision.includes('SELL')||item.decision.includes('CLOSED')?'sell':'wait';liveTbody.innerHTML+=\`<tr><td>\${item.symbol}</td><td class="\${decClass}">\${item.decision}</td><td>\${item.cmo}</td><td class="\${item.spike.includes('YES')?'spike':''}">\${item.spike}</td></tr>\`;});}}catch(e){}}setInterval(loadData,4000);loadData();</script></body></html>`);
+    res.send(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>LOMY Bot Dashboard</title><style>body{background-color:#0b0e11;color:#eaecef;font-family:Arial;text-align:center;padding:20px;}h1{color:#f3ba2f;}.wallet{font-size:24px;color:#0ecb81;margin-bottom:20px;font-weight:bold;border:2px dashed #2b3139;padding:10px;display:inline-block;border-radius:10px;}.stats-container{display:flex;justify-content:center;gap:20px;margin-bottom:20px;}.stat-box{background-color:#1e2329;padding:15px 30px;border-radius:8px;font-weight:bold;border:1px solid #2b3139;}table{width:90%;max-width:1000px;margin:10px auto;border-collapse:collapse;background-color:#1e2329;border-radius:8px;}th,td{padding:12px;border-bottom:1px solid #2b3139;}th{background-color:#2b3139;color:#848e9c;}.buy{color:#0ecb81;font-weight:bold;}.sell{color:#f6465d;font-weight:bold;}.wait{color:#848e9c;}.spike{color:#f3ba2f;font-weight:bold;}</style></head><body><h1>🤖 LOMY Engine (15m Timeframe)</h1><div class="wallet">💰 Balance: $<span id="wallet-balance">Loading...</span> USDT</div><div class="stats-container"><div class="stat-box">Trades: <span id="tot-trades">0</span></div><div class="stat-box">Profit: <span id="net-profit">0.00%</span></div></div><table><thead><tr><th>Symbol</th><th>Status</th><th>CMO</th><th>Whale</th></tr></thead><tbody id="live-table"><tr><td colspan="4">Scanning...</td></tr></tbody></table><script>async function loadData(){try{const res=await fetch('/api/data');const data=await res.json();document.getElementById('wallet-balance').innerText=data.balance;document.getElementById('tot-trades').innerText=data.stats.totalTrades;let profitEl=document.getElementById('net-profit');profitEl.innerText=data.stats.totalProfitPct.toFixed(2)+'%';profitEl.className=data.stats.totalProfitPct>=0?'buy':'sell';if(data.live.length>0){let liveTbody=document.getElementById('live-table');liveTbody.innerHTML='';data.live.forEach(item=>{let decClass=item.decision.includes('BOUGHT')||item.decision.includes('HOLDING')?'buy':item.decision.includes('SELL')||item.decision.includes('CLOSED')?'sell':'wait';liveTbody.innerHTML+=\`<tr><td>\${item.symbol}</td><td class="\${decClass}">\${item.decision}</td><td>\${item.cmo}</td><td class="\${item.spike.includes('YES')?'spike':''}">\${item.spike}</td></tr>\`;});}}catch(e){}}setInterval(loadData,4000);loadData();</script></body></html>`);
 });
 
 app.listen(PORT, () => { console.log('🚀 LOMY Server running on port ' + PORT); });
