@@ -21,8 +21,8 @@ const TESTNET_URL = 'https://testnet.binance.vision';
 // ==========================================
 const RISK_RULES = {
     tradeAmountUSDT: 100,        
-    stopLossPct: 0.02,    // 2%
-    takeProfitPct: 0.04   // 4%
+    stopLossPct: 0.03,    // وقف خسارة 3% (يتحمل ذبذبة السوق)
+    takeProfitPct: 0.05   // جني أرباح 5% (هدف سريع وواقعي)
 };
 
 let exchangeRules = {}; 
@@ -81,7 +81,6 @@ async function loadExchangeRules() {
 function formatQuantity(symbol, qty) {
     if (!exchangeRules[symbol]) return qty.toString();
     const stepSize = exchangeRules[symbol].stepSize.toString();
-    // معالجة الكسور لتجنب أخطاء LOT_SIZE من باينانس
     const precision = stepSize.includes('.') ? stepSize.split('.')[1].replace(/0+$/, '').length : 0;
     const factor = Math.pow(10, precision);
     return (Math.floor(qty * factor) / factor).toFixed(precision);
@@ -167,7 +166,7 @@ async function processTradeAction(symbol, currentPrice, decision) {
                 stopLoss: entryPrice * (1 - RISK_RULES.stopLossPct),
                 takeProfit: entryPrice * (1 + RISK_RULES.takeProfitPct)
             };
-            sendTelegramMessage(`🟢 <b>تم الشراء بنجاح</b>\n<b>العملة:</b> ${symbol}\n<b>الدخول:</b> $${entryPrice.toFixed(4)}\n<b>الهدف:</b> $${activePositions[symbol].takeProfit.toFixed(4)}\n<b>الوقف:</b> $${activePositions[symbol].stopLoss.toFixed(4)}`);
+            sendTelegramMessage(`🟢 <b>تم الشراء بنجاح</b>\n<b>العملة:</b> ${symbol}\n<b>الدخول:</b> $${entryPrice.toFixed(4)}\n<b>الهدف (5%):</b> $${activePositions[symbol].takeProfit.toFixed(4)}\n<b>الوقف (3%):</b> $${activePositions[symbol].stopLoss.toFixed(4)}`);
             updateWalletBalance(); 
             return 'BOUGHT';
         }
@@ -183,7 +182,7 @@ async function processTradeAction(symbol, currentPrice, decision) {
             const orderResult = await executeTrade(symbol, 'SELL', trade.qty);
             if (orderResult && (orderResult.status === 'FILLED' || orderResult.status === 'NEW')) {
                 const profitUSDT = (currentPrice - trade.entryPrice) * trade.qty; 
-                let exitReason = hitSL ? 'ضرب وقف الخسارة (2%)' : (hitTP ? 'ضرب هدف الربح (4%)' : 'إشارة بيع عكسية');
+                let exitReason = hitSL ? 'ضرب وقف الخسارة (3%)' : (hitTP ? 'ضرب هدف الربح (5%)' : 'إشارة بيع عكسية');
                 
                 testStats.totalTrades++;
                 if (profitUSDT > 0) testStats.winningTrades++;
@@ -203,7 +202,7 @@ async function processTradeAction(symbol, currentPrice, decision) {
 }
 
 // ==========================================
-// 📊 8. Super Scanner (Sweeping 150 Coins safely)
+// 📊 8. Super Scanner (Sweeping 200 Coins safely)
 // ==========================================
 function calculateSMA(data, period, key = 'volume') {
     let smaArray = [];
@@ -233,7 +232,8 @@ function calculateCMO(data, period) {
 
 async function analyzeMarket(symbol) {
     try {
-        const res = await axios.get(`${TESTNET_URL}/api/v3/klines?symbol=${symbol}&interval=15m&limit=30`);
+        // تم تغيير الإطار الزمني إلى 5m لسرعة الدخول
+        const res = await axios.get(`${TESTNET_URL}/api/v3/klines?symbol=${symbol}&interval=5m&limit=30`);
         if (!res.data || res.data.length < 30) return null;
         
         const candles = res.data.map(c => ({ open: parseFloat(c[1]), high: parseFloat(c[2]), low: parseFloat(c[3]), close: parseFloat(c[4]), volume: parseFloat(c[5]) }));
@@ -258,14 +258,13 @@ async function runFullScan() {
     try {
         const response = await axios.get(`${TESTNET_URL}/api/v3/ticker/24hr`);
         
-        // استبعاد العملات المستقرة تماماً
         const ignoredCoins = ['USDC', 'FDUSD', 'TUSD', 'USDP', 'BUSD', 'EUR', 'USD1'];
         
-        // جلب أفضل 150 عملة لضمان أمان الـ API وكفاءة السيولة
+        // جلب أفضل 200 عملة بدلاً من 150
         let topCoins = response.data
             .filter(t => t.symbol.endsWith('USDT') && !ignoredCoins.some(stable => t.symbol.includes(stable)))
             .sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume))
-            .slice(0, 150).map(t => t.symbol);
+            .slice(0, 200).map(t => t.symbol);
         
         let currentScan = [];
         
@@ -276,11 +275,10 @@ async function runFullScan() {
                 currentScan.push(result);
             }
             
-            // راحة 150 ملي ثانية لتجنب الحظر
+            // راحة 150 ملي ثانية لتجنب الحظر من باينانس
             await new Promise(resolve => setTimeout(resolve, 150));
         }
 
-        // عرض 5 عملات دائماً كدليل على عمل البوت
         for (let i = 0; i < 5; i++) {
             if (topCoins[i] && !currentScan.find(c => c.symbol === topCoins[i])) {
                 currentScan.push({ symbol: topCoins[i], decision: 'WAIT', cmo: '0.00', spike: 'NO' });
@@ -291,7 +289,7 @@ async function runFullScan() {
     } catch (e) { 
         console.error("Scanner error:", e.message); 
     } finally {
-        setTimeout(runFullScan, 5000); // تكرار الفحص بعد 5 ثوانٍ
+        setTimeout(runFullScan, 5000); 
     }
 }
 
@@ -324,7 +322,7 @@ app.post('/api/emergency-close', async (req, res) => {
                 closedCount++;
             }
         } catch (e) { console.error(`Error closing ${symbol}`, e.message); }
-        await new Promise(resolve => setTimeout(resolve, 200)); // فاصل زمني لتجنب الرفض
+        await new Promise(resolve => setTimeout(resolve, 200)); 
     }
     
     updateWalletBalance();
@@ -344,7 +342,7 @@ app.get('/', (req, res) => {
     
     <div><button class="btn-danger" onclick="emergencyClose()">🚨 إغلاق كل الصفقات (بسعر السوق)</button></div>
     
-    <div class="stats-container"><div class="stat-box">Trades: <span id="tot-trades">0</span></div><div class="stat-box">Profit: <span id="net-profit">$0.00</span></div></div><div style="overflow-x:auto;"><table><thead><tr><th>Symbol</th><th>Status</th><th>CMO</th><th>Whale</th></tr></thead><tbody id="live-table"><tr><td colspan="4">Scanning Market (Top 150)... 📡</td></tr></tbody></table></div><script>async function loadData(){try{const res=await fetch('/api/data');const data=await res.json();document.getElementById('wallet-balance').innerText=data.balance;document.getElementById('tot-trades').innerText=data.stats.totalTrades;let profitEl=document.getElementById('net-profit');profitEl.innerText='$' + data.stats.totalProfitUSDT.toFixed(2);profitEl.className=data.stats.totalProfitUSDT>=0?'buy':'sell';if(data.live.length>0){let liveTbody=document.getElementById('live-table');liveTbody.innerHTML='';data.live.forEach(item=>{let decClass=item.decision.includes('BOUGHT')||item.decision.includes('HOLDING')?'buy':item.decision.includes('SELL')||item.decision.includes('CLOSED')?'sell':'wait';liveTbody.innerHTML+=\`<tr><td>\${item.symbol}</td><td class="\${decClass}">\${item.decision}</td><td>\${item.cmo}</td><td class="\${item.spike.includes('YES')?'spike':''}">\${item.spike}</td></tr>\`;});}}catch(e){}}setInterval(loadData,4000);loadData();
+    <div class="stats-container"><div class="stat-box">Trades: <span id="tot-trades">0</span></div><div class="stat-box">Profit: <span id="net-profit">$0.00</span></div></div><div style="overflow-x:auto;"><table><thead><tr><th>Symbol</th><th>Status</th><th>CMO</th><th>Whale</th></tr></thead><tbody id="live-table"><tr><td colspan="4">Scanning Market (Top 200)... 📡</td></tr></tbody></table></div><script>async function loadData(){try{const res=await fetch('/api/data');const data=await res.json();document.getElementById('wallet-balance').innerText=data.balance;document.getElementById('tot-trades').innerText=data.stats.totalTrades;let profitEl=document.getElementById('net-profit');profitEl.innerText='$' + data.stats.totalProfitUSDT.toFixed(2);profitEl.className=data.stats.totalProfitUSDT>=0?'buy':'sell';if(data.live.length>0){let liveTbody=document.getElementById('live-table');liveTbody.innerHTML='';data.live.forEach(item=>{let decClass=item.decision.includes('BOUGHT')||item.decision.includes('HOLDING')?'buy':item.decision.includes('SELL')||item.decision.includes('CLOSED')?'sell':'wait';liveTbody.innerHTML+=\`<tr><td>\${item.symbol}</td><td class="\${decClass}">\${item.decision}</td><td>\${item.cmo}</td><td class="\${item.spike.includes('YES')?'spike':''}">\${item.spike}</td></tr>\`;});}}catch(e){}}setInterval(loadData,4000);loadData();
     async function emergencyClose(){if(!confirm('هل أنت متأكد من إغلاق جميع الصفقات المفتوحة فوراً؟')) return;try{const res=await fetch('/api/emergency-close',{method:'POST'});const data=await res.json();alert(data.msg);loadData();}catch(e){alert('حدث خطأ بالاتصال بالسيرفر');}}
     </script></body></html>`);
 });
@@ -359,6 +357,5 @@ app.listen(PORT, async () => {
     setTimeout(updateWalletBalance, 2000); 
     setInterval(updateWalletBalance, 60000);
     
-    // بدء المحرك
     runFullScan();
 });
