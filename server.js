@@ -21,8 +21,8 @@ const TESTNET_URL = 'https://testnet.binance.vision';
 // ==========================================
 const RISK_RULES = {
     tradeAmountUSDT: 100,        
-    stopLossPct: 0.03,    // وقف خسارة 3% (يتحمل ذبذبة السوق)
-    takeProfitPct: 0.05   // جني أرباح 5% (هدف سريع وواقعي)
+    stopLossPct: 0.03,    // 3% 
+    takeProfitPct: 0.05   // 5% 
 };
 
 let exchangeRules = {}; 
@@ -49,7 +49,7 @@ async function processTelegramQueue() {
         await axios.post(url, { chat_id: CHAT_ID, text: text, parse_mode: 'HTML' });
     } catch (error) {
         if (error.response && error.response.status === 429) {
-            telegramQueue.unshift(text); // إعادة الرسالة للطابور إذا تم الحظر المؤقت
+            telegramQueue.unshift(text); 
             await new Promise(r => setTimeout(r, 3000)); 
         }
     }
@@ -75,7 +75,7 @@ async function loadExchangeRules() {
             };
         });
         console.log('✅ Exchange Rules Loaded.');
-    } catch (e) { console.error('❌ Error loading exchange info', e.message); }
+    } catch (e) { }
 }
 
 function formatQuantity(symbol, qty) {
@@ -100,9 +100,7 @@ async function binancePrivateRequest(endpoint, method = 'GET', params = {}) {
     try {
         const response = await axios({ method: method, url: url, headers: { 'X-MBX-APIKEY': API_KEY } });
         return response.data;
-    } catch (error) { 
-        return null; 
-    }
+    } catch (error) { return null; }
 }
 
 async function updateWalletBalance() {
@@ -152,7 +150,7 @@ async function recoverActivePositions() {
 }
 
 // ==========================================
-// 🧠 7. Auto-Trading Engine
+// 🧠 7. Auto-Trading Engine (STRICT TP/SL)
 // ==========================================
 async function processTradeAction(symbol, currentPrice, decision) {
     if (decision === 'BUY' && !activePositions[symbol]) {
@@ -174,15 +172,16 @@ async function processTradeAction(symbol, currentPrice, decision) {
 
     if (activePositions[symbol]) {
         let trade = activePositions[symbol];
+        
+        // البيع فقط عند ضرب الهدف أو الوقف (تم إلغاء الإشارة العكسية نهائياً)
         const hitSL = currentPrice <= trade.stopLoss;
         const hitTP = currentPrice >= trade.takeProfit;
-        const forceSell = decision === 'SELL';
 
-        if (hitSL || hitTP || forceSell) {
+        if (hitSL || hitTP) {
             const orderResult = await executeTrade(symbol, 'SELL', trade.qty);
             if (orderResult && (orderResult.status === 'FILLED' || orderResult.status === 'NEW')) {
                 const profitUSDT = (currentPrice - trade.entryPrice) * trade.qty; 
-                let exitReason = hitSL ? 'ضرب وقف الخسارة (3%)' : (hitTP ? 'ضرب هدف الربح (5%)' : 'إشارة بيع عكسية');
+                let exitReason = hitSL ? 'ضرب وقف الخسارة (3%)' : 'ضرب هدف الربح (5%)';
                 
                 testStats.totalTrades++;
                 if (profitUSDT > 0) testStats.winningTrades++;
@@ -202,7 +201,7 @@ async function processTradeAction(symbol, currentPrice, decision) {
 }
 
 // ==========================================
-// 📊 8. Super Scanner (Sweeping 200 Coins safely)
+// 📊 8. Super Scanner (Top 200 / 5m / 150ms delay)
 // ==========================================
 function calculateSMA(data, period, key = 'volume') {
     let smaArray = [];
@@ -232,7 +231,6 @@ function calculateCMO(data, period) {
 
 async function analyzeMarket(symbol) {
     try {
-        // تم تغيير الإطار الزمني إلى 5m لسرعة الدخول
         const res = await axios.get(`${TESTNET_URL}/api/v3/klines?symbol=${symbol}&interval=5m&limit=30`);
         if (!res.data || res.data.length < 30) return null;
         
@@ -247,8 +245,7 @@ async function analyzeMarket(symbol) {
         
         let decision = 'WAIT';
         if (candle.close > candle.open && bodyRatio > 0.5 && highVolume && cmo[cmo.length - 2] > 30) decision = 'BUY';
-        if (candle.close < candle.open && bodyRatio > 0.5 && highVolume && cmo[cmo.length - 2] < -30) decision = 'SELL';
-
+        
         const tradeStatus = await processTradeAction(symbol, currentPrice, decision);
         return { symbol, decision: tradeStatus, cmo: cmo[cmo.length - 2].toFixed(2), spike: highVolume ? 'YES' : 'NO' };
     } catch (e) { return null; }
@@ -260,7 +257,6 @@ async function runFullScan() {
         
         const ignoredCoins = ['USDC', 'FDUSD', 'TUSD', 'USDP', 'BUSD', 'EUR', 'USD1'];
         
-        // جلب أفضل 200 عملة بدلاً من 150
         let topCoins = response.data
             .filter(t => t.symbol.endsWith('USDT') && !ignoredCoins.some(stable => t.symbol.includes(stable)))
             .sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume))
@@ -275,7 +271,6 @@ async function runFullScan() {
                 currentScan.push(result);
             }
             
-            // راحة 150 ملي ثانية لتجنب الحظر من باينانس
             await new Promise(resolve => setTimeout(resolve, 150));
         }
 
@@ -287,7 +282,6 @@ async function runFullScan() {
 
         latestResults = currentScan; 
     } catch (e) { 
-        console.error("Scanner error:", e.message); 
     } finally {
         setTimeout(runFullScan, 5000); 
     }
@@ -321,7 +315,7 @@ app.post('/api/emergency-close', async (req, res) => {
                 delete activePositions[symbol];
                 closedCount++;
             }
-        } catch (e) { console.error(`Error closing ${symbol}`, e.message); }
+        } catch (e) { }
         await new Promise(resolve => setTimeout(resolve, 200)); 
     }
     
