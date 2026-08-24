@@ -20,10 +20,10 @@ const TESTNET_URL = 'https://testnet.binance.vision';
 // ⚙️ 2. Risk Management & Global Variables
 // ==========================================
 const RISK_RULES = {
-    maxTrades: 20,           // أقصى عدد للصفقات المفتوحة معاً
-    stopLossPct: 0.01,       // 1% وقف خسارة
-    takeProfitPct: 0.02,     // 2% هدف ربح
-    dailyLossLimitPct: 0.10  // 10% حد أقصى للخسارة اليومية من إجمالي المحفظة
+    maxTrades: 20,           // Maximum concurrent open positions
+    stopLossPct: 0.01,       // 1% Stop Loss
+    takeProfitPct: 0.02,     // 2% Take Profit
+    dailyLossLimitPct: 0.10  // 10% Maximum daily loss limit from total portfolio equity
 };
 
 let exchangeRules = {}; 
@@ -31,9 +31,9 @@ let latestResults = [];
 let activePositions = {}; 
 let tradeHistory = []; 
 let testStats = { totalTrades: 0, winningTrades: 0, totalProfitUSDT: 0 };
-let liveWalletBalance = "0.00"; // رصيد الـ USDT المتاح (الحر) فقط
+let liveWalletBalance = "0.00"; // Available free USDT balance only
 
-// 🛑 متغيرات حماية الخسارة اليومية
+// 🛑 Daily loss protection variables
 let dailyPnL = 0; 
 let currentDay = new Date().getUTCDate();
 let tradingPaused = false;
@@ -71,7 +71,6 @@ function sendTelegramMessage(text) {
 // ==========================================
 // 🛡️ 4. Account Equity & Reset Logic
 // ==========================================
-// حساب إجمالي قيمة المحفظة (الكاش الحر + قيمة الصفقات المفتوحة)
 function getTotalEquity() {
     let total = parseFloat(liveWalletBalance) || 0;
     for (let sym in activePositions) {
@@ -87,7 +86,7 @@ function checkDailyReset() {
         dailyPnL = 0;
         if (tradingPaused) {
             tradingPaused = false;
-            sendTelegramMessage("🌅 <b>يوم تداول جديد!</b>\nتم تصفير عداد الخسارة اليومية وإعادة تفعيل البوت لاصطياد الفرص.");
+            sendTelegramMessage("🌅 <b>New Trading Day!</b>\nDaily loss counter reset and bot re-enabled.");
         }
     }
 }
@@ -109,4 +108,11 @@ function formatQuantity(symbol, qty) {
     if (!exchangeRules[symbol]) return qty.toString();
     const stepSize = exchangeRules[symbol].stepSize.toString();
     const precision = stepSize.includes('.') ? stepSize.split('.')[1].replace(/0+$/, '').length : 0;
-    const facto
+    const factor = Math.pow(10, precision);
+    return (Math.floor(qty * factor) / factor).toFixed(precision);
+}
+
+// ==========================================
+// 🔐 6. Binance API Functions
+// ==========================================
+async function binancePrivateRequest(endpoint, method = 'GET', params = {
