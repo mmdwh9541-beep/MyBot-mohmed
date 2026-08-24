@@ -1,13 +1,14 @@
 {
-  "name": "lomy-trading-bot",
+  "name": "binance-bot",
   "version": "1.0.0",
-  "description": "Trading Webhook with Telegram Alerts",
+  "description": "Binance Trading Bot",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "axios": "^1.6.2"
+    "axios": "^1.6.0",
+    "dotenv": "^16.4.0",
+    "express": "^4.19.0"
   }
 }
