@@ -3,11 +3,11 @@ const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
 
-// 🛡️ مراقبة الأخطاء لمنع انهيار السيرفر
+// 🛡️ حماية قصوى ضد انهيار السيرفر
 process.on('uncaughtException', (err) => {
     console.error('🔥 UNCAUGHT EXCEPTION:', err);
 });
-process.on('unhandledRejection', (reason, promise) => {
+process.on('unhandledRejection', (reason) => {
     console.error('🔥 UNHANDLED REJECTION:', reason);
 });
 
@@ -16,7 +16,7 @@ app.use(express.json());
 const PORT = process.env.PORT || 5000;
 
 // ==========================================
-// 📱 1. Environment Variables (Secure)
+// 📱 1. Environment Variables
 // ==========================================
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
@@ -25,7 +25,7 @@ const API_SECRET = process.env.BINANCE_API_SECRET;
 const TESTNET_URL = 'https://testnet.binance.vision'; 
 
 // ==========================================
-// ⚙️ 2. Risk Management & Global Variables
+// ⚙️ 2. Risk Management & Variables
 // ==========================================
 const RISK_RULES = {
     maxTrades: 20,           
@@ -38,7 +38,7 @@ let exchangeRules = {};
 let latestResults = [];
 let activePositions = {}; 
 let testStats = { totalTrades: 0, winningTrades: 0, totalProfitUSDT: 0 };
-let liveWalletBalance = "0.00"; 
+let liveWalletBalance = "100.00"; // قيمة افتراضية آمنة لمنع الانهيار
 
 let dailyPnL = 0; 
 let currentDay = new Date().getUTCDate();
@@ -75,12 +75,16 @@ function sendTelegramMessage(text) {
 }
 
 // ==========================================
-// 🛡️ 4. Account Equity & Reset Logic
+// 🛡️ 4. Account Equity & Safe Math
 // ==========================================
 function getTotalEquity() {
-    let total = parseFloat(liveWalletBalance) || 0;
+    let total = parseFloat(liveWalletBalance);
+    if (isNaN(total)) total = 100.0;
+    
     for (let sym in activePositions) {
-        total += (activePositions[sym].qty * activePositions[sym].entryPrice);
+        if (activePositions[sym] && activePositions[sym].qty && activePositions[sym].entryPrice) {
+            total += (activePositions[sym].qty * activePositions[sym].entryPrice);
+        }
     }
     return total;
 }
@@ -92,7 +96,7 @@ function checkDailyReset() {
         dailyPnL = 0;
         if (tradingPaused) {
             tradingPaused = false;
-            sendTelegramMessage("🌅 <b>يوم تداول جديد!</b>\nتم تصفير عداد الخسارة اليومية وإعادة تفعيل البوت.");
+            sendTelegramMessage("🌅 <b>يوم تداول جديد!</b> تم تصفير عداد الخسارة اليومية.");
         }
     }
 }
@@ -108,13 +112,11 @@ async function loadExchangeRules() {
                 const lotSize = s.filters.find(f => f.filterType === 'LOT_SIZE');
                 exchangeRules[s.symbol] = { stepSize: lotSize ? parseFloat(lotSize.stepSize) : 1 };
             });
-            console.log('✅ Exchange Rules Loaded.');
         }
-    } catch (e) { 
-        console.error('❌ Error loading exchange rules:', e.message);
-    }
+    } catch (e) { }
 }
 
 function formatQuantity(symbol, qty) {
     if (!exchangeRules[symbol]) return qty.toString();
-    const stepSize = exchangeRules[symbol].stepSize.to
+    try {
+        const stepSize = exchangeRu
