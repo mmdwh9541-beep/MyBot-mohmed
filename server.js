@@ -21,8 +21,8 @@ const TESTNET_URL = 'https://testnet.binance.vision';
 // ==========================================
 const RISK_RULES = {
     tradeAmountUSDT: 100,        
-    stopLossPct: 0.03,    // 3% 
-    takeProfitPct: 0.05   // 5% 
+    stopLossPct: 0.03,    // 3% وقف خسارة صارم يتحمل تذبذب الكريبتو
+    takeProfitPct: 0.05   // 5% هدف ربح واقعي وسريع
 };
 
 let exchangeRules = {}; 
@@ -75,7 +75,7 @@ async function loadExchangeRules() {
             };
         });
         console.log('✅ Exchange Rules Loaded.');
-    } catch (e) { }
+    } catch (e) { console.error('❌ Error loading exchange rules'); }
 }
 
 function formatQuantity(symbol, qty) {
@@ -150,9 +150,10 @@ async function recoverActivePositions() {
 }
 
 // ==========================================
-// 🧠 7. Auto-Trading Engine (STRICT TP/SL)
+// 🧠 7. Auto-Trading Engine (Strict TP/SL Only)
 // ==========================================
 async function processTradeAction(symbol, currentPrice, decision) {
+    // الشراء
     if (decision === 'BUY' && !activePositions[symbol]) {
         const orderResult = await executeTrade(symbol, 'BUY');
         if (orderResult && orderResult.status === 'FILLED') {
@@ -170,10 +171,10 @@ async function processTradeAction(symbol, currentPrice, decision) {
         }
     }
 
+    // إدارة الصفقات (لا توجد إشارة عكسية، يعتمد فقط على الوقف والهدف)
     if (activePositions[symbol]) {
         let trade = activePositions[symbol];
         
-        // البيع فقط عند ضرب الهدف أو الوقف (تم إلغاء الإشارة العكسية نهائياً)
         const hitSL = currentPrice <= trade.stopLoss;
         const hitTP = currentPrice >= trade.takeProfit;
 
@@ -201,7 +202,7 @@ async function processTradeAction(symbol, currentPrice, decision) {
 }
 
 // ==========================================
-// 📊 8. Super Scanner (Top 200 / 5m / 150ms delay)
+// 📊 8. Super Scanner (Confirmed Close & 200 Coins)
 // ==========================================
 function calculateSMA(data, period, key = 'volume') {
     let smaArray = [];
@@ -235,19 +236,32 @@ async function analyzeMarket(symbol) {
         if (!res.data || res.data.length < 30) return null;
         
         const candles = res.data.map(c => ({ open: parseFloat(c[1]), high: parseFloat(c[2]), low: parseFloat(c[3]), close: parseFloat(c[4]), volume: parseFloat(c[5]) }));
+        
+        // السعر اللحظي للتنفيذ
         const currentPrice = candles[candles.length - 1].close; 
+        
+        // الشمعة التي أغلقت للتو لتأكيد الإشارة 100%
+        const closedCandle = candles[candles.length - 2]; 
         
         const volSMA = calculateSMA(candles, 10, 'volume');
         const cmo = calculateCMO(candles, 9);
-        const candle = candles[candles.length - 2];
-        const highVolume = candle.volume > (volSMA[volSMA.length - 2] * 1.3);
-        const bodyRatio = (candle.high - candle.low) > 0 ? (Math.abs(candle.close - candle.open) / (candle.high - candle.low)) : 0;
+        
+        const closedVolSMA = volSMA[volSMA.length - 2];
+        const closedCmo = cmo[cmo.length - 2];
+        
+        const highVolume = closedCandle.volume > (closedVolSMA * 1.3);
+        const bodyRatio = (closedCandle.high - closedCandle.low) > 0 ? (Math.abs(closedCandle.close - closedCandle.open) / (closedCandle.high - closedCandle.low)) : 0;
         
         let decision = 'WAIT';
-        if (candle.close > candle.open && bodyRatio > 0.5 && highVolume && cmo[cmo.length - 2] > 30) decision = 'BUY';
         
+        // شراء مؤكد فور إغلاق الشمعة
+        if (closedCandle.close > closedCandle.open && bodyRatio > 0.5 && highVolume && closedCmo > 30) {
+            decision = 'BUY';
+        }
+        // لاحظ: تم إلغاء شروط البيع العكسي بالكامل
+
         const tradeStatus = await processTradeAction(symbol, currentPrice, decision);
-        return { symbol, decision: tradeStatus, cmo: cmo[cmo.length - 2].toFixed(2), spike: highVolume ? 'YES' : 'NO' };
+        return { symbol, decision: tradeStatus, cmo: closedCmo.toFixed(2), spike: highVolume ? 'YES' : 'NO' };
     } catch (e) { return null; }
 }
 
@@ -257,6 +271,7 @@ async function runFullScan() {
         
         const ignoredCoins = ['USDC', 'FDUSD', 'TUSD', 'USDP', 'BUSD', 'EUR', 'USD1'];
         
+        // مسح أفضل 200 عملة
         let topCoins = response.data
             .filter(t => t.symbol.endsWith('USDT') && !ignoredCoins.some(stable => t.symbol.includes(stable)))
             .sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume))
