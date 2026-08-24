@@ -17,23 +17,21 @@ const API_SECRET = process.env.BINANCE_API_SECRET;
 const TESTNET_URL = 'https://testnet.binance.vision'; 
 
 // ==========================================
-// ⚙️ 2. Risk Management & Global Variables (Updated)
+// ⚙️ 2. Risk Management & Global Variables
 // ==========================================
 const RISK_RULES = {
-    maxTrades: 20,           // أقصى عدد للصفقات المفتوحة معاً
-    stopLossPct: 0.01,       // 1% وقف خسارة (محكم وسريع)
-    takeProfitPct: 0.02,     // 2% هدف ربح (خطف سريع جداً لتفعيل نسبة الفوز)
-    dailyLossLimitPct: 0.10  // 10% حد أقصى للخسارة اليومية من إجمالي المحفظة
+    maxTrades: 20,           
+    stopLossPct: 0.01,       // 1% وقف خسارة
+    takeProfitPct: 0.02,     // 2% هدف ربح
+    dailyLossLimitPct: 0.10  // 10% حد أقصى للخسارة اليومية
 };
 
 let exchangeRules = {}; 
 let latestResults = [];
 let activePositions = {}; 
-let tradeHistory = []; 
 let testStats = { totalTrades: 0, winningTrades: 0, totalProfitUSDT: 0 };
-let liveWalletBalance = "0.00"; // رصيد الـ USDT المتاح (الحر) فقط
+let liveWalletBalance = "0.00"; 
 
-// 🛑 متغيرات حماية الخسارة اليومية
 let dailyPnL = 0; 
 let currentDay = new Date().getUTCDate();
 let tradingPaused = false;
@@ -86,7 +84,7 @@ function checkDailyReset() {
         dailyPnL = 0;
         if (tradingPaused) {
             tradingPaused = false;
-            sendTelegramMessage("🌅 <b>يوم تداول جديد!</b>\nتم تصفير عداد الخسارة اليومية وإعادة تفعيل البوت لاصطياد الفرص.");
+            sendTelegramMessage("🌅 <b>يوم تداول جديد!</b>\nتم تصفير عداد الخسارة اليومية وإعادة تفعيل البوت.");
         }
     }
 }
@@ -108,4 +106,13 @@ function formatQuantity(symbol, qty) {
     if (!exchangeRules[symbol]) return qty.toString();
     const stepSize = exchangeRules[symbol].stepSize.toString();
     const precision = stepSize.includes('.') ? stepSize.split('.')[1].replace(/0+$/, '').length : 0;
-    const factor = Math.pow(10, preci
+    const factor = Math.pow(10, precision);
+    return (Math.floor(qty * factor) / factor).toFixed(precision);
+}
+
+// ==========================================
+// 🔐 6. Binance API Functions
+// ==========================================
+async function binancePrivateRequest(endpoint, method = 'GET', params = {}) {
+    if (!API_KEY || !API_SECRET) return null;
+    params.timestamp = Dat
