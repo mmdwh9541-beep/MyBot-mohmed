@@ -3,7 +3,7 @@ const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
 
-// 🛡️ مراقبة الأخطاء غير الكودية لمنع انهيار السيرفر صامتاً
+// 🛡️ مراقبة الأخطاء لمنع انهيار السيرفر
 process.on('uncaughtException', (err) => {
     console.error('🔥 UNCAUGHT EXCEPTION:', err);
 });
@@ -117,4 +117,4 @@ async function loadExchangeRules() {
 
 function formatQuantity(symbol, qty) {
     if (!exchangeRules[symbol]) return qty.toString();
-    const stepSize
+    const stepSize = exchangeRules[symbol].stepSize.to
