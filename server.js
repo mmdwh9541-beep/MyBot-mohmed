@@ -3,20 +3,12 @@ const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
 
-// 🛡️ حماية قصوى ضد انهيار السيرفر
-process.on('uncaughtException', (err) => {
-    console.error('🔥 UNCAUGHT EXCEPTION:', err);
-});
-process.on('unhandledRejection', (reason) => {
-    console.error('🔥 UNHANDLED REJECTION:', reason);
-});
-
 const app = express();
 app.use(express.json());
 const PORT = process.env.PORT || 5000;
 
 // ==========================================
-// 📱 1. Environment Variables
+// 📱 1. Environment Variables (Secure)
 // ==========================================
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
@@ -25,21 +17,23 @@ const API_SECRET = process.env.BINANCE_API_SECRET;
 const TESTNET_URL = 'https://testnet.binance.vision'; 
 
 // ==========================================
-// ⚙️ 2. Risk Management & Variables
+// ⚙️ 2. Risk Management & Global Variables
 // ==========================================
 const RISK_RULES = {
-    maxTrades: 20,           
+    maxTrades: 20,           // أقصى عدد للصفقات المفتوحة معاً
     stopLossPct: 0.01,       // 1% وقف خسارة
     takeProfitPct: 0.02,     // 2% هدف ربح
-    dailyLossLimitPct: 0.10  // 10% حد أقصى للخسارة اليومية
+    dailyLossLimitPct: 0.10  // 10% حد أقصى للخسارة اليومية من إجمالي المحفظة
 };
 
 let exchangeRules = {}; 
 let latestResults = [];
 let activePositions = {}; 
+let tradeHistory = []; 
 let testStats = { totalTrades: 0, winningTrades: 0, totalProfitUSDT: 0 };
-let liveWalletBalance = "100.00"; // قيمة افتراضية آمنة لمنع الانهيار
+let liveWalletBalance = "0.00"; // رصيد الـ USDT المتاح (الحر) فقط
 
+// 🛑 متغيرات حماية الخسارة اليومية
 let dailyPnL = 0; 
 let currentDay = new Date().getUTCDate();
 let tradingPaused = false;
@@ -75,16 +69,13 @@ function sendTelegramMessage(text) {
 }
 
 // ==========================================
-// 🛡️ 4. Account Equity & Safe Math
+// 🛡️ 4. Account Equity & Reset Logic
 // ==========================================
+// حساب إجمالي قيمة المحفظة (الكاش الحر + قيمة الصفقات المفتوحة)
 function getTotalEquity() {
-    let total = parseFloat(liveWalletBalance);
-    if (isNaN(total)) total = 100.0;
-    
+    let total = parseFloat(liveWalletBalance) || 0;
     for (let sym in activePositions) {
-        if (activePositions[sym] && activePositions[sym].qty && activePositions[sym].entryPrice) {
-            total += (activePositions[sym].qty * activePositions[sym].entryPrice);
-        }
+        total += (activePositions[sym].qty * activePositions[sym].entryPrice);
     }
     return total;
 }
@@ -96,7 +87,7 @@ function checkDailyReset() {
         dailyPnL = 0;
         if (tradingPaused) {
             tradingPaused = false;
-            sendTelegramMessage("🌅 <b>يوم تداول جديد!</b> تم تصفير عداد الخسارة اليومية.");
+            sendTelegramMessage("🌅 <b>يوم تداول جديد!</b>\nتم تصفير عداد الخسارة اليومية وإعادة تفعيل البوت لاصطياد الفرص.");
         }
     }
 }
@@ -107,16 +98,15 @@ function checkDailyReset() {
 async function loadExchangeRules() {
     try {
         const res = await axios.get(`${TESTNET_URL}/api/v3/exchangeInfo`);
-        if (res && res.data && res.data.symbols) {
-            res.data.symbols.forEach(s => {
-                const lotSize = s.filters.find(f => f.filterType === 'LOT_SIZE');
-                exchangeRules[s.symbol] = { stepSize: lotSize ? parseFloat(lotSize.stepSize) : 1 };
-            });
-        }
+        res.data.symbols.forEach(s => {
+            const lotSize = s.filters.find(f => f.filterType === 'LOT_SIZE');
+            exchangeRules[s.symbol] = { stepSize: lotSize ? parseFloat(lotSize.stepSize) : 1 };
+        });
     } catch (e) { }
 }
 
 function formatQuantity(symbol, qty) {
     if (!exchangeRules[symbol]) return qty.toString();
-    try {
-        const stepSize = exchangeRu
+    const stepSize = exchangeRules[symbol].stepSize.toString();
+    const precision = stepSize.includes('.') ? stepSize.split('.')[1].replace(/0+$/, '').length : 0;
+    const facto
