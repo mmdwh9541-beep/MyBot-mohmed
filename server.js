@@ -20,7 +20,7 @@ const TESTNET_URL = 'https://testnet.binance.vision';
 // ⚙️ 2. Risk Management & Global Variables
 // ==========================================
 const RISK_RULES = {
-    maxTrades: 20,           // Maximum concurrent open positions
+    maxTrades: 20,           // Maximum 20 concurrent open positions
     stopLossPct: 0.01,       // 1% Stop Loss
     takeProfitPct: 0.02,     // 2% Take Profit
     dailyLossLimitPct: 0.10  // 10% Maximum daily loss limit from total portfolio equity
@@ -37,6 +37,9 @@ let liveWalletBalance = "0.00"; // Available free USDT balance only
 let dailyPnL = 0; 
 let currentDay = new Date().getUTCDate();
 let tradingPaused = false;
+
+// 🔄 Pagination Index for Top 1000 Coins (200 per batch)
+let currentCoinIndex = 0;
 
 // ==========================================
 // 🔔 3. Telegram Queue System
@@ -222,7 +225,7 @@ async function processTradeAction(symbol, currentPrice, decision) {
 }
 
 // ==========================================
-// 📊 8. Super Scanner (5m timeframe)
+// 📊 8. Super Scanner (Top 1000 in Batches of 200)
 // ==========================================
 function calculateSMA(data, period, key = 'volume') {
     let smaArray = [];
@@ -257,6 +260,10 @@ async function analyzeMarket(symbol) {
         
         const candles = res.data.map(c => ({ open: parseFloat(c[1]), high: parseFloat(c[2]), low: parseFloat(c[3]), close: parseFloat(c[4]), volume: parseFloat(c[5]) }));
         const currentPrice = candles[candles.length - 1].close; 
+
+        // 🛡️ Filter out sub-penny coins (price < $0.01) to avoid precision and slippage issues
+        if (currentPrice < 0.01) return null;
+
         const closedCandle = candles[candles.length - 2]; 
         
         const volSMA = calculateSMA(candles, 10, 'volume');
@@ -284,14 +291,25 @@ async function runFullScan() {
         const response = await axios.get(`${TESTNET_URL}/api/v3/ticker/24hr`);
         const ignoredCoins = ['USDC', 'FDUSD', 'TUSD', 'USDP', 'BUSD', 'EUR', 'USD1'];
         
-        let topCoins = response.data
+        // Get Top 1000 coins sorted by volume
+        let top1000Coins = response.data
             .filter(t => t.symbol.endsWith('USDT') && !ignoredCoins.some(stable => t.symbol.includes(stable)))
             .sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume))
-            .slice(0, 200).map(t => t.symbol);
+            .slice(0, 1000).map(t => t.symbol);
+        
+        if (currentCoinIndex >= top1000Coins.length) {
+            currentCoinIndex = 0; // Reset back to start after reaching 1000
+        }
+        
+        // Take a batch of 200 coins
+        let batchCoins = top1000Coins.slice(currentCoinIndex, currentCoinIndex + 200);
+        
+        // Advance index for the next scan cycle
+        currentCoinIndex += 200;
         
         let currentScan = [];
         
-        for (const coin of topCoins) {
+        for (const coin of batchCoins) {
             const result = await analyzeMarket(coin);
             if (result && (result.decision !== 'WAIT' || result.spike === 'YES' || activePositions[result.symbol])) {
                 currentScan.push(result);
@@ -300,8 +318,8 @@ async function runFullScan() {
         }
 
         for (let i = 0; i < 5; i++) {
-            if (topCoins[i] && !currentScan.find(c => c.symbol === topCoins[i])) {
-                currentScan.push({ symbol: topCoins[i], decision: (tradingPaused ? 'PAUSED' : 'WAIT'), cmo: '0.00', spike: 'NO' });
+            if (batchCoins[i] && !currentScan.find(c => c.symbol === batchCoins[i])) {
+                currentScan.push({ symbol: batchCoins[i], decision: (tradingPaused ? 'PAUSED' : 'WAIT'), cmo: '0.00', spike: 'NO' });
             }
         }
         latestResults = currentScan; 
@@ -363,7 +381,7 @@ app.get('/', (req, res) => {
     
     <div><button class="btn-danger" onclick="emergencyClose()">🚨 Emergency Close All</button></div>
     
-    <div class="stats-container"><div class="stat-box">Trades: <span id="tot-trades">0</span></div><div class="stat-box">Total Profit: <span id="net-profit">$0.00</span></div><div class="stat-box">Today PnL: <span id="daily-pnl">$0.00</span> (Limit: -$<span id="daily-limit">0.00</span>)</div></div><div style="overflow-x:auto;"><table><thead><tr><th>Symbol</th><th>Status</th><th>CMO</th><th>Whale</th></tr></thead><tbody id="live-table"><tr><td colspan="4">Scanning Market (Top 200)... 📡</td></tr></tbody></table></div><script>async function loadData(){try{const res=await fetch('/api/data');const data=await res.json();document.getElementById('total-equity').innerText=data.equity;document.getElementById('wallet-balance').innerText=data.balance;document.getElementById('tot-trades').innerText=data.stats.totalTrades;let profitEl=document.getElementById('net-profit');profitEl.innerText='$' + data.stats.totalProfitUSDT.toFixed(2);profitEl.className=data.stats.totalProfitUSDT>=0?'buy':'sell';let dailyEl=document.getElementById('daily-pnl');dailyEl.innerText='$' + data.dailyPnL;dailyEl.className=data.dailyPnL>=0?'buy':'sell';document.getElementById('daily-limit').innerText=data.limit;if(data.isPaused){document.getElementById('pause-badge').style.display='inline-block';}else{document.getElementById('pause-badge').style.display='none';}if(data.live.length>0){let liveTbody=document.getElementById('live-table');liveTbody.innerHTML='';data.live.forEach(item=>{let decClass=item.decision.includes('BOUGHT')||item.decision.includes('HOLDING')?'buy':item.decision.includes('SELL')||item.decision.includes('CLOSED')||item.decision==='PAUSED'||item.decision.includes('MAX_TRADES')?'sell':'wait';let displayDecision=item.decision==='MAX_TRADES'?'MAX TRADES REACHED':item.decision;liveTbody.innerHTML+=\`<tr><td>\${item.symbol}</td><td class="\${decClass}">\${displayDecision}</td><td>\${item.cmo}</td><td class="\${item.spike.includes('YES')?'spike':''}">\${item.spike}</td></tr>\`;});}}catch(e){}}setInterval(loadData,4000);loadData();
+    <div class="stats-container"><div class="stat-box">Trades: <span id="tot-trades">0</span></div><div class="stat-box">Total Profit: <span id="net-profit">$0.00</span></div><div class="stat-box">Today PnL: <span id="daily-pnl">$0.00</span> (Limit: -$<span id="daily-limit">0.00</span>)</div></div><div style="overflow-x:auto;"><table><thead><tr><th>Symbol</th><th>Status</th><th>CMO</th><th>Whale</th></tr></thead><tbody id="live-table"><tr><td colspan="4">Scanning Market (Top 1000 in Batches)... 📡</td></tr></tbody></table></div><script>async function loadData(){try{const res=await fetch('/api/data');const data=await res.json();document.getElementById('total-equity').innerText=data.equity;document.getElementById('wallet-balance').innerText=data.balance;document.getElementById('tot-trades').innerText=data.stats.totalTrades;let profitEl=document.getElementById('net-profit');profitEl.innerText='$' + data.stats.totalProfitUSDT.toFixed(2);profitEl.className=data.stats.totalProfitUSDT>=0?'buy':'sell';let dailyEl=document.getElementById('daily-pnl');dailyEl.innerText='$' + data.dailyPnL;dailyEl.className=data.dailyPnL>=0?'buy':'sell';document.getElementById('daily-limit').innerText=data.limit;if(data.isPaused){document.getElementById('pause-badge').style.display='inline-block';}else{document.getElementById('pause-badge').style.display='none';}if(data.live.length>0){let liveTbody=document.getElementById('live-table');liveTbody.innerHTML='';data.live.forEach(item=>{let decClass=item.decision.includes('BOUGHT')||item.decision.includes('HOLDING')?'buy':item.decision.includes('SELL')||item.decision.includes('CLOSED')||item.decision==='PAUSED'||item.decision.includes('MAX_TRADES')?'sell':'wait';let displayDecision=item.decision==='MAX_TRADES'?'MAX TRADES REACHED':item.decision;liveTbody.innerHTML+=\`<tr><td>\${item.symbol}</td><td class="\${decClass}">\${displayDecision}</td><td>\${item.cmo}</td><td class="\${item.spike.includes('YES')?'spike':''}">\${item.spike}</td></tr>\`;});}}catch(e){}}setInterval(loadData,4000);loadData();
     async function emergencyClose(){if(!confirm('Are you sure you want to close all open positions immediately?')) return;try{const res=await fetch('/api/emergency-close',{method:'POST'});const data=await res.json();alert(data.msg);loadData();}catch(e){alert('Server connection error');}}
     </script></body></html>`);
 });
