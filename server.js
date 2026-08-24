@@ -3,6 +3,14 @@ const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
 
+// 🛡️ مراقبة الأخطاء غير الكودية لمنع انهيار السيرفر صامتاً
+process.on('uncaughtException', (err) => {
+    console.error('🔥 UNCAUGHT EXCEPTION:', err);
+});
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('🔥 UNHANDLED REJECTION:', reason);
+});
+
 const app = express();
 app.use(express.json());
 const PORT = process.env.PORT || 5000;
@@ -95,24 +103,18 @@ function checkDailyReset() {
 async function loadExchangeRules() {
     try {
         const res = await axios.get(`${TESTNET_URL}/api/v3/exchangeInfo`);
-        res.data.symbols.forEach(s => {
-            const lotSize = s.filters.find(f => f.filterType === 'LOT_SIZE');
-            exchangeRules[s.symbol] = { stepSize: lotSize ? parseFloat(lotSize.stepSize) : 1 };
-        });
-    } catch (e) { }
+        if (res && res.data && res.data.symbols) {
+            res.data.symbols.forEach(s => {
+                const lotSize = s.filters.find(f => f.filterType === 'LOT_SIZE');
+                exchangeRules[s.symbol] = { stepSize: lotSize ? parseFloat(lotSize.stepSize) : 1 };
+            });
+            console.log('✅ Exchange Rules Loaded.');
+        }
+    } catch (e) { 
+        console.error('❌ Error loading exchange rules:', e.message);
+    }
 }
 
 function formatQuantity(symbol, qty) {
     if (!exchangeRules[symbol]) return qty.toString();
-    const stepSize = exchangeRules[symbol].stepSize.toString();
-    const precision = stepSize.includes('.') ? stepSize.split('.')[1].replace(/0+$/, '').length : 0;
-    const factor = Math.pow(10, precision);
-    return (Math.floor(qty * factor) / factor).toFixed(precision);
-}
-
-// ==========================================
-// 🔐 6. Binance API Functions
-// ==========================================
-async function binancePrivateRequest(endpoint, method = 'GET', params = {}) {
-    if (!API_KEY || !API_SECRET) return null;
-    params.timestamp = Dat
+    const stepSize
