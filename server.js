@@ -2,6 +2,7 @@ require('dotenv').config();
 
 const express = require('express');
 const axios = require('axios');
+const WebSocket = require('ws');
 const fs = require('fs');
 const path = require('path');
 
@@ -11,21 +12,30 @@ app.use(express.json());
 const PORT = process.env.PORT || 5000;
 
 // ============================================================
-// 🚀 REAL MARKET DATA + PAPER EXECUTION
+// 🌍 MARKET
 // ============================================================
 
-// Real Binance Spot public market
-const BINANCE_URL = 'https://api.binance.com';
+const BINANCE_REST = 'https://api.binance.com';
 
-// Telegram
-const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
-const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+const BINANCE_WS =
+    'wss://stream.binance.com:9443/ws/!miniTicker@arr';
+
+// ============================================================
+// 📲 TELEGRAM
+// ============================================================
+
+const TELEGRAM_TOKEN =
+    process.env.TELEGRAM_TOKEN;
+
+const CHAT_ID =
+    process.env.TELEGRAM_CHAT_ID;
 
 // ============================================================
 // ⚙️ CONFIG
 // ============================================================
 
 const CONFIG = {
+
     paperTrading: true,
 
     startingBalance: 10000,
@@ -34,41 +44,73 @@ const CONFIG = {
 
     minimumScore: 80,
 
+    // ------------------------------------
+    // Risk
+    // ------------------------------------
+
     stopLossPct: 0.01,
+
     takeProfitPct: 0.02,
 
     dailyLossLimitPct: 0.10,
 
-    // Simulate realistic execution
-    tradingFeePct: 0.001,     // 0.10%
-    slippagePct: 0.0005,      // 0.05%
+    // ------------------------------------
+    // Simulation costs
+    // ------------------------------------
+
+    feePct: 0.001,
+
+    slippagePct: 0.0005,
+
+    // ------------------------------------
+    // Candle analysis
+    // ------------------------------------
 
     candleInterval: '5m',
+
     candleLimit: 100,
 
-    universeSize: 1000,
-    batchSize: 100,
+    // ------------------------------------
+    // Scanner
+    // ------------------------------------
 
-    minQuoteVolume: 100000,
+    universeSize: 300,
 
-    scannerDelayMs: 5000,
+    batchSize: 20,
 
-    // Independent open-position monitoring
-    positionMonitorMs: 5000,
+    scannerIntervalMs: 30000,
 
-    // Scanner concurrency
-    concurrency: 8,
+    minQuoteVolume: 250000,
 
-    stateFile: path.join(__dirname, 'paper-state.json')
+    // ------------------------------------
+    // REST protection
+    // ------------------------------------
+
+    restMinimumGapMs: 400,
+
+    // ------------------------------------
+    // State
+    // ------------------------------------
+
+    stateFile:
+        path.join(
+            __dirname,
+            'paper-state.json'
+        )
 };
 
 // ============================================================
 // 🧠 STATE
 // ============================================================
 
-let validSymbols = new Set();
+let validSymbols =
+    new Set();
 
-let paperBalance = CONFIG.startingBalance;
+let marketTickers =
+    new Map();
+
+let paperBalance =
+    CONFIG.startingBalance;
 
 let activePositions = {};
 
@@ -77,11 +119,15 @@ let tradeHistory = [];
 let latestResults = [];
 
 let stats = {
+
     totalTrades: 0,
+
     winningTrades: 0,
+
     losingTrades: 0,
 
     grossProfit: 0,
+
     grossLoss: 0,
 
     netProfit: 0,
@@ -89,53 +135,85 @@ let stats = {
     totalFees: 0,
 
     bestTrade: 0,
+
     worstTrade: 0,
 
     maxDrawdown: 0
 };
 
-let dailyPnL = 0;
+let peakEquity =
+    CONFIG.startingBalance;
 
-let currentDay =
-    new Date().toISOString().slice(0, 10);
+let dailyPnL = 0;
 
 let dailyStartingEquity =
     CONFIG.startingBalance;
 
+let currentDay =
+    new Date()
+        .toISOString()
+        .slice(0, 10);
+
 let tradingPaused = false;
 
-let peakEquity =
-    CONFIG.startingBalance;
-
 let scannerRunning = false;
-
-let positionMonitorRunning = false;
 
 let currentCoinIndex = 0;
 
 let lastScanTime = null;
 
-let lastPositionCheck = null;
+let websocketConnected = false;
+
+let lastWebsocketMessage = null;
+
+let websocketReconnectTimer = null;
+
+let ws = null;
 
 // ============================================================
-// 🛠 HELPERS
+// 🛡️ REST RATE LIMIT STATE
+// ============================================================
+
+let lastRestRequestTime = 0;
+
+let restBlockedUntil = 0;
+
+let consecutiveRestErrors = 0;
+
+// ============================================================
+// 🛠️ HELPERS
 // ============================================================
 
 function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
+
+    return new Promise(
+        resolve =>
+            setTimeout(resolve, ms)
+    );
 }
 
-function safeNumber(value, fallback = 0) {
+function safeNumber(
+    value,
+    fallback = 0
+) {
 
-    const number = Number(value);
+    const number =
+        Number(value);
 
     return Number.isFinite(number)
         ? number
         : fallback;
 }
 
+function utcDay() {
+
+    return new Date()
+        .toISOString()
+        .slice(0, 10);
+}
+
 // ============================================================
-// 💾 STATE PERSISTENCE
+// 💾 SAVE / LOAD STATE
 // ============================================================
 
 function saveState() {
@@ -149,30 +227,34 @@ function saveState() {
             activePositions,
 
             tradeHistory:
-                tradeHistory.slice(-1000),
+                tradeHistory.slice(-2000),
 
             stats,
 
-            dailyPnL,
+            peakEquity,
 
-            currentDay,
+            dailyPnL,
 
             dailyStartingEquity,
 
-            tradingPaused,
+            currentDay,
 
-            peakEquity
+            tradingPaused
         };
 
         fs.writeFileSync(
             CONFIG.stateFile,
-            JSON.stringify(data, null, 2)
+            JSON.stringify(
+                data,
+                null,
+                2
+            )
         );
 
     } catch (error) {
 
         console.error(
-            '❌ State save error:',
+            '❌ State save:',
             error.message
         );
     }
@@ -183,24 +265,25 @@ function loadState() {
     try {
 
         if (
-            !fs.existsSync(CONFIG.stateFile)
+            !fs.existsSync(
+                CONFIG.stateFile
+            )
         ) {
 
             console.log(
-                'ℹ️ No previous paper state found.'
+                'ℹ️ Starting fresh paper account.'
             );
 
             return;
         }
 
-        const raw =
-            fs.readFileSync(
-                CONFIG.stateFile,
-                'utf8'
-            );
-
         const data =
-            JSON.parse(raw);
+            JSON.parse(
+                fs.readFileSync(
+                    CONFIG.stateFile,
+                    'utf8'
+                )
+            );
 
         paperBalance =
             safeNumber(
@@ -219,14 +302,16 @@ function loadState() {
             ...(data.stats || {})
         };
 
+        peakEquity =
+            safeNumber(
+                data.peakEquity,
+                CONFIG.startingBalance
+            );
+
         dailyPnL =
             safeNumber(
                 data.dailyPnL
             );
-
-        currentDay =
-            data.currentDay ||
-            currentDay;
 
         dailyStartingEquity =
             safeNumber(
@@ -234,32 +319,30 @@ function loadState() {
                 CONFIG.startingBalance
             );
 
+        currentDay =
+            data.currentDay ||
+            currentDay;
+
         tradingPaused =
             Boolean(
                 data.tradingPaused
             );
 
-        peakEquity =
-            safeNumber(
-                data.peakEquity,
-                CONFIG.startingBalance
-            );
-
         console.log(
-            `🔄 State restored | Cash: $${paperBalance.toFixed(2)} | Positions: ${Object.keys(activePositions).length}`
+            `🔄 Paper state restored | Cash $${paperBalance.toFixed(2)} | Positions ${Object.keys(activePositions).length}`
         );
 
     } catch (error) {
 
         console.error(
-            '❌ State restore error:',
+            '❌ State restore:',
             error.message
         );
     }
 }
 
 // ============================================================
-// 📲 TELEGRAM
+// 📲 TELEGRAM QUEUE
 // ============================================================
 
 const telegramQueue = [];
@@ -294,16 +377,16 @@ async function processTelegramQueue() {
 
     try {
 
-        const url =
-            `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
-
         await axios.post(
-            url,
+
+            `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,
+
             {
                 chat_id: CHAT_ID,
                 text,
                 parse_mode: 'HTML'
             },
+
             {
                 timeout: 10000
             }
@@ -315,17 +398,11 @@ async function processTelegramQueue() {
             error.response?.status === 429
         ) {
 
-            telegramQueue.unshift(text);
+            telegramQueue.unshift(
+                text
+            );
 
             await sleep(4000);
-
-        } else {
-
-            console.error(
-                'Telegram error:',
-                error.response?.data ||
-                error.message
-            );
         }
 
     } finally {
@@ -340,31 +417,181 @@ setInterval(
 );
 
 // ============================================================
-// 🌐 BINANCE PUBLIC REQUEST
+// 🛡️ REST REQUEST PROTECTION
 // ============================================================
+
+function parseBinanceBanTime(error) {
+
+    const message =
+        String(
+            error.response?.data?.msg ||
+            ''
+        );
+
+    const match =
+        message.match(
+            /banned until\s+(\d+)/i
+        );
+
+    if (!match) {
+
+        return null;
+    }
+
+    const timestamp =
+        Number(match[1]);
+
+    if (
+        Number.isFinite(timestamp) &&
+        timestamp >
+            Date.now()
+    ) {
+
+        return timestamp;
+    }
+
+    return null;
+}
 
 async function publicRequest(
     endpoint,
     params = {}
 ) {
 
+    const now =
+        Date.now();
+
+    // ----------------------------------------
+    // Binance temporary ban protection
+    // ----------------------------------------
+
+    if (
+        now <
+        restBlockedUntil
+    ) {
+
+        return null;
+    }
+
+    // ----------------------------------------
+    // Global request spacing
+    // ----------------------------------------
+
+    const elapsed =
+        now -
+        lastRestRequestTime;
+
+    if (
+        elapsed <
+        CONFIG.restMinimumGapMs
+    ) {
+
+        await sleep(
+            CONFIG.restMinimumGapMs -
+            elapsed
+        );
+    }
+
+    lastRestRequestTime =
+        Date.now();
+
     try {
 
         const response =
             await axios.get(
-                `${BINANCE_URL}${endpoint}`,
+
+                `${BINANCE_REST}${endpoint}`,
+
                 {
                     params,
                     timeout: 15000
                 }
             );
 
+        consecutiveRestErrors = 0;
+
         return response.data;
 
     } catch (error) {
 
+        consecutiveRestErrors++;
+
+        const status =
+            error.response?.status;
+
+        const code =
+            error.response?.data?.code;
+
+        // ----------------------------------------
+        // Binance rate-limit protection
+        // ----------------------------------------
+
+        if (
+            status === 429 ||
+            status === 418 ||
+            code === -1003
+        ) {
+
+            const actualBanTime =
+                parseBinanceBanTime(
+                    error
+                );
+
+            if (
+                actualBanTime
+            ) {
+
+                restBlockedUntil =
+                    actualBanTime +
+                    5000;
+
+            } else {
+
+                const backoff =
+                    Math.min(
+                        15 * 60 * 1000,
+                        30000 *
+                        Math.pow(
+                            2,
+                            Math.min(
+                                consecutiveRestErrors,
+                                5
+                            )
+                        )
+                    );
+
+                restBlockedUntil =
+                    Date.now() +
+                    backoff;
+            }
+
+            const waitSeconds =
+                Math.max(
+                    0,
+                    Math.ceil(
+                        (
+                            restBlockedUntil -
+                            Date.now()
+                        ) /
+                        1000
+                    )
+                );
+
+            console.error(
+                `🛑 Binance REST paused for ${waitSeconds}s`
+            );
+
+            sendTelegramMessage(
+                `🛑 <b>BINANCE RATE LIMIT</b>\n\n` +
+                `REST scanner paused for approximately ${waitSeconds} seconds.\n` +
+                `WebSocket price monitoring remains active.`
+            );
+
+            return null;
+        }
+
         console.error(
-            `❌ Binance ${endpoint}:`,
+            `❌ REST ${endpoint}:`,
             error.response?.data ||
             error.message
         );
@@ -374,24 +601,247 @@ async function publicRequest(
 }
 
 // ============================================================
-// ✅ VALID REAL BINANCE SYMBOLS
+// 🌐 WEBSOCKET - LIVE MARKET
+// ============================================================
+
+function connectWebSocket() {
+
+    if (
+        ws &&
+        (
+            ws.readyState ===
+                WebSocket.OPEN ||
+            ws.readyState ===
+                WebSocket.CONNECTING
+        )
+    ) {
+
+        return;
+    }
+
+    console.log(
+        '🔌 Connecting Binance WebSocket...'
+    );
+
+    ws =
+        new WebSocket(
+            BINANCE_WS
+        );
+
+    ws.on(
+        'open',
+        () => {
+
+            websocketConnected =
+                true;
+
+            lastWebsocketMessage =
+                Date.now();
+
+            console.log(
+                '✅ Binance WebSocket connected.'
+            );
+        }
+    );
+
+    ws.on(
+        'message',
+        raw => {
+
+            lastWebsocketMessage =
+                Date.now();
+
+            try {
+
+                const data =
+                    JSON.parse(
+                        raw.toString()
+                    );
+
+                if (
+                    !Array.isArray(data)
+                ) {
+                    return;
+                }
+
+                for (
+                    const ticker
+                    of data
+                ) {
+
+                    const symbol =
+                        ticker.s;
+
+                    if (
+                        !symbol ||
+                        !symbol.endsWith(
+                            'USDT'
+                        )
+                    ) {
+
+                        continue;
+                    }
+
+                    const price =
+                        safeNumber(
+                            ticker.c
+                        );
+
+                    const quoteVolume =
+                        safeNumber(
+                            ticker.q
+                        );
+
+                    if (
+                        price <= 0
+                    ) {
+                        continue;
+                    }
+
+                    marketTickers.set(
+                        symbol,
+                        {
+                            price,
+                            quoteVolume,
+                            updatedAt:
+                                Date.now()
+                        }
+                    );
+
+                    // --------------------------------
+                    // Position management LIVE
+                    // --------------------------------
+
+                    if (
+                        activePositions[
+                            symbol
+                        ]
+                    ) {
+
+                        manageOpenPosition(
+                            symbol,
+                            price
+                        );
+                    }
+                }
+
+            } catch (error) {
+
+                console.error(
+                    'WS parse error:',
+                    error.message
+                );
+            }
+        }
+    );
+
+    ws.on(
+        'close',
+        () => {
+
+            websocketConnected =
+                false;
+
+            console.log(
+                '⚠️ Binance WebSocket disconnected.'
+            );
+
+            scheduleWebSocketReconnect();
+        }
+    );
+
+    ws.on(
+        'error',
+        error => {
+
+            websocketConnected =
+                false;
+
+            console.error(
+                '❌ WebSocket:',
+                error.message
+            );
+        }
+    );
+}
+
+function scheduleWebSocketReconnect() {
+
+    if (
+        websocketReconnectTimer
+    ) {
+        return;
+    }
+
+    websocketReconnectTimer =
+        setTimeout(
+            () => {
+
+                websocketReconnectTimer =
+                    null;
+
+                connectWebSocket();
+
+            },
+            5000
+        );
+}
+
+// ============================================================
+// ❤️ WS WATCHDOG
+// ============================================================
+
+setInterval(
+    () => {
+
+        if (
+            !lastWebsocketMessage
+        ) {
+            return;
+        }
+
+        const age =
+            Date.now() -
+            lastWebsocketMessage;
+
+        if (
+            age >
+            90000
+        ) {
+
+            console.log(
+                '⚠️ WebSocket stale. Reconnecting...'
+            );
+
+            try {
+
+                ws?.terminate();
+
+            } catch (_) {
+            }
+        }
+
+    },
+    30000
+);
+
+// ============================================================
+// ✅ SYMBOL LIST
 // ============================================================
 
 async function loadValidSymbols() {
-
-    console.log(
-        '🔄 Loading REAL Binance Spot symbols...'
-    );
 
     const data =
         await publicRequest(
             '/api/v3/exchangeInfo'
         );
 
-    if (!data?.symbols) {
+    if (
+        !data?.symbols
+    ) {
 
-        console.error(
-            '❌ exchangeInfo unavailable.'
+        console.log(
+            '⚠️ exchangeInfo unavailable. Will retry later.'
         );
 
         return false;
@@ -401,23 +851,27 @@ async function loadValidSymbols() {
         new Set();
 
     for (
-        const info of data.symbols
+        const info
+        of data.symbols
     ) {
 
         if (
-            info.status !== 'TRADING'
+            info.status !==
+            'TRADING'
         ) {
             continue;
         }
 
         if (
-            info.quoteAsset !== 'USDT'
+            info.quoteAsset !==
+            'USDT'
         ) {
             continue;
         }
 
         if (
-            info.isSpotTradingAllowed === false
+            info.isSpotTradingAllowed ===
+            false
         ) {
             continue;
         }
@@ -428,10 +882,10 @@ async function loadValidSymbols() {
     }
 
     console.log(
-        `✅ Real Spot USDT symbols: ${validSymbols.size}`
+        `✅ Valid Binance USDT symbols: ${validSymbols.size}`
     );
 
-    return validSymbols.size > 0;
+    return true;
 }
 
 // ============================================================
@@ -450,9 +904,19 @@ function currentEquity() {
         )
     ) {
 
+        const ticker =
+            marketTickers.get(
+                position.symbol
+            );
+
+        const price =
+            ticker?.price ||
+            position.lastPrice ||
+            position.entryPrice;
+
         equity +=
             position.qty *
-            position.lastPrice;
+            price;
     }
 
     return equity;
@@ -464,7 +928,8 @@ function updateDrawdown() {
         currentEquity();
 
     if (
-        equity > peakEquity
+        equity >
+        peakEquity
     ) {
 
         peakEquity =
@@ -479,7 +944,8 @@ function updateDrawdown() {
                     equity
                 ) /
                 peakEquity
-              ) * 100
+              ) *
+              100
             : 0;
 
     stats.maxDrawdown =
@@ -490,48 +956,49 @@ function updateDrawdown() {
 }
 
 // ============================================================
-// 📅 DAILY RISK
+// 📅 DAILY PROTECTION
 // ============================================================
 
 function checkDailyReset() {
 
     const today =
-        new Date()
-            .toISOString()
-            .slice(0, 10);
+        utcDay();
 
     if (
-        today !== currentDay
+        today ===
+        currentDay
     ) {
-
-        currentDay =
-            today;
-
-        dailyPnL = 0;
-
-        tradingPaused = false;
-
-        dailyStartingEquity =
-            currentEquity();
-
-        saveState();
-
-        sendTelegramMessage(
-            `🌅 <b>NEW PAPER DAY</b>\n` +
-            `Starting Equity: $${dailyStartingEquity.toFixed(2)}`
-        );
+        return;
     }
+
+    currentDay =
+        today;
+
+    dailyPnL = 0;
+
+    tradingPaused =
+        false;
+
+    dailyStartingEquity =
+        currentEquity();
+
+    saveState();
+
+    sendTelegramMessage(
+        `🌅 <b>NEW PAPER DAY</b>\n` +
+        `Starting Equity: $${dailyStartingEquity.toFixed(2)}`
+    );
 }
 
 function checkDailyLoss() {
 
-    const lossLimit =
+    const limit =
         dailyStartingEquity *
         CONFIG.dailyLossLimitPct;
 
     if (
-        lossLimit > 0 &&
-        dailyPnL <= -lossLimit &&
+        dailyPnL <=
+            -limit &&
         !tradingPaused
     ) {
 
@@ -541,15 +1008,15 @@ function checkDailyLoss() {
         saveState();
 
         sendTelegramMessage(
-            `🛑 <b>PAPER TRADING PAUSED</b>\n\n` +
-            `Daily PnL: $${dailyPnL.toFixed(2)}\n` +
-            `Loss Limit: -$${lossLimit.toFixed(2)}`
+            `🛑 <b>DAILY LOSS LIMIT</b>\n\n` +
+            `PnL: $${dailyPnL.toFixed(2)}\n` +
+            `Limit: -$${limit.toFixed(2)}`
         );
     }
 }
 
 // ============================================================
-// 📈 INDICATORS
+// 📊 INDICATORS
 // ============================================================
 
 function calculateSMA(
@@ -567,11 +1034,11 @@ function calculateSMA(
     ) {
 
         if (
-            i < period - 1
+            i <
+            period - 1
         ) {
 
             result.push(null);
-
             continue;
         }
 
@@ -604,7 +1071,8 @@ function calculateEMA(
     const result = [];
 
     const multiplier =
-        2 / (period + 1);
+        2 /
+        (period + 1);
 
     let previous = null;
 
@@ -618,11 +1086,11 @@ function calculateEMA(
             data[i][key];
 
         if (
-            i < period - 1
+            i <
+            period - 1
         ) {
 
             result.push(null);
-
             continue;
         }
 
@@ -643,7 +1111,8 @@ function calculateEMA(
             }
 
             previous =
-                sum / period;
+                sum /
+                period;
 
         } else {
 
@@ -682,7 +1151,6 @@ function calculateCMO(
         ) {
 
             result.push(null);
-
             continue;
         }
 
@@ -741,6 +1209,7 @@ function calculateATR(
         candles.length <
         period + 1
     ) {
+
         return null;
     }
 
@@ -792,10 +1261,10 @@ function calculateATR(
 }
 
 // ============================================================
-// 📊 STRUCTURE
+// 🏗️ STRUCTURE
 // ============================================================
 
-function calculateStructure(
+function getStructure(
     candles
 ) {
 
@@ -907,7 +1376,7 @@ function fibonacciScore(
 }
 
 // ============================================================
-// ⭐ SCORE ENGINE
+// ⭐ OPPORTUNITY SCORE
 // ============================================================
 
 function calculateScore(
@@ -968,7 +1437,10 @@ function calculateScore(
 
     const reasons = [];
 
+    // --------------------------------------
     // Trend
+    // --------------------------------------
+
     if (
         candle.close >
         ema20[index]
@@ -995,7 +1467,10 @@ function calculateScore(
         );
     }
 
+    // --------------------------------------
     // Candle strength
+    // --------------------------------------
+
     const range =
         candle.high -
         candle.low;
@@ -1008,8 +1483,7 @@ function calculateScore(
 
     const bodyRatio =
         range > 0
-            ? body /
-              range
+            ? body / range
             : 0;
 
     if (
@@ -1025,7 +1499,10 @@ function calculateScore(
         );
     }
 
-    // Volume / liquidity
+    // --------------------------------------
+    // Volume
+    // --------------------------------------
+
     const volumeRatio =
         volumeSMA[index] > 0
             ? candle.volume /
@@ -1054,9 +1531,12 @@ function calculateScore(
         );
     }
 
+    // --------------------------------------
     // Momentum
+    // --------------------------------------
+
     if (
-        cmo[index] > 50
+        cmo[index] >= 50
     ) {
 
         score += 15;
@@ -1066,9 +1546,12 @@ function calculateScore(
         );
     }
 
+    // --------------------------------------
     // Structure
+    // --------------------------------------
+
     const structure =
-        calculateStructure(
+        getStructure(
             candles
         );
 
@@ -1084,7 +1567,10 @@ function calculateScore(
         );
     }
 
+    // --------------------------------------
     // Fibonacci
+    // --------------------------------------
+
     const fib =
         fibonacciScore(
             candles
@@ -1101,7 +1587,10 @@ function calculateScore(
         );
     }
 
-    // Volatility
+    // --------------------------------------
+    // ATR
+    // --------------------------------------
+
     if (
         range >=
         atr * 0.8
@@ -1127,18 +1616,18 @@ function calculateScore(
         cmo:
             cmo[index],
 
-        atr,
-
         volumeRatio,
 
         structure,
+
+        atr,
 
         bodyRatio
     };
 }
 
 // ============================================================
-// 🕯 CANDLES
+// 🕯️ GET CANDLES
 // ============================================================
 
 async function getCandles(
@@ -1176,6 +1665,7 @@ async function getCandles(
 
     return data.map(
         candle => ({
+
             open:
                 safeNumber(
                     candle[1]
@@ -1199,16 +1689,13 @@ async function getCandles(
             volume:
                 safeNumber(
                     candle[5]
-                ),
-
-            closeTime:
-                candle[6]
+                )
         })
     );
 }
 
 // ============================================================
-// 🟢 PAPER BUY
+// 🟢 PAPER ENTRY
 // ============================================================
 
 function paperBuy(
@@ -1240,7 +1727,7 @@ function paperBuy(
         CONFIG.maxPositions
     ) {
 
-        return 'MAX_TRADES';
+        return 'MAX_POSITIONS';
     }
 
     const equity =
@@ -1263,7 +1750,6 @@ function paperBuy(
         return 'NO_BALANCE';
     }
 
-    // Simulated entry slippage
     const entryPrice =
         marketPrice *
         (
@@ -1271,17 +1757,16 @@ function paperBuy(
             CONFIG.slippagePct
         );
 
-    // Simulated buy fee
     const buyFee =
         allocation *
-        CONFIG.tradingFeePct;
+        CONFIG.feePct;
 
-    const usableAmount =
+    const usable =
         allocation -
         buyFee;
 
-    const quantity =
-        usableAmount /
+    const qty =
+        usable /
         entryPrice;
 
     paperBalance -=
@@ -1298,8 +1783,7 @@ function paperBuy(
 
         entryPrice,
 
-        qty:
-            quantity,
+        qty,
 
         investedUSDT:
             allocation,
@@ -1318,14 +1802,11 @@ function paperBuy(
                 CONFIG.takeProfitPct
             ),
 
-        entryTime:
-            Date.now(),
+        lastPrice:
+            marketPrice,
 
         score:
             analysis.score,
-
-        reasons:
-            analysis.reasons,
 
         cmo:
             analysis.cmo,
@@ -1336,8 +1817,11 @@ function paperBuy(
         structure:
             analysis.structure,
 
-        lastPrice:
-            marketPrice
+        reasons:
+            analysis.reasons,
+
+        entryTime:
+            Date.now()
     };
 
     saveState();
@@ -1347,16 +1831,20 @@ function paperBuy(
         `<b>${symbol}</b>\n` +
         `Score: ${analysis.score}/100\n` +
         `Amount: $${allocation.toFixed(2)}\n` +
-        `Entry: $${entryPrice.toFixed(8)}\n` +
-        `TP: $${activePositions[symbol].takeProfit.toFixed(8)}\n` +
-        `SL: $${activePositions[symbol].stopLoss.toFixed(8)}`
+        `Entry: ${entryPrice.toFixed(8)}\n` +
+        `SL: ${activePositions[symbol].stopLoss.toFixed(8)}\n` +
+        `TP: ${activePositions[symbol].takeProfit.toFixed(8)}`
+    );
+
+    console.log(
+        `🟢 PAPER BUY ${symbol} | Score ${analysis.score}`
     );
 
     return 'PAPER_BOUGHT';
 }
 
 // ============================================================
-// 🔴 CLOSE PAPER POSITION
+// 🔴 PAPER CLOSE
 // ============================================================
 
 function closePaperPosition(
@@ -1375,7 +1863,6 @@ function closePaperPosition(
         return null;
     }
 
-    // Sell slippage
     const exitPrice =
         marketPrice *
         (
@@ -1383,24 +1870,24 @@ function closePaperPosition(
             CONFIG.slippagePct
         );
 
-    const grossExitValue =
+    const grossExit =
         trade.qty *
         exitPrice;
 
     const sellFee =
-        grossExitValue *
-        CONFIG.tradingFeePct;
+        grossExit *
+        CONFIG.feePct;
 
-    const netExitValue =
-        grossExitValue -
+    const netExit =
+        grossExit -
         sellFee;
 
     const profit =
-        netExitValue -
+        netExit -
         trade.investedUSDT;
 
     paperBalance +=
-        netExitValue;
+        netExit;
 
     stats.totalTrades++;
 
@@ -1430,7 +1917,9 @@ function closePaperPosition(
         stats.losingTrades++;
 
         stats.grossLoss +=
-            Math.abs(profit);
+            Math.abs(
+                profit
+            );
 
         stats.worstTrade =
             Math.min(
@@ -1453,9 +1942,6 @@ function closePaperPosition(
             trade.entryPrice,
 
         exitPrice,
-
-        qty:
-            trade.qty,
 
         profit,
 
@@ -1495,161 +1981,68 @@ function closePaperPosition(
         `<b>${symbol}</b>\n` +
         `Reason: ${reason}\n` +
         `PnL: $${profit.toFixed(2)}\n` +
-        `Paper Cash: $${paperBalance.toFixed(2)}`
+        `Cash: $${paperBalance.toFixed(2)}`
+    );
+
+    console.log(
+        `🔴 CLOSE ${symbol} | ${reason} | $${profit.toFixed(2)}`
     );
 
     return profit;
 }
 
 // ============================================================
-// 👀 INDEPENDENT POSITION MONITOR
+// 👀 POSITION MONITOR
+// Called directly by WebSocket price events
 // ============================================================
 
-async function monitorPositions() {
+function manageOpenPosition(
+    symbol,
+    price
+) {
 
-    if (
-        positionMonitorRunning
-    ) {
+    const trade =
+        activePositions[
+            symbol
+        ];
+
+    if (!trade) {
 
         return;
     }
 
-    positionMonitorRunning =
-        true;
+    trade.lastPrice =
+        price;
 
-    try {
+    if (
+        price <=
+        trade.stopLoss
+    ) {
 
-        const symbols =
-            Object.keys(
-                activePositions
-            );
-
-        if (
-            symbols.length === 0
-        ) {
-
-            return;
-        }
-
-        // One request gets all Binance prices
-        const prices =
-            await publicRequest(
-                '/api/v3/ticker/price'
-            );
-
-        if (
-            !Array.isArray(
-                prices
-            )
-        ) {
-
-            return;
-        }
-
-        const priceMap =
-            new Map();
-
-        for (
-            const item of prices
-        ) {
-
-            priceMap.set(
-                item.symbol,
-                safeNumber(
-                    item.price
-                )
-            );
-        }
-
-        for (
-            const symbol of symbols
-        ) {
-
-            const position =
-                activePositions[
-                    symbol
-                ];
-
-            if (!position) {
-                continue;
-            }
-
-            const price =
-                priceMap.get(
-                    symbol
-                );
-
-            if (
-                !price ||
-                price <= 0
-            ) {
-
-                continue;
-            }
-
-            position.lastPrice =
-                price;
-
-            const hitStop =
-                price <=
-                position.stopLoss;
-
-            const hitTarget =
-                price >=
-                position.takeProfit;
-
-            if (
-                hitStop
-            ) {
-
-                closePaperPosition(
-                    symbol,
-                    price,
-                    'STOP_LOSS'
-                );
-
-                continue;
-            }
-
-            if (
-                hitTarget
-            ) {
-
-                closePaperPosition(
-                    symbol,
-                    price,
-                    'TAKE_PROFIT'
-                );
-            }
-        }
-
-        updateDrawdown();
-
-        lastPositionCheck =
-            new Date()
-                .toISOString();
-
-    } catch (error) {
-
-        console.error(
-            '❌ Position monitor:',
-            error.message
+        closePaperPosition(
+            symbol,
+            price,
+            'STOP_LOSS'
         );
 
-    } finally {
+        return;
+    }
 
-        positionMonitorRunning =
-            false;
+    if (
+        price >=
+        trade.takeProfit
+    ) {
+
+        closePaperPosition(
+            symbol,
+            price,
+            'TAKE_PROFIT'
+        );
     }
 }
 
-setInterval(
-    monitorPositions,
-    CONFIG.positionMonitorMs
-);
-
 // ============================================================
-// 🧠 ANALYZE SYMBOL
+// 🧠 ANALYZE
 // ============================================================
 
 async function analyzeMarket(
@@ -1666,11 +2059,6 @@ async function analyzeMarket(
         return null;
     }
 
-    const marketPrice =
-        candles[
-            candles.length - 1
-        ].close;
-
     const analysis =
         calculateScore(
             candles
@@ -1680,6 +2068,17 @@ async function analyzeMarket(
 
         return null;
     }
+
+    const ticker =
+        marketTickers.get(
+            symbol
+        );
+
+    const marketPrice =
+        ticker?.price ||
+        candles[
+            candles.length - 1
+        ].close;
 
     let decision =
         'WAIT';
@@ -1715,6 +2114,9 @@ async function analyzeMarket(
 
         decision,
 
+        price:
+            marketPrice,
+
         cmo:
             analysis.cmo.toFixed(
                 2
@@ -1728,9 +2130,6 @@ async function analyzeMarket(
         structure:
             analysis.structure,
 
-        price:
-            marketPrice,
-
         reasons:
             analysis.reasons.join(
                 ', '
@@ -1739,61 +2138,75 @@ async function analyzeMarket(
 }
 
 // ============================================================
-// 🏆 REAL MARKET UNIVERSE
+// 🏆 TOP COINS
+// No REST request — taken from WebSocket data
 // ============================================================
 
-async function getTopCoins() {
-
-    const tickers =
-        await publicRequest(
-            '/api/v3/ticker/24hr'
-        );
+function getTopCoins() {
 
     if (
-        !Array.isArray(
-            tickers
-        )
+        marketTickers.size === 0 ||
+        validSymbols.size === 0
     ) {
 
         return [];
     }
 
-    const stableAssets =
-        [
+    const ignored =
+        new Set([
             'USDCUSDT',
             'FDUSDUSDT',
             'TUSDUSDT',
             'USDPUSDT',
             'BUSDUSDT'
-        ];
+        ]);
 
-    return tickers
+    const rows = [];
 
-        .filter(
-            ticker =>
+    for (
+        const [
+            symbol,
+            ticker
+        ]
+        of marketTickers
+    ) {
 
-                validSymbols.has(
-                    ticker.symbol
-                ) &&
+        if (
+            !validSymbols.has(
+                symbol
+            )
+        ) {
+            continue;
+        }
 
-                !stableAssets.includes(
-                    ticker.symbol
-                ) &&
+        if (
+            ignored.has(
+                symbol
+            )
+        ) {
+            continue;
+        }
 
-                safeNumber(
-                    ticker.quoteVolume
-                ) >=
-                CONFIG.minQuoteVolume
-        )
+        if (
+            ticker.quoteVolume <
+            CONFIG.minQuoteVolume
+        ) {
+            continue;
+        }
+
+        rows.push({
+            symbol,
+            quoteVolume:
+                ticker.quoteVolume
+        });
+    }
+
+    return rows
 
         .sort(
             (a, b) =>
-                safeNumber(
-                    b.quoteVolume
-                ) -
-                safeNumber(
-                    a.quoteVolume
-                )
+                b.quoteVolume -
+                a.quoteVolume
         )
 
         .slice(
@@ -1802,101 +2215,13 @@ async function getTopCoins() {
         )
 
         .map(
-            ticker =>
-                ticker.symbol
+            item =>
+                item.symbol
         );
 }
 
 // ============================================================
-// ⚡ CONCURRENT SCAN
-// ============================================================
-
-async function scanBatch(
-    symbols
-) {
-
-    const results = [];
-
-    let index = 0;
-
-    async function worker() {
-
-        while (true) {
-
-            const myIndex =
-                index++;
-
-            if (
-                myIndex >=
-                symbols.length
-            ) {
-
-                return;
-            }
-
-            const symbol =
-                symbols[
-                    myIndex
-                ];
-
-            try {
-
-                const result =
-                    await analyzeMarket(
-                        symbol
-                    );
-
-                if (
-                    result &&
-                    (
-                        result.score >= 70 ||
-                        result.decision !== 'WAIT'
-                    )
-                ) {
-
-                    results.push(
-                        result
-                    );
-                }
-
-            } catch (error) {
-
-                console.error(
-                    `Analysis ${symbol}:`,
-                    error.message
-                );
-            }
-        }
-    }
-
-    const workers = [];
-
-    const workerCount =
-        Math.min(
-            CONFIG.concurrency,
-            symbols.length
-        );
-
-    for (
-        let i = 0;
-        i < workerCount;
-        i++
-    ) {
-
-        workers.push(
-            worker()
-        );
-    }
-
-    await Promise.all(
-        workers
-    );
-
-    return results;
-}
-
-// ============================================================
-// 📡 SCANNER
+// 📡 CONSERVATIVE SCANNER
 // ============================================================
 
 async function runScanner() {
@@ -1915,15 +2240,27 @@ async function runScanner() {
 
         checkDailyReset();
 
+        // --------------------------------------------
+        // Do nothing while Binance REST is blocked
+        // --------------------------------------------
+
+        if (
+            Date.now() <
+            restBlockedUntil
+        ) {
+
+            return;
+        }
+
         const coins =
-            await getTopCoins();
+            getTopCoins();
 
         if (
             coins.length === 0
         ) {
 
             console.log(
-                '⚠️ No market symbols found.'
+                '⏳ Waiting for market data...'
             );
 
             return;
@@ -1949,21 +2286,58 @@ async function runScanner() {
             CONFIG.batchSize;
 
         console.log(
-            `🔎 Real Market Scan: ${batch.length} symbols | Index ${currentCoinIndex}`
+            `🔎 Scanner batch: ${batch.length} | Index ${currentCoinIndex}`
         );
 
-        const results =
-            await scanBatch(
-                batch
-            );
+        const results = [];
+
+        // --------------------------------------------
+        // Deliberately sequential
+        // Binance protection > scanner speed
+        // --------------------------------------------
+
+        for (
+            const symbol
+            of batch
+        ) {
+
+            if (
+                Date.now() <
+                restBlockedUntil
+            ) {
+
+                break;
+            }
+
+            const result =
+                await analyzeMarket(
+                    symbol
+                );
+
+            if (
+                result &&
+                (
+                    result.score >= 70 ||
+                    result.decision !==
+                        'WAIT'
+                )
+            ) {
+
+                results.push(
+                    result
+                );
+            }
+        }
 
         latestResults =
             results
+
                 .sort(
                     (a, b) =>
                         b.score -
                         a.score
                 )
+
                 .slice(
                     0,
                     50
@@ -1978,7 +2352,7 @@ async function runScanner() {
         saveState();
 
         console.log(
-            `✅ Scan complete | Opportunities: ${latestResults.length} | Positions: ${Object.keys(activePositions).length}`
+            `✅ Scan finished | Candidates ${latestResults.length} | Open ${Object.keys(activePositions).length}`
         );
 
     } catch (error) {
@@ -1992,66 +2366,46 @@ async function runScanner() {
 
         scannerRunning =
             false;
-
-        setTimeout(
-            runScanner,
-            CONFIG.scannerDelayMs
-        );
     }
 }
 
+setInterval(
+    runScanner,
+    CONFIG.scannerIntervalMs
+);
+
 // ============================================================
-// 🚨 FORCE CLOSE
+// 🔄 EXCHANGE INFO REFRESH
+// Only every 6 hours
+// ============================================================
+
+setInterval(
+    async () => {
+
+        if (
+            Date.now() >=
+            restBlockedUntil
+        ) {
+
+            await loadValidSymbols();
+        }
+
+    },
+    6 * 60 * 60 * 1000
+);
+
+// ============================================================
+// 🚨 PAPER EMERGENCY CLOSE
+// Uses WebSocket cached prices
 // ============================================================
 
 app.post(
     '/api/emergency-close',
-    async (req, res) => {
+    (req, res) => {
 
         const symbols =
             Object.keys(
                 activePositions
-            );
-
-        if (
-            symbols.length === 0
-        ) {
-
-            return res.json({
-                success: false,
-                msg:
-                    'No open paper positions.'
-            });
-        }
-
-        const prices =
-            await publicRequest(
-                '/api/v3/ticker/price'
-            );
-
-        if (
-            !Array.isArray(
-                prices
-            )
-        ) {
-
-            return res.json({
-                success: false,
-                msg:
-                    'Price feed unavailable.'
-            });
-        }
-
-        const priceMap =
-            new Map(
-                prices.map(
-                    item => [
-                        item.symbol,
-                        safeNumber(
-                            item.price
-                        )
-                    ]
-                )
             );
 
         let closed = 0;
@@ -2061,16 +2415,23 @@ app.post(
             of symbols
         ) {
 
-            const price =
-                priceMap.get(
+            const ticker =
+                marketTickers.get(
                     symbol
                 );
 
+            const trade =
+                activePositions[
+                    symbol
+                ];
+
+            const price =
+                ticker?.price ||
+                trade?.lastPrice;
+
             if (
                 !price ||
-                !activePositions[
-                    symbol
-                ]
+                !trade
             ) {
 
                 continue;
@@ -2086,7 +2447,9 @@ app.post(
         }
 
         res.json({
+
             success: true,
+
             msg:
                 `Closed ${closed} paper positions.`
         });
@@ -2094,15 +2457,12 @@ app.post(
 );
 
 // ============================================================
-// 📊 API
+// 📊 DATA API
 // ============================================================
 
 app.get(
     '/api/data',
     (req, res) => {
-
-        const equity =
-            currentEquity();
 
         const closedTrades =
             stats.winningTrades +
@@ -2113,7 +2473,8 @@ app.get(
                 ? (
                     stats.winningTrades /
                     closedTrades
-                  ) * 100
+                  ) *
+                  100
                 : 0;
 
         const profitFactor =
@@ -2127,7 +2488,21 @@ app.get(
         res.json({
 
             mode:
-                'REAL MARKET + PAPER TRADING',
+                'REAL MARKET / PAPER',
+
+            websocket:
+                websocketConnected,
+
+            restBlocked:
+                Date.now() <
+                restBlockedUntil,
+
+            restBlockedUntil:
+                restBlockedUntil > 0
+                    ? new Date(
+                        restBlockedUntil
+                      ).toISOString()
+                    : null,
 
             startingBalance:
                 CONFIG.startingBalance,
@@ -2138,9 +2513,16 @@ app.get(
                 ),
 
             equity:
-                equity.toFixed(
+                currentEquity().toFixed(
                     2
                 ),
+
+            dailyPnL:
+                dailyPnL.toFixed(
+                    2
+                ),
+
+            tradingPaused,
 
             activePositions:
                 Object.keys(
@@ -2152,22 +2534,8 @@ app.get(
                     activePositions
                 ),
 
-            dailyPnL:
-                dailyPnL.toFixed(
-                    2
-                ),
-
-            dailyStartingEquity:
-                dailyStartingEquity.toFixed(
-                    2
-                ),
-
-            tradingPaused,
-
             lastScan:
                 lastScanTime,
-
-            lastPositionCheck,
 
             stats: {
 
@@ -2212,31 +2580,40 @@ app.get(
             status: 'OK',
 
             market:
-                'BINANCE REAL SPOT DATA',
+                'BINANCE REAL SPOT',
 
             execution:
                 'PAPER ONLY',
 
+            websocket:
+                websocketConnected,
+
+            websocketLastMessage:
+                lastWebsocketMessage
+                    ? new Date(
+                        lastWebsocketMessage
+                      ).toISOString()
+                    : null,
+
+            tickerCount:
+                marketTickers.size,
+
             validSymbols:
                 validSymbols.size,
 
-            scannerRunning,
+            restBlocked:
+                Date.now() <
+                restBlockedUntil,
 
-            positionMonitorRunning,
-
-            positions:
+            openPositions:
                 Object.keys(
                     activePositions
                 ).length,
 
             equity:
-                currentEquity()
-                    .toFixed(2),
-
-            lastScan:
-                lastScanTime,
-
-            lastPositionCheck
+                currentEquity().toFixed(
+                    2
+                )
         });
     }
 );
@@ -2260,7 +2637,7 @@ app.get(
 
 <meta
 name="viewport"
-content="width=device-width,initial-scale=1">
+content="width=device-width,initial-scale=1.0">
 
 <title>LOMY Precision Engine</title>
 
@@ -2281,7 +2658,6 @@ text-align:center;
 
 h1{
 color:#f3ba2f;
-font-size:34px;
 }
 
 .badge{
@@ -2290,13 +2666,12 @@ background:#f3ba2f;
 color:#000;
 font-weight:bold;
 padding:10px 18px;
-border-radius:10px;
-margin-bottom:20px;
+border-radius:9px;
 }
 
-.sub{
-color:#848e9c;
-margin-bottom:20px;
+.connection{
+margin:15px;
+font-weight:bold;
 }
 
 .grid{
@@ -2306,7 +2681,7 @@ repeat(
 auto-fit,
 minmax(160px,1fr)
 );
-gap:14px;
+gap:12px;
 max-width:1200px;
 margin:20px auto;
 }
@@ -2314,18 +2689,18 @@ margin:20px auto;
 .card{
 background:#1e2329;
 border:1px solid #2b3139;
-padding:18px;
-border-radius:12px;
+border-radius:10px;
+padding:17px;
 }
 
 .label{
 color:#848e9c;
-font-size:13px;
+font-size:12px;
 }
 
 .value{
+font-size:23px;
 font-weight:bold;
-font-size:24px;
 margin-top:8px;
 }
 
@@ -2346,16 +2721,14 @@ background:#f6465d;
 color:#fff;
 border:0;
 padding:13px 22px;
-border-radius:8px;
 font-weight:bold;
-font-size:15px;
+border-radius:7px;
 cursor:pointer;
-margin:15px;
 }
 
 table{
 width:100%;
-max-width:1250px;
+max-width:1200px;
 margin:20px auto;
 border-collapse:collapse;
 background:#1e2329;
@@ -2366,30 +2739,11 @@ background:#2b3139;
 color:#848e9c;
 }
 
-td,
-th{
+th,td{
 padding:10px;
 border-bottom:
 1px solid #2b3139;
 font-size:13px;
-}
-
-@media(max-width:600px){
-
-body{
-padding:10px;
-}
-
-h1{
-font-size:30px;
-}
-
-td,
-th{
-font-size:11px;
-padding:8px 5px;
-}
-
 }
 
 </style>
@@ -2403,18 +2757,20 @@ padding:8px 5px;
 </h1>
 
 <div class="badge">
-REAL MARKET • PAPER EXECUTION
+REAL MARKET • PAPER TRADING
 </div>
 
-<div class="sub">
-Real Binance Spot prices — No real orders
+<div
+id="connection"
+class="connection">
+Connecting...
 </div>
 
 <div class="grid">
 
 <div class="card">
 <div class="label">
-STARTING BALANCE
+START BALANCE
 </div>
 <div class="value">
 $10,000
@@ -2425,7 +2781,8 @@ $10,000
 <div class="label">
 CASH
 </div>
-<div class="value"
+<div
+class="value"
 id="cash">
 $0
 </div>
@@ -2435,7 +2792,8 @@ $0
 <div class="label">
 EQUITY
 </div>
-<div class="value"
+<div
+class="value"
 id="equity">
 $0
 </div>
@@ -2445,7 +2803,8 @@ $0
 <div class="label">
 CLOSED TRADES
 </div>
-<div class="value"
+<div
+class="value"
 id="trades">
 0
 </div>
@@ -2455,7 +2814,8 @@ id="trades">
 <div class="label">
 WIN RATE
 </div>
-<div class="value"
+<div
+class="value"
 id="winrate">
 0%
 </div>
@@ -2465,7 +2825,8 @@ id="winrate">
 <div class="label">
 NET PROFIT
 </div>
-<div class="value"
+<div
+class="value"
 id="profit">
 $0
 </div>
@@ -2475,7 +2836,8 @@ $0
 <div class="label">
 PROFIT FACTOR
 </div>
-<div class="value"
+<div
+class="value"
 id="pf">
 0
 </div>
@@ -2485,7 +2847,8 @@ id="pf">
 <div class="label">
 MAX DRAWDOWN
 </div>
-<div class="value"
+<div
+class="value"
 id="dd">
 0%
 </div>
@@ -2495,7 +2858,8 @@ id="dd">
 <div class="label">
 OPEN POSITIONS
 </div>
-<div class="value"
+<div
+class="value"
 id="positions">
 0
 </div>
@@ -2505,7 +2869,8 @@ id="positions">
 <div class="label">
 TODAY PNL
 </div>
-<div class="value"
+<div
+class="value"
 id="daily">
 $0
 </div>
@@ -2539,15 +2904,12 @@ style="overflow-x:auto">
 
 </thead>
 
-<tbody
-id="table">
+<tbody id="table">
 
 <tr>
-
 <td colspan="7">
-Starting real-market scanner...
+Waiting for market...
 </td>
-
 </tr>
 
 </tbody>
@@ -2563,7 +2925,9 @@ async function loadData(){
 try{
 
 const response =
-await fetch('/api/data');
+await fetch(
+'/api/data'
+);
 
 const data =
 await response.json();
@@ -2571,14 +2935,12 @@ await response.json();
 document.getElementById(
 'cash'
 ).innerText =
-'$' +
-data.cashBalance;
+'$' + data.cashBalance;
 
 document.getElementById(
 'equity'
 ).innerText =
-'$' +
-data.equity;
+'$' + data.equity;
 
 document.getElementById(
 'trades'
@@ -2588,16 +2950,13 @@ data.stats.totalTrades;
 document.getElementById(
 'winrate'
 ).innerText =
-data.stats.winRate +
-'%';
+data.stats.winRate + '%';
 
 document.getElementById(
 'profit'
 ).innerText =
 '$' +
-data.stats.netProfit.toFixed(
-2
-);
+data.stats.netProfit.toFixed(2);
 
 document.getElementById(
 'pf'
@@ -2607,9 +2966,7 @@ data.stats.profitFactor;
 document.getElementById(
 'dd'
 ).innerText =
-data.stats.maxDrawdown.toFixed(
-2
-) +
+data.stats.maxDrawdown.toFixed(2) +
 '%';
 
 document.getElementById(
@@ -2620,8 +2977,37 @@ data.activePositions;
 document.getElementById(
 'daily'
 ).innerText =
-'$' +
-data.dailyPnL;
+'$' + data.dailyPnL;
+
+const connection =
+document.getElementById(
+'connection'
+);
+
+if(data.websocket){
+
+connection.innerText =
+'🟢 WebSocket LIVE';
+
+connection.className =
+'connection green';
+
+}else{
+
+connection.innerText =
+'🔴 WebSocket disconnected';
+
+connection.className =
+'connection red';
+
+}
+
+if(data.restBlocked){
+
+connection.innerText +=
+' | 🛑 REST rate limited';
+
+}
 
 const tbody =
 document.getElementById(
@@ -2634,17 +3020,17 @@ if(
 !data.live.length
 ){
 
-tbody.innerHTML=
-'<tr><td colspan="7">Scanning real Binance market...</td></tr>';
+tbody.innerHTML =
+'<tr><td colspan="7">Scanning market...</td></tr>';
 
 return;
 
 }
 
-data.live.forEach(
-item => {
+data.live.forEach(item=>{
 
 tbody.innerHTML +=
+
 '<tr>' +
 
 '<td><b>' +
@@ -2677,14 +3063,11 @@ item.price +
 
 '</tr>';
 
-}
-);
+});
 
 }catch(error){
 
-console.error(
-error
-);
+console.error(error);
 
 }
 
@@ -2694,15 +3077,13 @@ async function emergencyClose(){
 
 if(
 !confirm(
-'Close all open PAPER positions?'
+'Close ALL paper positions?'
 )
 ){
 
 return;
 
 }
-
-try{
 
 const response =
 await fetch(
@@ -2720,14 +3101,6 @@ data.msg
 );
 
 loadData();
-
-}catch(error){
-
-alert(
-'Connection error'
-);
-
-}
 
 }
 
@@ -2748,16 +3121,25 @@ loadData();
 );
 
 // ============================================================
-// 🛑 GRACEFUL SHUTDOWN
+// 🛑 SHUTDOWN
 // ============================================================
 
-function shutdown(signal) {
+function shutdown(
+    signal
+) {
 
     console.log(
-        `🛑 ${signal} received. Saving paper state.`
+        `🛑 ${signal}: saving state`
     );
 
     saveState();
+
+    try {
+
+        ws?.close();
+
+    } catch (_) {
+    }
 
     process.exit(0);
 }
@@ -2790,68 +3172,82 @@ app.listen(
         console.log(
             '=========================================='
         );
-
         console.log(
-            '🚀 LOMY PRECISION ENGINE'
+            '🚀 LOMY PRECISION ENGINE V3'
         );
-
         console.log(
             'Market: REAL BINANCE SPOT'
         );
-
         console.log(
             'Execution: PAPER ONLY'
         );
-
+        console.log(
+            'Prices: WEBSOCKET'
+        );
+        console.log(
+            'Scanner: RATE LIMITED REST'
+        );
         console.log(
             'Starting Balance: $10,000'
         );
-
         console.log(
             `Minimum Score: ${CONFIG.minimumScore}`
         );
-
         console.log(
             '=========================================='
         );
 
         loadState();
 
+        // WebSocket does not consume REST weight
+        connectWebSocket();
+
+        // Try exchangeInfo
+        // If the existing Render IP is still banned,
+        // publicRequest will pause automatically.
         const loaded =
             await loadValidSymbols();
 
-        if (!loaded) {
+        if (
+            !loaded
+        ) {
 
-            console.error(
-                '🛑 Could not load real Binance symbols.'
+            console.log(
+                '⏳ Binance REST currently unavailable. Bot will keep WebSocket alive and retry symbol loading later.'
             );
-
-            return;
         }
 
-        checkDailyReset();
-
-        await monitorPositions();
-
         sendTelegramMessage(
-            `🚀 <b>LOMY PRECISION STARTED</b>\n\n` +
-            `Market: <b>REAL BINANCE SPOT</b>\n` +
-            `Execution: <b>PAPER ONLY</b>\n` +
-            `Equity: $${currentEquity().toFixed(2)}\n` +
-            `Minimum Score: ${CONFIG.minimumScore}\n` +
-            `SL: ${CONFIG.stopLossPct * 100}%\n` +
-            `TP: ${CONFIG.takeProfitPct * 100}%`
+            `🚀 <b>LOMY V3 STARTED</b>\n\n` +
+            `Market: REAL BINANCE SPOT\n` +
+            `Execution: PAPER ONLY\n` +
+            `Prices: WEBSOCKET\n` +
+            `Balance: $${currentEquity().toFixed(2)}\n` +
+            `Entry Score: ${CONFIG.minimumScore}+`
         );
 
+        // Retry initialization periodically if first call
+        // happened during Binance IP ban.
+        setInterval(
+            async () => {
+
+                if (
+                    validSymbols.size === 0 &&
+                    Date.now() >=
+                        restBlockedUntil
+                ) {
+
+                    await loadValidSymbols();
+                }
+
+            },
+            60000
+        );
+
+        // Give websocket time to populate prices
         setTimeout(
             runScanner,
-            2000
-        );
-
-        // Refresh Binance symbol list every 30 minutes
-        setInterval(
-            loadValidSymbols,
-            30 * 60 * 1000
+            15000
         );
     }
 );
