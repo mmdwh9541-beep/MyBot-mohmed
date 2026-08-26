@@ -10,124 +10,111 @@ const app = express();
 app.use(express.json());
 
 const PORT = process.env.PORT || 5000;
-
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
-
 const WS_BASE = 'wss://data-stream.binance.vision';
 
 // ============================================================
-// LOMY PRECISION ENGINE V4.1
-// ADVANCED DATA COLLECTOR
-// WEBSOCKET MARKET DATA ONLY
-// PAPER TRADING ONLY
+// LOMY V4.2 COMPACT
+// PAPER ONLY - BINANCE WEBSOCKET ONLY
 // ============================================================
 
-const CONFIG = {
-    version: '4.1-DATA-COLLECTOR',
+const C = {
+  version: '4.2-COMPACT',
 
-    paperTrading: true,
+  startingBalance: 10000,
+  maxPositions: 10,
+  maxEntriesPerCycle: 2,
 
-    startingBalance: 10000,
-    maxPositions: 10,
-    minimumScore: 80,
+  stopLossPct: 0.01,
+  takeProfitPct: 0.02,
+  feePct: 0.001,
+  slippagePct: 0.0005,
+  dailyLossLimitPct: 0.10,
 
-    stopLossPct: 0.01,
-    takeProfitPct: 0.02,
-    dailyLossLimitPct: 0.10,
+  interval: '5m',
+  warmup: 55,
+  maxCandles: 80,
 
-    feePct: 0.001,
-    slippagePct: 0.0005,
+  universeSize: 300,
+  minQuoteVolume: 250000,
+  universeRefreshMs: 30 * 60 * 1000,
 
-    candleInterval: '5m',
+  // Entry quality
+  minScore: 72,
+  minCMO: 50,
+  maxCMO: 85,
+  minVolume: 1.40,
+  maxVolume: 4.50,
+  maxEma20Distance: 2.25,
+  maxBreakoutDistance: 0.75,
+  maxExtension5: 3.0,
+  maxExtension10: 5.0,
+  maxSupportDistance: 6.0,
+  minATR: 0.10,
+  maxATR: 2.50,
+  minBodyRatio: 0.55,
 
-    minWarmupCandles: 55,
-    maxStoredCandles: 70,
+  // Freshness
+  candidateExpiryMs: 6 * 60 * 1000,
+  maxPriceDriftPct: 0.35,
+  rankingDelayMs: 3000,
 
-    universeSize: 300,
-    minQuoteVolume: 250000,
+  // Cooldown
+  entriesBeforeCooldown: 10,
+  normalCooldownMs: 20 * 60 * 1000,
+  lossStreakLimit: 3,
+  lossCooldownMs: 60 * 60 * 1000,
+  symbolLossCooldownMs: 60 * 60 * 1000,
 
-    universeRefreshMs: 30 * 60 * 1000,
-    controlMessageGapMs: 1000,
-
-    journalMinimumScore: 60,
-    journalMaxRecords: 15000,
-    tradeHistoryMaxRecords: 3000,
-
-    cooldownTrackingMs: 6 * 60 * 60 * 1000,
-
-    // V4.1 only records cooldown information.
-    // It does NOT block trades because of cooldown.
-    enforceLossCooldown: false,
-
-    stateFile: path.join(__dirname, 'paper-state.json')
+  // Storage
+  journalLimit: 15000,
+  historyLimit: 3000,
+  stateFile: path.join(__dirname, 'paper-state-v42.json')
 };
 
 // ============================================================
-// GLOBAL STATE
+// STATE
 // ============================================================
 
-let paperBalance = CONFIG.startingBalance;
-
-let activePositions = {};
-let tradeHistory = [];
-let opportunityJournal = [];
-let lastStopLossBySymbol = {};
+let cash = C.startingBalance;
+let positions = {};
+let history = [];
+let journal = [];
 
 let stats = {
-    totalTrades: 0,
-    winningTrades: 0,
-    losingTrades: 0,
-
-    grossProfit: 0,
-    grossLoss: 0,
-
-    netProfit: 0,
-    totalFees: 0,
-
-    bestTrade: 0,
-    worstTrade: 0,
-
-    maxDrawdown: 0
+  totalTrades: 0,
+  wins: 0,
+  losses: 0,
+  grossProfit: 0,
+  grossLoss: 0,
+  netProfit: 0,
+  fees: 0,
+  maxDrawdown: 0
 };
 
-let journalStats = {
-    analyzedCandles: 0,
-    journaledCandidates: 0,
-    paperEntries: 0,
-    rejectedCandidates: 0
-};
-
-let peakEquity = CONFIG.startingBalance;
-
+let peakEquity = C.startingBalance;
 let dailyPnL = 0;
-let dailyStartingEquity = CONFIG.startingBalance;
-
+let dailyStartEquity = C.startingBalance;
 let currentDay = utcDay();
 
-let tradingPaused = false;
-
-// Manual pause stops NEW entries only.
-// WebSockets and data collection continue.
 let manualPause = false;
+let dailyPause = false;
 
-// ============================================================
-// MARKET CACHE
-// ============================================================
+let entriesSinceCooldown = 0;
+let lossStreak = 0;
+let cooldownUntil = 0;
+let cooldownReason = null;
 
-const marketTickers = new Map();
+const lastStop = {};
 
-const candleBuffers = {};
+const tickers = new Map();
+const candles = {};
+const lastAnalyzed = {};
+const pool = new Map();
 
-const lastAnalyzedCloseTime = {};
-
-let subscribedSymbols = new Set();
-
-let latestResults = [];
-
-// ============================================================
-// WEBSOCKET STATE
-// ============================================================
+let latest = [];
+let subscribed = new Set();
 
 let miniWs = null;
 let klineWs = null;
@@ -138,1752 +125,1203 @@ let klineConnected = false;
 let lastMiniMessage = 0;
 let lastKlineMessage = 0;
 
-let miniReconnectTimer = null;
-let klineReconnectTimer = null;
-
 let universeReady = false;
 let shuttingDown = false;
+let rankTimer = null;
 
 // ============================================================
 // HELPERS
 // ============================================================
 
-function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-function safeNumber(value, fallback = 0) {
-    const n = Number(value);
-    return Number.isFinite(n) ? n : fallback;
+function n(v, fallback = 0) {
+  const x = Number(v);
+  return Number.isFinite(x) ? x : fallback;
 }
 
 function utcDay() {
-    return new Date().toISOString().slice(0, 10);
+  return new Date().toISOString().slice(0, 10);
 }
 
-function pct(numerator, denominator) {
-    if (!denominator) return 0;
-
-    return (numerator / denominator) * 100;
+function pct(diff, base) {
+  return base ? (diff / base) * 100 : 0;
 }
 
-function clamp(value, min, max) {
-    return Math.max(min, Math.min(max, value));
+function clamp(v, a, b) {
+  return Math.max(a, Math.min(b, v));
 }
 
-function ignoredSymbol(symbol) {
-    const ignored = new Set([
-        'USDCUSDT',
-        'FDUSDUSDT',
-        'TUSDUSDT',
-        'USDPUSDT',
-        'BUSDUSDT',
-        'DAIUSDT',
-        'USDEUSDT',
-        'USD1USDT'
-    ]);
-
-    return ignored.has(symbol);
+function ignored(symbol) {
+  return new Set([
+    'USDCUSDT',
+    'FDUSDUSDT',
+    'TUSDUSDT',
+    'USDPUSDT',
+    'BUSDUSDT',
+    'DAIUSDT',
+    'USDEUSDT',
+    'USD1USDT'
+  ]).has(symbol);
 }
 
-function getSessionUTC(timestamp = Date.now()) {
-    const hour = new Date(timestamp).getUTCHours();
+function sessionUTC() {
+  const h = new Date().getUTCHours();
 
-    if (hour >= 0 && hour < 7) {
-        return 'ASIA';
-    }
+  if (h < 7) return 'ASIA';
+  if (h < 13) return 'LONDON';
+  if (h < 16) return 'LONDON_NY';
+  if (h < 21) return 'NEW_YORK';
 
-    if (hour >= 7 && hour < 13) {
-        return 'LONDON';
-    }
-
-    if (hour >= 13 && hour < 16) {
-        return 'LONDON_NY_OVERLAP';
-    }
-
-    if (hour >= 16 && hour < 21) {
-        return 'NEW_YORK';
-    }
-
-    return 'LATE_US';
-}
-
-function recentStop(symbol) {
-    const last = safeNumber(lastStopLossBySymbol[symbol]);
-
-    if (!last) {
-        return {
-            recentStopLoss: false,
-            minutesSinceStopLoss: null
-        };
-    }
-
-    const elapsed = Date.now() - last;
-
-    return {
-        recentStopLoss: elapsed < CONFIG.cooldownTrackingMs,
-        minutesSinceStopLoss: elapsed / 60000
-    };
-}
-
-// ============================================================
-// STATE PERSISTENCE
-// ============================================================
-
-let saveTimer = null;
-
-function scheduleSave() {
-    if (saveTimer) return;
-
-    saveTimer = setTimeout(() => {
-        saveTimer = null;
-        saveState();
-    }, 30000);
-}
-
-function saveState() {
-    try {
-        const buffers = {};
-
-        for (const [symbol, candles] of Object.entries(candleBuffers)) {
-            if (Array.isArray(candles)) {
-                buffers[symbol] = candles.slice(
-                    -CONFIG.maxStoredCandles
-                );
-            }
-        }
-
-        const state = {
-            version: CONFIG.version,
-            savedAt: new Date().toISOString(),
-
-            paperBalance,
-            activePositions,
-
-            tradeHistory: tradeHistory.slice(
-                -CONFIG.tradeHistoryMaxRecords
-            ),
-
-            opportunityJournal: opportunityJournal.slice(
-                -CONFIG.journalMaxRecords
-            ),
-
-            lastStopLossBySymbol,
-
-            stats,
-            journalStats,
-
-            peakEquity,
-
-            dailyPnL,
-            dailyStartingEquity,
-            currentDay,
-
-            tradingPaused,
-            manualPause,
-
-            candleBuffers: buffers,
-
-            lastAnalyzedCloseTime
-        };
-
-        fs.writeFileSync(
-            CONFIG.stateFile,
-            JSON.stringify(state)
-        );
-
-    } catch (error) {
-        console.error(
-            'STATE SAVE ERROR:',
-            error.message
-        );
-    }
-}
-
-function loadState() {
-    try {
-        if (!fs.existsSync(CONFIG.stateFile)) {
-            console.log(
-                'No previous paper state. Starting fresh.'
-            );
-            return;
-        }
-
-        const state = JSON.parse(
-            fs.readFileSync(
-                CONFIG.stateFile,
-                'utf8'
-            )
-        );
-
-        paperBalance = safeNumber(
-            state.paperBalance,
-            CONFIG.startingBalance
-        );
-
-        activePositions =
-            state.activePositions || {};
-
-        tradeHistory =
-            state.tradeHistory || [];
-
-        opportunityJournal =
-            state.opportunityJournal || [];
-
-        lastStopLossBySymbol =
-            state.lastStopLossBySymbol || {};
-
-        stats = {
-            ...stats,
-            ...(state.stats || {})
-        };
-
-        journalStats = {
-            ...journalStats,
-            ...(state.journalStats || {})
-        };
-
-        peakEquity = safeNumber(
-            state.peakEquity,
-            CONFIG.startingBalance
-        );
-
-        dailyPnL = safeNumber(
-            state.dailyPnL
-        );
-
-        dailyStartingEquity = safeNumber(
-            state.dailyStartingEquity,
-            CONFIG.startingBalance
-        );
-
-        currentDay =
-            state.currentDay ||
-            utcDay();
-
-        tradingPaused =
-            Boolean(state.tradingPaused);
-
-        manualPause =
-            Boolean(state.manualPause);
-
-        if (state.candleBuffers) {
-            for (
-                const [symbol, candles]
-                of Object.entries(state.candleBuffers)
-            ) {
-                if (Array.isArray(candles)) {
-                    candleBuffers[symbol] =
-                        candles.slice(
-                            -CONFIG.maxStoredCandles
-                        );
-                }
-            }
-        }
-
-        if (state.lastAnalyzedCloseTime) {
-            Object.assign(
-                lastAnalyzedCloseTime,
-                state.lastAnalyzedCloseTime
-            );
-        }
-
-        console.log(
-            `State restored | Cash $${paperBalance.toFixed(2)} | Open ${Object.keys(activePositions).length} | Journal ${opportunityJournal.length}`
-        );
-
-    } catch (error) {
-        console.error(
-            'STATE RESTORE ERROR:',
-            error.message
-        );
-    }
+  return 'LATE_US';
 }
 
 // ============================================================
 // TELEGRAM
 // ============================================================
 
-const telegramQueue = [];
+const tgQueue = [];
+let tgBusy = false;
 
-let telegramSending = false;
-
-function sendTelegramMessage(text) {
-    if (!TELEGRAM_TOKEN || !CHAT_ID) {
-        return;
-    }
-
-    telegramQueue.push(text);
+function tg(text) {
+  if (TELEGRAM_TOKEN && CHAT_ID) tgQueue.push(text);
 }
 
-async function processTelegramQueue() {
-    if (
-        telegramSending ||
-        !telegramQueue.length
-    ) {
-        return;
+setInterval(async () => {
+  if (tgBusy || !tgQueue.length) return;
+
+  tgBusy = true;
+  const text = tgQueue.shift();
+
+  try {
+    await axios.post(
+      `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,
+      {
+        chat_id: CHAT_ID,
+        text,
+        parse_mode: 'HTML'
+      },
+      { timeout: 10000 }
+    );
+  } catch (e) {
+    if (e.response?.status === 429) {
+      tgQueue.unshift(text);
+      await sleep(5000);
+    } else {
+      console.error('Telegram:', e.message);
     }
+  } finally {
+    tgBusy = false;
+  }
+}, 1200);
 
-    telegramSending = true;
+// ============================================================
+// SAVE / LOAD
+// ============================================================
 
-    const text = telegramQueue.shift();
+let saveTimer = null;
 
-    try {
-        await axios.post(
-            `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,
-            {
-                chat_id: CHAT_ID,
-                text,
-                parse_mode: 'HTML'
-            },
-            {
-                timeout: 10000
-            }
-        );
+function scheduleSave() {
+  if (saveTimer) return;
 
-    } catch (error) {
-        if (error.response?.status === 429) {
-            telegramQueue.unshift(text);
-
-            await sleep(5000);
-
-        } else {
-            console.error(
-                'Telegram:',
-                error.response?.data ||
-                error.message
-            );
-        }
-
-    } finally {
-        telegramSending = false;
-    }
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    saveState();
+  }, 20000);
 }
 
-setInterval(
-    processTelegramQueue,
-    1200
-);
+function saveState() {
+  try {
+    const storedCandles = {};
 
-// ============================================================
-// EQUITY / DRAWDOWN
-// ============================================================
-
-function currentEquity() {
-    let equity = paperBalance;
-
-    for (
-        const position
-        of Object.values(activePositions)
-    ) {
-        const price =
-            marketTickers.get(position.symbol)?.price ||
-            position.lastPrice ||
-            position.entryPrice;
-
-        equity +=
-            position.qty *
-            price;
+    for (const [symbol, arr] of Object.entries(candles)) {
+      if (Array.isArray(arr)) {
+        storedCandles[symbol] = arr.slice(-C.maxCandles);
+      }
     }
 
-    return equity;
+    fs.writeFileSync(
+      C.stateFile,
+      JSON.stringify({
+        cash,
+        positions,
+        history: history.slice(-C.historyLimit),
+        journal: journal.slice(-C.journalLimit),
+        stats,
+        peakEquity,
+        dailyPnL,
+        dailyStartEquity,
+        currentDay,
+        manualPause,
+        dailyPause,
+        entriesSinceCooldown,
+        lossStreak,
+        cooldownUntil,
+        cooldownReason,
+        lastStop,
+        candles: storedCandles,
+        lastAnalyzed
+      })
+    );
+  } catch (e) {
+    console.error('SAVE:', e.message);
+  }
+}
+
+function loadState() {
+  try {
+    if (!fs.existsSync(C.stateFile)) {
+      console.log('No V4.2 state. Starting fresh.');
+      return;
+    }
+
+    const s = JSON.parse(
+      fs.readFileSync(C.stateFile, 'utf8')
+    );
+
+    cash = n(s.cash, C.startingBalance);
+    positions = s.positions || {};
+    history = s.history || [];
+    journal = s.journal || [];
+    stats = { ...stats, ...(s.stats || {}) };
+
+    peakEquity = n(s.peakEquity, C.startingBalance);
+    dailyPnL = n(s.dailyPnL);
+    dailyStartEquity = n(s.dailyStartEquity, C.startingBalance);
+    currentDay = s.currentDay || utcDay();
+
+    manualPause = !!s.manualPause;
+    dailyPause = !!s.dailyPause;
+
+    entriesSinceCooldown = n(s.entriesSinceCooldown);
+    lossStreak = n(s.lossStreak);
+    cooldownUntil = n(s.cooldownUntil);
+    cooldownReason = s.cooldownReason || null;
+
+    Object.assign(lastStop, s.lastStop || {});
+    Object.assign(lastAnalyzed, s.lastAnalyzed || {});
+
+    for (const [symbol, arr] of Object.entries(s.candles || {})) {
+      candles[symbol] = Array.isArray(arr)
+        ? arr.slice(-C.maxCandles)
+        : [];
+    }
+
+    console.log(
+      `State restored | Cash $${cash.toFixed(2)} | Open ${Object.keys(positions).length}`
+    );
+  } catch (e) {
+    console.error('LOAD:', e.message);
+  }
+}
+
+// ============================================================
+// EQUITY / RISK
+// ============================================================
+
+function equity() {
+  let total = cash;
+
+  for (const p of Object.values(positions)) {
+    const price =
+      tickers.get(p.symbol)?.price ||
+      p.lastPrice ||
+      p.entryPrice;
+
+    total += p.qty * price;
+  }
+
+  return total;
 }
 
 function updateDrawdown() {
-    const equity = currentEquity();
+  const e = equity();
 
-    if (equity > peakEquity) {
-        peakEquity = equity;
-    }
+  if (e > peakEquity) peakEquity = e;
 
-    const drawdown =
-        peakEquity > 0
-            ? pct(
-                peakEquity - equity,
-                peakEquity
-            )
-            : 0;
+  const dd = peakEquity
+    ? ((peakEquity - e) / peakEquity) * 100
+    : 0;
 
-    stats.maxDrawdown =
-        Math.max(
-            stats.maxDrawdown,
-            drawdown
-        );
+  stats.maxDrawdown = Math.max(stats.maxDrawdown, dd);
 }
 
-// ============================================================
-// DAILY RISK
-// ============================================================
+function checkNewDay() {
+  const today = utcDay();
 
-function checkDailyReset() {
-    const today = utcDay();
+  if (today === currentDay) return;
 
-    if (today === currentDay) {
-        return;
-    }
+  currentDay = today;
+  dailyPnL = 0;
+  dailyPause = false;
+  dailyStartEquity = equity();
 
-    currentDay = today;
+  scheduleSave();
 
-    dailyPnL = 0;
+  tg(
+    `🌅 <b>NEW PAPER DAY</b>\nEquity: $${dailyStartEquity.toFixed(2)}`
+  );
+}
 
-    tradingPaused = false;
+function checkDailyLoss() {
+  const limit = dailyStartEquity * C.dailyLossLimitPct;
 
-    dailyStartingEquity =
-        currentEquity();
+  if (
+    !dailyPause &&
+    limit > 0 &&
+    dailyPnL <= -limit
+  ) {
+    dailyPause = true;
+    pool.clear();
+
+    tg(
+      `🛑 <b>DAILY LOSS LIMIT</b>\nPnL: $${dailyPnL.toFixed(2)}`
+    );
 
     scheduleSave();
+  }
+}
 
-    sendTelegramMessage(
-        `🌅 <b>NEW PAPER DAY</b>\n` +
-        `Starting Equity: $${dailyStartingEquity.toFixed(2)}`
+// ============================================================
+// COOLDOWN
+// ============================================================
+
+function cooldownActive() {
+  if (!cooldownUntil) return false;
+
+  if (Date.now() >= cooldownUntil) {
+    cooldownUntil = 0;
+    cooldownReason = null;
+    entriesSinceCooldown = 0;
+    pool.clear();
+
+    tg(
+      `▶️ <b>COOLDOWN FINISHED</b>\nFresh signals only.`
     );
+
+    scheduleSave();
+    return false;
+  }
+
+  return true;
 }
 
-function checkDailyLossLimit() {
-    const limit =
-        dailyStartingEquity *
-        CONFIG.dailyLossLimitPct;
+function startCooldown(ms, reason) {
+  const until = Date.now() + ms;
 
-    if (
-        limit > 0 &&
-        dailyPnL <= -limit &&
-        !tradingPaused
-    ) {
-        tradingPaused = true;
+  if (until <= cooldownUntil) return;
 
-        scheduleSave();
+  cooldownUntil = until;
+  cooldownReason = reason;
+  pool.clear();
 
-        sendTelegramMessage(
-            `🛑 <b>DAILY LOSS LIMIT</b>\n` +
-            `Daily PnL: $${dailyPnL.toFixed(2)}\n` +
-            `New entries stopped.`
-        );
-    }
+  tg(
+    `⏸ <b>SMART COOLDOWN</b>\n` +
+    `Reason: ${reason}\n` +
+    `Duration: ${Math.ceil(ms / 60000)} min`
+  );
+
+  scheduleSave();
 }
 
-setInterval(
-    () => {
-        checkDailyReset();
-        updateDrawdown();
-    },
-    10000
-);
+function symbolCooling(symbol) {
+  const t = n(lastStop[symbol]);
+
+  return t &&
+    Date.now() - t < C.symbolLossCooldownMs;
+}
 
 // ============================================================
 // INDICATORS
 // ============================================================
 
-function sma(data, period, key) {
-    if (data.length < period) {
-        return null;
-    }
+function sma(arr, period, key) {
+  if (arr.length < period) return null;
 
-    return data
-        .slice(-period)
-        .reduce(
-            (sum, item) =>
-                sum + item[key],
-            0
-        ) / period;
+  return arr
+    .slice(-period)
+    .reduce((s, x) => s + x[key], 0) / period;
 }
 
-function ema(data, period, key) {
-    if (data.length < period) {
-        return null;
-    }
+function ema(arr, period, key) {
+  if (arr.length < period) return null;
 
-    let result =
-        data
-            .slice(0, period)
-            .reduce(
-                (sum, item) =>
-                    sum + item[key],
-                0
-            ) /
-        period;
+  let result =
+    arr
+      .slice(0, period)
+      .reduce((s, x) => s + x[key], 0) / period;
 
-    const multiplier =
-        2 / (period + 1);
+  const k = 2 / (period + 1);
 
-    for (
-        let i = period;
-        i < data.length;
-        i++
-    ) {
-        result =
-            (
-                data[i][key] -
-                result
-            ) *
-            multiplier +
-            result;
-    }
+  for (let i = period; i < arr.length; i++) {
+    result = (arr[i][key] - result) * k + result;
+  }
 
-    return result;
+  return result;
 }
 
-function cmo(data, period) {
-    if (
-        data.length <
-        period + 1
-    ) {
-        return null;
-    }
+function cmo(arr, period = 9) {
+  if (arr.length < period + 1) return null;
 
-    let up = 0;
-    let down = 0;
+  let up = 0;
+  let down = 0;
 
-    for (
-        let i =
-            data.length - period;
-        i < data.length;
-        i++
-    ) {
-        const diff =
-            data[i].close -
-            data[i - 1].close;
+  for (let i = arr.length - period; i < arr.length; i++) {
+    const d = arr[i].close - arr[i - 1].close;
 
-        if (diff > 0) {
-            up += diff;
-        } else {
-            down +=
-                Math.abs(diff);
-        }
-    }
+    if (d > 0) up += d;
+    else down += Math.abs(d);
+  }
 
-    const total =
-        up + down;
+  return up + down
+    ? 100 * ((up - down) / (up + down))
+    : 0;
+}
 
-    if (total === 0) {
-        return 0;
-    }
+function atr(arr, period = 14) {
+  if (arr.length < period + 1) return null;
 
-    return (
-        100 *
-        (
-            (
-                up -
-                down
-            ) /
-            total
-        )
+  const tr = [];
+
+  for (let i = 1; i < arr.length; i++) {
+    tr.push(
+      Math.max(
+        arr[i].high - arr[i].low,
+        Math.abs(arr[i].high - arr[i - 1].close),
+        Math.abs(arr[i].low - arr[i - 1].close)
+      )
     );
+  }
+
+  return tr
+    .slice(-period)
+    .reduce((a, b) => a + b, 0) / period;
 }
 
-function atr(data, period) {
-    if (
-        data.length <
-        period + 1
-    ) {
-        return null;
-    }
+function structure(arr) {
+  if (arr.length < 2) return 'NEUTRAL';
 
-    const ranges = [];
+  const a = arr[arr.length - 1];
+  const b = arr[arr.length - 2];
 
-    for (
-        let i = 1;
-        i < data.length;
-        i++
-    ) {
-        ranges.push(
-            Math.max(
-                data[i].high -
-                    data[i].low,
+  if (a.high > b.high && a.low > b.low) return 'BULLISH';
+  if (a.high < b.high && a.low < b.low) return 'BEARISH';
 
-                Math.abs(
-                    data[i].high -
-                    data[i - 1].close
-                ),
-
-                Math.abs(
-                    data[i].low -
-                    data[i - 1].close
-                )
-            )
-        );
-    }
-
-    return ranges
-        .slice(-period)
-        .reduce(
-            (a, b) => a + b,
-            0
-        ) / period;
+  return 'NEUTRAL';
 }
 
-// ============================================================
-// MARKET STRUCTURE
-// ============================================================
+function supportResistance(arr, period = 20) {
+  const r = arr.slice(-period);
 
-function structure(candles) {
-    if (candles.length < 4) {
-        return 'NEUTRAL';
-    }
+  return {
+    support: Math.min(...r.map(x => x.low)),
+    resistance: Math.max(...r.map(x => x.high))
+  };
+}
 
-    const last =
-        candles[
-            candles.length - 1
-        ];
+function fibPosition(arr) {
+  const r = arr.slice(-30);
 
-    const previous =
-        candles[
-            candles.length - 2
-        ];
+  if (r.length < 20) return null;
 
-    if (
-        last.high > previous.high &&
-        last.low > previous.low
-    ) {
-        return 'BULLISH';
-    }
+  const high = Math.max(...r.map(x => x.high));
+  const low = Math.min(...r.map(x => x.low));
 
-    if (
-        last.high < previous.high &&
-        last.low < previous.low
-    ) {
-        return 'BEARISH';
-    }
+  if (high <= low) return null;
 
-    return 'NEUTRAL';
+  return (r[r.length - 1].close - low) / (high - low);
 }
 
 // ============================================================
-// SUPPORT / RESISTANCE
+// PRECISION ANALYSIS
 // ============================================================
 
-function supportResistance(
-    candles,
-    period = 20
-) {
-    const recent =
-        candles.slice(-period);
+function analyzeSetup(arr) {
+  if (arr.length < C.warmup) return null;
 
-    if (!recent.length) {
-        return null;
-    }
+  const x = arr[arr.length - 1];
 
-    return {
-        support:
-            Math.min(
-                ...recent.map(
-                    x => x.low
-                )
-            ),
+  const e20 = ema(arr, 20, 'close');
+  const e50 = ema(arr, 50, 'close');
+  const vSma = sma(arr, 20, 'volume');
+  const momentum = cmo(arr);
+  const a = atr(arr);
 
-        resistance:
-            Math.max(
-                ...recent.map(
-                    x => x.high
-                )
-            )
-    };
-}
+  if ([e20, e50, vSma, momentum, a].some(v => v === null)) {
+    return null;
+  }
 
-// ============================================================
-// FIBONACCI POSITION
-// ============================================================
+  const range = x.high - x.low;
+  const body = Math.abs(x.close - x.open);
+  const bodyRatio = range ? body / range : 0;
 
-function fibPosition(candles) {
-    const recent =
-        candles.slice(-30);
+  const bullish = x.close > x.open;
+  const struct = structure(arr);
 
-    if (recent.length < 20) {
-        return null;
-    }
+  const volumeRatio = vSma ? x.volume / vSma : 0;
+  const atrPct = pct(a, x.close);
 
-    const high =
-        Math.max(
-            ...recent.map(
-                c => c.high
-            )
-        );
+  const ema20Distance = pct(x.close - e20, e20);
 
-    const low =
-        Math.min(
-            ...recent.map(
-                c => c.low
-            )
-        );
+  const sr = supportResistance(arr);
+  const supportDistance = pct(x.close - sr.support, sr.support);
 
-    if (high <= low) {
-        return null;
-    }
-
-    return (
-        (
-            candles[
-                candles.length - 1
-            ].close -
-            low
-        ) /
-        (
-            high -
-            low
-        )
+  const previousResistance =
+    Math.max(
+      ...arr.slice(-21, -1).map(v => v.high)
     );
-}
 
-// ============================================================
-// SCORE ENGINE
-// ============================================================
+  const breakout =
+    x.close > previousResistance;
 
-function calculateScore(candles) {
-    if (
-        candles.length <
-        CONFIG.minWarmupCandles
-    ) {
-        return null;
-    }
+  const breakoutDistance =
+    pct(
+      x.close - previousResistance,
+      previousResistance
+    );
 
-    const candle =
-        candles[
-            candles.length - 1
-        ];
-
-    const ema20 =
-        ema(
-            candles,
-            20,
-            'close'
-        );
-
-    const ema50 =
-        ema(
-            candles,
-            50,
-            'close'
-        );
-
-    const volumeSMA =
-        sma(
-            candles,
-            20,
-            'volume'
-        );
-
-    const CMO =
-        cmo(
-            candles,
-            9
-        );
-
-    const ATR =
-        atr(
-            candles,
-            14
-        );
-
-    if (
-        [
-            ema20,
-            ema50,
-            volumeSMA,
-            CMO,
-            ATR
-        ].some(
-            value =>
-                value === null
+  const ext5 =
+    arr.length >= 6
+      ? pct(
+          x.close - arr[arr.length - 6].close,
+          arr[arr.length - 6].close
         )
-    ) {
-        return null;
-    }
-
-    let score = 0;
-
-    const reasons = [];
-
-    if (candle.close > ema20) {
-        score += 10;
-        reasons.push('EMA20');
-    }
-
-    if (
-        ema20 > ema50 &&
-        candle.close > ema50
-    ) {
-        score += 15;
-        reasons.push('UPTREND');
-    }
-
-    const range =
-        candle.high -
-        candle.low;
-
-    const body =
-        Math.abs(
-            candle.close -
-            candle.open
-        );
-
-    const bodyRatio =
-        range > 0
-            ? body / range
-            : 0;
-
-    const bullishCandle =
-        candle.close >
-        candle.open;
-
-    if (
-        bullishCandle &&
-        bodyRatio >= 0.55
-    ) {
-        score += 15;
-        reasons.push(
-            'STRONG_CANDLE'
-        );
-    }
-
-    const volumeRatio =
-        volumeSMA > 0
-            ? candle.volume /
-              volumeSMA
-            : 0;
-
-    if (volumeRatio >= 1.4) {
-        score += 15;
-        reasons.push(
-            'VOLUME_SPIKE'
-        );
-    }
-
-    if (volumeRatio >= 1.2) {
-        score += 10;
-        reasons.push(
-            'LIQUIDITY'
-        );
-    }
-
-    if (CMO >= 50) {
-        score += 15;
-        reasons.push('CMO');
-    }
-
-    const marketStructure =
-        structure(candles);
-
-    if (
-        marketStructure ===
-        'BULLISH'
-    ) {
-        score += 10;
-        reasons.push(
-            'STRUCTURE'
-        );
-    }
-
-    const fib =
-        fibPosition(candles);
-
-    let fibScore = 0;
-
-    if (fib !== null) {
-        if (
-            fib >= 0.382 &&
-            fib <= 0.618
-        ) {
-            fibScore = 5;
-
-        } else if (
-            fib >= 0.30 &&
-            fib <= 0.70
-        ) {
-            fibScore = 3;
-        }
-    }
-
-    score += fibScore;
-
-    if (fibScore > 0) {
-        reasons.push('FIB');
-    }
-
-    if (
-        range >=
-        ATR * 0.8
-    ) {
-        score += 5;
-        reasons.push('ATR');
-    }
-
-    const previous =
-        candles.slice(
-            -21,
-            -1
-        );
-
-    const previousResistance =
-        previous.length
-            ? Math.max(
-                ...previous.map(
-                    c => c.high
-                )
-            )
-            : 0;
-
-    const breakout =
-        previousResistance > 0 &&
-        candle.close >
-            previousResistance;
-
-    if (breakout) {
-        score += 5;
-        reasons.push(
-            'BREAKOUT'
-        );
-    }
-
-    const sr =
-        supportResistance(
-            candles,
-            20
-        );
-
-    return {
-        score:
-            Math.min(
-                score,
-                100
-            ),
-
-        reasons,
-
-        ema20,
-        ema50,
-
-        cmo: CMO,
-        atr: ATR,
-
-        volumeRatio,
-        bodyRatio,
-
-        bullishCandle,
-
-        structure:
-            marketStructure,
-
-        breakout,
-
-        support:
-            sr?.support || 0,
-
-        resistance:
-            sr?.resistance || 0,
-
-        fibPosition:
-            fib,
-
-        range
-    };
-}
-
-// ============================================================
-// ADVANCED MARKET CONTEXT
-// ============================================================
-
-function buildMarketContext(
-    candles,
-    analysis,
-    marketPrice,
-    closeTime
-) {
-    const candle =
-        candles[
-            candles.length - 1
-        ];
-
-    const previous =
-        candles[
-            candles.length - 2
-        ];
-
-    const range =
-        candle.high -
-        candle.low;
-
-    const upperWick =
-        range > 0
-            ? (
-                candle.high -
-                Math.max(
-                    candle.open,
-                    candle.close
-                )
-              ) / range
-            : 0;
-
-    const lowerWick =
-        range > 0
-            ? (
-                Math.min(
-                    candle.open,
-                    candle.close
-                ) -
-                candle.low
-              ) / range
-            : 0;
-
-    const closeLocation =
-        range > 0
-            ? (
-                candle.close -
-                candle.low
-              ) / range
-            : 0;
-
-    const extension5 =
-        candles.length >= 6
-            ? pct(
-                candle.close -
-                    candles[
-                        candles.length - 6
-                    ].close,
-
-                candles[
-                    candles.length - 6
-                ].close
-            )
-            : 0;
-
-    const extension10 =
-        candles.length >= 11
-            ? pct(
-                candle.close -
-                    candles[
-                        candles.length - 11
-                    ].close,
-
-                candles[
-                    candles.length - 11
-                ].close
-            )
-            : 0;
-
-    const ema20DistancePct =
-        pct(
-            marketPrice -
-                analysis.ema20,
-            analysis.ema20
-        );
-
-    const ema50DistancePct =
-        pct(
-            marketPrice -
-                analysis.ema50,
-            analysis.ema50
-        );
-
-    const atrPct =
-        pct(
-            analysis.atr,
-            marketPrice
-        );
-
-    const distanceFromSupportPct =
-        analysis.support > 0
-            ? pct(
-                marketPrice -
-                    analysis.support,
-                analysis.support
-            )
-            : null;
-
-    const distanceToResistancePct =
-        analysis.resistance > 0
-            ? pct(
-                analysis.resistance -
-                    marketPrice,
-                marketPrice
-            )
-            : null;
-
-    const previousResistance =
-        Math.max(
-            ...candles
-                .slice(
-                    -21,
-                    -1
-                )
-                .map(
-                    c => c.high
-                )
-        );
-
-    const breakoutDistancePct =
-        previousResistance > 0
-            ? pct(
-                candle.close -
-                    previousResistance,
-                previousResistance
-            )
-            : 0;
-
-    return {
-        timestamp:
-            Date.now(),
-
-        isoTime:
-            new Date()
-                .toISOString(),
-
-        candleCloseTime:
-            closeTime,
-
-        sessionUTC:
-            getSessionUTC(),
-
-        marketPrice,
-
-        open:
-            candle.open,
-
-        high:
-            candle.high,
-
-        low:
-            candle.low,
-
-        close:
-            candle.close,
-
-        previousClose:
-            previous?.close ||
-            null,
-
-        bodyRatio:
-            analysis.bodyRatio,
-
-        upperWickRatio:
-            upperWick,
-
-        lowerWickRatio:
-            lowerWick,
-
-        closeLocationRatio:
-            clamp(
-                closeLocation,
-                0,
-                1
-            ),
-
-        ema20:
-            analysis.ema20,
-
-        ema50:
-            analysis.ema50,
-
-        ema20DistancePct,
-
-        ema50DistancePct,
-
-        atr:
-            analysis.atr,
-
-        atrPct,
-
-        cmo:
-            analysis.cmo,
-
-        volumeRatio:
-            analysis.volumeRatio,
-
-        structure:
-            analysis.structure,
-
-        breakout:
-            analysis.breakout,
-
-        breakoutDistancePct,
-
-        support:
-            analysis.support,
-
-        resistance:
-            analysis.resistance,
-
-        distanceFromSupportPct,
-
-        distanceToResistancePct,
-
-        fibPosition:
-            analysis.fibPosition,
-
-        extension5Pct:
-            extension5,
-
-        extension10Pct:
-            extension10,
-
-        score:
-            analysis.score,
-
-        reasons:
-            [
-                ...analysis.reasons
-            ]
-    };
-}
-
-// ============================================================
-// ENTRY GATE
-// ============================================================
-
-function evaluateEntryGate(
-    symbol,
-    analysis
-) {
-    const blockers = [];
-
-    const stopInfo =
-        recentStop(symbol);
-
-    const confirmations =
-        analysis.bullishCandle &&
-        analysis.ema20 >
-            analysis.ema50 &&
-        analysis.cmo >= 50 &&
-        analysis.volumeRatio >=
-            1.4 &&
-        analysis.bodyRatio >=
-            0.55 &&
-        analysis.structure ===
-            'BULLISH';
-
-    if (!CONFIG.paperTrading) {
-        blockers.push(
-            'PAPER_DISABLED'
-        );
-    }
-
-    if (manualPause) {
-        blockers.push(
-            'MANUAL_PAUSE'
-        );
-    }
-
-    if (tradingPaused) {
-        blockers.push(
-            'DAILY_RISK_PAUSE'
-        );
-    }
-
-    if (
-        activePositions[
-            symbol
-        ]
-    ) {
-        blockers.push(
-            'ALREADY_OPEN'
-        );
-    }
-
-    if (
-        Object.keys(
-            activePositions
-        ).length >=
-        CONFIG.maxPositions
-    ) {
-        blockers.push(
-            'MAX_POSITIONS'
-        );
-    }
-
-    if (
-        analysis.score <
-        CONFIG.minimumScore
-    ) {
-        blockers.push(
-            'SCORE_LT_MIN'
-        );
-    }
-
-    if (!confirmations) {
-        blockers.push(
-            'HARD_CONFIRMATIONS_FAILED'
-        );
-    }
-
-    if (
-        CONFIG.enforceLossCooldown &&
-        stopInfo.recentStopLoss
-    ) {
-        blockers.push(
-            'LOSS_COOLDOWN'
-        );
-    }
-
-    return {
-        eligible:
-            blockers.length === 0,
-
-        blockers,
-
-        ...stopInfo
-    };
+      : 0;
+
+  const ext10 =
+    arr.length >= 11
+      ? pct(
+          x.close - arr[arr.length - 11].close,
+          arr[arr.length - 11].close
+        )
+      : 0;
+
+  const fib = fibPosition(arr);
+
+  let trend = 0;
+  let entry = 0;
+  let risk = 0;
+  let penalty = 0;
+
+  const good = [];
+  const warnings = [];
+
+  // Trend = 30
+  if (x.close > e20) {
+    trend += 8;
+    good.push('ABOVE_EMA20');
+  }
+
+  if (e20 > e50) {
+    trend += 12;
+    good.push('EMA_TREND');
+  }
+
+  if (struct === 'BULLISH') {
+    trend += 10;
+    good.push('BULLISH_STRUCTURE');
+  }
+
+  // Entry = 40
+  if (bullish && bodyRatio >= C.minBodyRatio) {
+    entry += 10;
+    good.push('STRONG_BODY');
+  }
+
+  if (
+    momentum >= C.minCMO &&
+    momentum <= C.maxCMO
+  ) {
+    entry += 8;
+    good.push('CMO_OK');
+  }
+
+  if (
+    volumeRatio >= C.minVolume &&
+    volumeRatio <= C.maxVolume
+  ) {
+    entry += 10;
+    good.push('VOLUME_OK');
+  }
+
+  if (
+    breakout &&
+    breakoutDistance >= 0 &&
+    breakoutDistance <= C.maxBreakoutDistance
+  ) {
+    entry += 12;
+    good.push('FRESH_BREAKOUT');
+  }
+
+  // Risk = 30
+  if (
+    ema20Distance >= 0 &&
+    ema20Distance <= C.maxEma20Distance
+  ) {
+    risk += 10;
+    good.push('EMA_DISTANCE_OK');
+  }
+
+  if (supportDistance <= C.maxSupportDistance) {
+    risk += 8;
+    good.push('SUPPORT_OK');
+  }
+
+  if (
+    atrPct >= C.minATR &&
+    atrPct <= C.maxATR
+  ) {
+    risk += 6;
+    good.push('ATR_OK');
+  }
+
+  if (
+    ext5 <= C.maxExtension5 &&
+    ext10 <= C.maxExtension10
+  ) {
+    risk += 6;
+    good.push('EXTENSION_OK');
+  }
+
+  // Penalties
+  if (momentum > C.maxCMO) {
+    penalty += 10;
+    warnings.push('CMO_HOT');
+  }
+
+  if (volumeRatio > C.maxVolume) {
+    penalty += 12;
+    warnings.push('VOLUME_EXTREME');
+  }
+
+  if (ema20Distance > C.maxEma20Distance) {
+    penalty += 10;
+    warnings.push('EMA20_EXTENDED');
+  }
+
+  if (breakoutDistance > C.maxBreakoutDistance) {
+    penalty += 10;
+    warnings.push('BREAKOUT_EXTENDED');
+  }
+
+  if (ext5 > C.maxExtension5) {
+    penalty += 8;
+    warnings.push('5C_EXTENDED');
+  }
+
+  if (ext10 > C.maxExtension10) {
+    penalty += 6;
+    warnings.push('10C_EXTENDED');
+  }
+
+  if (supportDistance > C.maxSupportDistance) {
+    penalty += 8;
+    warnings.push('FAR_FROM_SUPPORT');
+  }
+
+  if (fib !== null && fib > 0.97) {
+    penalty += 5;
+    warnings.push('RANGE_HIGH');
+  }
+
+  const score = clamp(
+    trend + entry + risk - penalty,
+    0,
+    100
+  );
+
+  const eligible =
+    bullish &&
+    struct === 'BULLISH' &&
+    e20 > e50 &&
+    momentum >= C.minCMO &&
+    momentum <= C.maxCMO &&
+    volumeRatio >= C.minVolume &&
+    volumeRatio <= C.maxVolume &&
+    bodyRatio >= C.minBodyRatio &&
+    breakout &&
+    breakoutDistance >= 0 &&
+    breakoutDistance <= C.maxBreakoutDistance &&
+    ema20Distance >= 0 &&
+    ema20Distance <= C.maxEma20Distance &&
+    supportDistance <= C.maxSupportDistance &&
+    ext5 <= C.maxExtension5 &&
+    ext10 <= C.maxExtension10 &&
+    atrPct >= C.minATR &&
+    atrPct <= C.maxATR &&
+    score >= C.minScore;
+
+  return {
+    eligible,
+    score,
+    trend,
+    entry,
+    risk,
+    penalty,
+
+    cmo: momentum,
+    volumeRatio,
+    ema20Distance,
+    breakoutDistance,
+    ext5,
+    ext10,
+    atrPct,
+    bodyRatio,
+    supportDistance,
+
+    structure: struct,
+    fibPosition: fib,
+
+    good,
+    warnings
+  };
 }
 
 // ============================================================
 // JOURNAL
 // ============================================================
 
-function recordOpportunity(
-    record
-) {
-    if (
-        record.score <
-        CONFIG.journalMinimumScore
-    ) {
-        return;
-    }
+function logJournal(row) {
+  journal.push({
+    time: Date.now(),
+    ...row
+  });
 
-    opportunityJournal.push(
-        record
-    );
+  if (journal.length > C.journalLimit) {
+    journal = journal.slice(-C.journalLimit);
+  }
 
-    journalStats
-        .journaledCandidates++;
-
-    if (
-        record.decision ===
-        'PAPER_BOUGHT'
-    ) {
-        journalStats
-            .paperEntries++;
-
-    } else if (
-        !record.gateEligible
-    ) {
-        journalStats
-            .rejectedCandidates++;
-    }
-
-    if (
-        opportunityJournal.length >
-        CONFIG.journalMaxRecords
-    ) {
-        opportunityJournal =
-            opportunityJournal.slice(
-                -CONFIG.journalMaxRecords
-            );
-    }
-
-    scheduleSave();
+  scheduleSave();
 }
 
+// ============================================================
+// OPPORTUNITY POOL
+// ============================================================
+
+function addCandidate(symbol, analysis, closeTime) {
+  const price = tickers.get(symbol)?.price;
+
+  if (!price) return;
+
+  const candidate = {
+    symbol,
+    createdAt: Date.now(),
+    expiresAt: Date.now() + C.candidateExpiryMs,
+    closeTime,
+    signalPrice: price,
+
+    score: analysis.score,
+    trend: analysis.trend,
+    entry: analysis.entry,
+    risk: analysis.risk,
+    penalty: analysis.penalty,
+
+    cmo: analysis.cmo,
+    volumeRatio: analysis.volumeRatio,
+    ema20Distance: analysis.ema20Distance,
+    breakoutDistance: analysis.breakoutDistance,
+    ext5: analysis.ext5,
+    ext10: analysis.ext10,
+    atrPct: analysis.atrPct,
+    supportDistance: analysis.supportDistance,
+
+    structure: analysis.structure,
+    fibPosition: analysis.fibPosition,
+
+    good: analysis.good,
+    warnings: analysis.warnings
+  };
+
+  pool.set(symbol, candidate);
+
+  logJournal({
+    type: 'CANDIDATE',
+    decision: 'POOL',
+    ...candidate
+  });
+
+  scheduleRank();
+}
+
+function validateCandidate(candidate) {
+  const reasons = [];
+
+  if (Date.now() > candidate.expiresAt) {
+    reasons.push('EXPIRED');
+  }
+
+  if (positions[candidate.symbol]) {
+    reasons.push('ALREADY_OPEN');
+  }
+
+  if (symbolCooling(candidate.symbol)) {
+    reasons.push('SYMBOL_COOLDOWN');
+  }
+
+  const price =
+    tickers.get(candidate.symbol)?.price;
+
+  if (!price) {
+    reasons.push('NO_PRICE');
+
+    return {
+      valid: false,
+      price: 0,
+      drift: 0,
+      reasons
+    };
+  }
+
+  const drift =
+    pct(
+      price - candidate.signalPrice,
+      candidate.signalPrice
+    );
+
+  if (Math.abs(drift) > C.maxPriceDriftPct) {
+    reasons.push('PRICE_MOVED');
+  }
+
+  return {
+    valid: reasons.length === 0,
+    price,
+    drift,
+    reasons
+  };
+}
+
+function scheduleRank() {
+  if (rankTimer) return;
+
+  rankTimer = setTimeout(() => {
+    rankTimer = null;
+    rankAndExecute();
+  }, C.rankingDelayMs);
+}
+
+// ============================================================
+// END PART 1
+// PASTE PART 2 DIRECTLY BELOW
+// ============================================================
 // ============================================================
 // PAPER BUY
 // ============================================================
 
-function paperBuy(
-    symbol,
-    marketPrice,
-    analysis,
-    context,
-    gate
-) {
-    if (!gate.eligible) {
-        if (
-            gate.blockers.includes(
-                'MANUAL_PAUSE'
-            ) ||
-            gate.blockers.includes(
-                'DAILY_RISK_PAUSE'
-            )
-        ) {
-            return 'PAUSED';
-        }
+function buy(candidate, price) {
+  if (
+    manualPause ||
+    dailyPause ||
+    cooldownActive()
+  ) {
+    return 'PAUSED';
+  }
 
-        if (
-            gate.blockers.includes(
-                'MAX_POSITIONS'
-            )
-        ) {
-            return 'MAX_POSITIONS';
-        }
+  if (positions[candidate.symbol]) {
+    return 'ALREADY_OPEN';
+  }
 
-        if (
-            gate.blockers.includes(
-                'ALREADY_OPEN'
-            )
-        ) {
-            return 'HOLDING';
-        }
+  if (symbolCooling(candidate.symbol)) {
+    return 'SYMBOL_COOLDOWN';
+  }
 
-        return 'WAIT';
-    }
+  if (
+    Object.keys(positions).length >=
+    C.maxPositions
+  ) {
+    return 'MAX_POSITIONS';
+  }
 
-    let allocation =
-        Math.min(
-            currentEquity() /
-                CONFIG.maxPositions,
-
-            paperBalance
-        );
-
-    if (allocation < 10) {
-        return 'NO_BALANCE';
-    }
-
-    const entryPrice =
-        marketPrice *
-        (
-            1 +
-            CONFIG.slippagePct
-        );
-
-    const buyFee =
-        allocation *
-        CONFIG.feePct;
-
-    const qty =
-        (
-            allocation -
-            buyFee
-        ) /
-        entryPrice;
-
-    paperBalance -=
-        allocation;
-
-    stats.totalFees +=
-        buyFee;
-
-    activePositions[
-        symbol
-    ] = {
-        symbol,
-
-        entryPrice,
-
-        qty,
-
-        investedUSDT:
-            allocation,
-
-        stopLoss:
-            entryPrice *
-            (
-                1 -
-                CONFIG.stopLossPct
-            ),
-
-        takeProfit:
-            entryPrice *
-            (
-                1 +
-                CONFIG.takeProfitPct
-            ),
-
-        lastPrice:
-            marketPrice,
-
-        score:
-            analysis.score,
-
-        reasons:
-            [
-                ...analysis.reasons
-            ],
-
-        cmo:
-            analysis.cmo,
-
-        volumeRatio:
-            analysis.volumeRatio,
-
-        structure:
-            analysis.structure,
-
-        entryContext:
-            context,
-
-        entryTime:
-            Date.now()
-    };
-
-    scheduleSave();
-
-    console.log(
-        `PAPER BUY ${symbol} | Score ${analysis.score}`
+  let allocation =
+    Math.min(
+      equity() / C.maxPositions,
+      cash
     );
 
-    sendTelegramMessage(
-        `🟢 <b>PAPER BUY V4.1</b>\n\n` +
-        `<b>${symbol}</b>\n` +
-        `Score: ${analysis.score}/100\n` +
-        `Amount: $${allocation.toFixed(2)}\n` +
-        `Entry: ${entryPrice.toFixed(8)}\n` +
-        `SL: ${activePositions[symbol].stopLoss.toFixed(8)}\n` +
-        `TP: ${activePositions[symbol].takeProfit.toFixed(8)}\n` +
-        `CMO: ${analysis.cmo.toFixed(2)}\n` +
-        `Volume: ${analysis.volumeRatio.toFixed(2)}x\n` +
-        `EMA20 dist: ${context.ema20DistancePct.toFixed(2)}%\n` +
-        `ATR: ${context.atrPct.toFixed(2)}%`
-    );
+  if (allocation < 10) {
+    return 'NO_BALANCE';
+  }
 
-    return 'PAPER_BOUGHT';
+  const entryPrice =
+    price * (1 + C.slippagePct);
+
+  const buyFee =
+    allocation * C.feePct;
+
+  const qty =
+    (allocation - buyFee) /
+    entryPrice;
+
+  cash -= allocation;
+  stats.fees += buyFee;
+
+  positions[candidate.symbol] = {
+    symbol: candidate.symbol,
+    entryPrice,
+    qty,
+    invested: allocation,
+
+    stopLoss:
+      entryPrice *
+      (1 - C.stopLossPct),
+
+    takeProfit:
+      entryPrice *
+      (1 + C.takeProfitPct),
+
+    lastPrice: price,
+
+    score: candidate.score,
+    trend: candidate.trend,
+    entry: candidate.entry,
+    risk: candidate.risk,
+    penalty: candidate.penalty,
+
+    cmo: candidate.cmo,
+    volumeRatio: candidate.volumeRatio,
+    ema20Distance: candidate.ema20Distance,
+    breakoutDistance: candidate.breakoutDistance,
+    ext5: candidate.ext5,
+    ext10: candidate.ext10,
+    atrPct: candidate.atrPct,
+    supportDistance: candidate.supportDistance,
+
+    structure: candidate.structure,
+    fibPosition: candidate.fibPosition,
+
+    good: candidate.good,
+    warnings: candidate.warnings,
+
+    signalPrice: candidate.signalPrice,
+    candidateCreatedAt: candidate.createdAt,
+    session: sessionUTC(),
+
+    entryTime: Date.now()
+  };
+
+  entriesSinceCooldown++;
+
+  logJournal({
+    type: 'ENTRY',
+    decision: 'PAPER_BOUGHT',
+    symbol: candidate.symbol,
+    score: candidate.score,
+    entryPrice,
+    signalPrice: candidate.signalPrice,
+    volumeRatio: candidate.volumeRatio,
+    cmo: candidate.cmo,
+    ema20Distance: candidate.ema20Distance,
+    breakoutDistance: candidate.breakoutDistance
+  });
+
+  tg(
+    `🟢 <b>LOMY V4.2 BUY</b>\n\n` +
+    `<b>${candidate.symbol}</b>\n` +
+    `Score: ${candidate.score}/100\n` +
+    `Trend: ${candidate.trend}\n` +
+    `Entry: ${candidate.entry}\n` +
+    `Risk: ${candidate.risk}\n` +
+    `Penalty: -${candidate.penalty}\n\n` +
+    `Amount: $${allocation.toFixed(2)}\n` +
+    `Entry: ${entryPrice.toFixed(8)}\n` +
+    `SL: ${positions[candidate.symbol].stopLoss.toFixed(8)}\n` +
+    `TP: ${positions[candidate.symbol].takeProfit.toFixed(8)}`
+  );
+
+  scheduleSave();
+
+  if (
+    entriesSinceCooldown >=
+    C.entriesBeforeCooldown
+  ) {
+    startCooldown(
+      C.normalCooldownMs,
+      'BATCH_COMPLETE'
+    );
+  }
+
+  return 'PAPER_BOUGHT';
 }
 
 // ============================================================
-// END OF PART 1
-// PART 2 MUST BE PASTED DIRECTLY BELOW THIS LINE
-// ============================================================
-// ============================================================
-// PAPER CLOSE
+// RANKING
 // ============================================================
 
-function closePaperPosition(
-    symbol,
-    marketPrice,
-    reason
-) {
-    const trade =
-        activePositions[symbol];
+function rankAndExecute() {
+  if (
+    manualPause ||
+    dailyPause ||
+    cooldownActive()
+  ) {
+    return;
+  }
 
-    if (!trade) {
-        return null;
-    }
+  const freeSlots =
+    C.maxPositions -
+    Object.keys(positions).length;
 
-    const exitPrice =
-        marketPrice *
-        (1 - CONFIG.slippagePct);
+  if (freeSlots <= 0) return;
 
-    const grossExit =
-        trade.qty *
-        exitPrice;
+  const valid = [];
 
-    const sellFee =
-        grossExit *
-        CONFIG.feePct;
+  for (const [symbol, candidate] of pool) {
+    const check =
+      validateCandidate(candidate);
 
-    const netExit =
-        grossExit -
-        sellFee;
-
-    const profit =
-        netExit -
-        trade.investedUSDT;
-
-    paperBalance +=
-        netExit;
-
-    stats.totalTrades++;
-
-    stats.totalFees +=
-        sellFee;
-
-    stats.netProfit +=
-        profit;
-
-    if (profit > 0) {
-        stats.winningTrades++;
-
-        stats.grossProfit +=
-            profit;
-
-        stats.bestTrade =
-            Math.max(
-                stats.bestTrade,
-                profit
-            );
-
-    } else {
-        stats.losingTrades++;
-
-        stats.grossLoss +=
-            Math.abs(profit);
-
-        stats.worstTrade =
-            Math.min(
-                stats.worstTrade,
-                profit
-            );
-    }
-
-    dailyPnL +=
-        profit;
-
-    if (
-        reason ===
-        'STOP_LOSS'
-    ) {
-        lastStopLossBySymbol[
-            symbol
-        ] = Date.now();
-    }
-
-    const holdingMs =
-        Date.now() -
-        trade.entryTime;
-
-    const buyFee =
-        trade.investedUSDT *
-        CONFIG.feePct;
-
-    tradeHistory.push({
+    if (!check.valid) {
+      logJournal({
+        type: 'REJECT_AT_EXECUTION',
         symbol,
+        score: candidate.score,
+        reasons: check.reasons
+      });
 
-        score:
-            trade.score,
-
-        entryPrice:
-            trade.entryPrice,
-
-        exitPrice,
-
-        qty:
-            trade.qty,
-
-        investedUSDT:
-            trade.investedUSDT,
-
-        profit,
-
-        profitPct:
-            pct(
-                profit,
-                trade.investedUSDT
-            ),
-
-        reason,
-
-        cmo:
-            trade.cmo,
-
-        volumeRatio:
-            trade.volumeRatio,
-
-        structure:
-            trade.structure,
-
-        reasons:
-            trade.reasons,
-
-        buyFee,
-
-        sellFee,
-
-        estimatedTotalFees:
-            buyFee +
-            sellFee,
-
-        simulatedSlippagePct:
-            CONFIG.slippagePct,
-
-        holdingMs,
-
-        holdingMinutes:
-            holdingMs /
-            60000,
-
-        entryContext:
-            trade.entryContext ||
-            null,
-
-        exitContext: {
-            marketPrice,
-
-            exitPrice,
-
-            timestamp:
-                Date.now(),
-
-            isoTime:
-                new Date()
-                    .toISOString(),
-
-            sessionUTC:
-                getSessionUTC(),
-
-            reason
-        },
-
-        entryTime:
-            trade.entryTime,
-
-        exitTime:
-            Date.now()
-    });
-
-    if (
-        tradeHistory.length >
-        CONFIG.tradeHistoryMaxRecords
-    ) {
-        tradeHistory =
-            tradeHistory.slice(
-                -CONFIG.tradeHistoryMaxRecords
-            );
+      pool.delete(symbol);
+      continue;
     }
 
-    delete activePositions[
-        symbol
-    ];
+    valid.push({
+      candidate,
+      price: check.price,
+      drift: check.drift
+    });
+  }
 
-    updateDrawdown();
+  valid.sort((a, b) => {
+    if (
+      b.candidate.score !==
+      a.candidate.score
+    ) {
+      return (
+        b.candidate.score -
+        a.candidate.score
+      );
+    }
 
-    checkDailyLossLimit();
+    if (
+      a.candidate.penalty !==
+      b.candidate.penalty
+    ) {
+      return (
+        a.candidate.penalty -
+        b.candidate.penalty
+      );
+    }
 
-    scheduleSave();
+    return (
+      a.candidate.ema20Distance -
+      b.candidate.ema20Distance
+    );
+  });
 
-    console.log(
-        `PAPER CLOSE ${symbol} | ${reason} | ${profit.toFixed(2)}`
+  const maxNew =
+    Math.min(
+      C.maxEntriesPerCycle,
+      freeSlots
     );
 
-    sendTelegramMessage(
-        `${profit >= 0 ? '✅' : '❌'} <b>PAPER CLOSE V4.1</b>\n\n` +
-        `<b>${symbol}</b>\n` +
-        `Reason: ${reason}\n` +
-        `PnL: $${profit.toFixed(2)}\n` +
-        `Holding: ${(holdingMs / 60000).toFixed(1)} min\n` +
-        `Cash: $${paperBalance.toFixed(2)}`
+  let opened = 0;
+
+  for (const row of valid) {
+    if (opened >= maxNew) break;
+    if (cooldownActive()) break;
+
+    const result =
+      buy(
+        row.candidate,
+        row.price
+      );
+
+    if (result === 'PAPER_BOUGHT') {
+      opened++;
+      pool.delete(
+        row.candidate.symbol
+      );
+    }
+  }
+}
+
+// ============================================================
+// CLOSE POSITION
+// ============================================================
+
+function closePosition(
+  symbol,
+  marketPrice,
+  reason
+) {
+  const p = positions[symbol];
+
+  if (!p) return null;
+
+  const exitPrice =
+    marketPrice *
+    (1 - C.slippagePct);
+
+  const gross =
+    p.qty * exitPrice;
+
+  const sellFee =
+    gross * C.feePct;
+
+  const net =
+    gross - sellFee;
+
+  const profit =
+    net - p.invested;
+
+  cash += net;
+
+  stats.totalTrades++;
+  stats.fees += sellFee;
+  stats.netProfit += profit;
+
+  if (profit > 0) {
+    stats.wins++;
+    stats.grossProfit += profit;
+    lossStreak = 0;
+  } else {
+    stats.losses++;
+    stats.grossLoss += Math.abs(profit);
+
+    if (reason === 'STOP_LOSS') {
+      lossStreak++;
+      lastStop[symbol] = Date.now();
+    } else {
+      lossStreak = 0;
+    }
+  }
+
+  dailyPnL += profit;
+
+  const holdingMs =
+    Date.now() - p.entryTime;
+
+  const record = {
+    symbol,
+    score: p.score,
+
+    entryPrice: p.entryPrice,
+    exitPrice,
+
+    invested: p.invested,
+
+    profit,
+    profitPct:
+      pct(
+        profit,
+        p.invested
+      ),
+
+    reason,
+
+    cmo: p.cmo,
+    volumeRatio: p.volumeRatio,
+    ema20Distance: p.ema20Distance,
+    breakoutDistance: p.breakoutDistance,
+    ext5: p.ext5,
+    ext10: p.ext10,
+    atrPct: p.atrPct,
+    supportDistance: p.supportDistance,
+
+    trend: p.trend,
+    entry: p.entry,
+    risk: p.risk,
+    penalty: p.penalty,
+
+    good: p.good,
+    warnings: p.warnings,
+
+    buyFee:
+      p.invested * C.feePct,
+
+    sellFee,
+
+    holdingMinutes:
+      holdingMs / 60000,
+
+    entryTime:
+      p.entryTime,
+
+    exitTime:
+      Date.now()
+  };
+
+  history.push(record);
+
+  if (history.length > C.historyLimit) {
+    history =
+      history.slice(-C.historyLimit);
+  }
+
+  logJournal({
+    type: 'TRADE_CLOSE',
+    ...record
+  });
+
+  delete positions[symbol];
+
+  updateDrawdown();
+  checkDailyLoss();
+
+  tg(
+    `${profit >= 0 ? '✅' : '❌'} <b>LOMY V4.2 CLOSE</b>\n\n` +
+    `<b>${symbol}</b>\n` +
+    `Reason: ${reason}\n` +
+    `PnL: $${profit.toFixed(2)}\n` +
+    `Holding: ${(holdingMs / 60000).toFixed(1)} min\n` +
+    `Loss Streak: ${lossStreak}\n` +
+    `Cash: $${cash.toFixed(2)}`
+  );
+
+  if (
+    lossStreak >=
+    C.lossStreakLimit
+  ) {
+    startCooldown(
+      C.lossCooldownMs,
+      'LOSS_STREAK'
     );
 
-    return profit;
+    lossStreak = 0;
+  }
+
+  scheduleSave();
+  scheduleRank();
+
+  return profit;
 }
 
 // ============================================================
 // LIVE POSITION MONITOR
 // ============================================================
 
-function manageOpenPosition(
-    symbol,
-    price
+function managePosition(
+  symbol,
+  price
 ) {
-    const position =
-        activePositions[
-            symbol
-        ];
+  const p = positions[symbol];
 
-    if (!position) {
-        return;
-    }
+  if (!p) return;
 
-    position.lastPrice =
-        price;
+  p.lastPrice = price;
 
-    if (
-        price <=
-        position.stopLoss
-    ) {
-        closePaperPosition(
-            symbol,
-            price,
-            'STOP_LOSS'
-        );
+  if (price <= p.stopLoss) {
+    closePosition(
+      symbol,
+      price,
+      'STOP_LOSS'
+    );
 
-        return;
-    }
+    return;
+  }
 
-    if (
-        price >=
-        position.takeProfit
-    ) {
-        closePaperPosition(
-            symbol,
-            price,
-            'TAKE_PROFIT'
-        );
-    }
+  if (price >= p.takeProfit) {
+    closePosition(
+      symbol,
+      price,
+      'TAKE_PROFIT'
+    );
+  }
 }
 
 // ============================================================
@@ -1891,1593 +1329,932 @@ function manageOpenPosition(
 // ============================================================
 
 function analyzeClosedCandle(
-    symbol,
+  symbol,
+  closeTime
+) {
+  const arr = candles[symbol];
+
+  if (
+    !Array.isArray(arr) ||
+    arr.length < C.warmup
+  ) {
+    return;
+  }
+
+  if (
+    lastAnalyzed[symbol] ===
     closeTime
-) {
-    const candles =
-        candleBuffers[
-            symbol
-        ];
+  ) {
+    return;
+  }
 
-    if (
-        !Array.isArray(candles) ||
-        candles.length <
-            CONFIG.minWarmupCandles
-    ) {
-        return;
-    }
+  lastAnalyzed[symbol] =
+    closeTime;
 
-    if (
-        lastAnalyzedCloseTime[
-            symbol
-        ] === closeTime
-    ) {
-        return;
-    }
+  const analysis =
+    analyzeSetup(arr);
 
-    lastAnalyzedCloseTime[
-        symbol
-    ] = closeTime;
+  if (!analysis) return;
 
-    const analysis =
-        calculateScore(
-            candles
-        );
+  const blockers = [];
 
-    if (!analysis) {
-        return;
-    }
+  if (manualPause) {
+    blockers.push('MANUAL_PAUSE');
+  }
 
-    journalStats
-        .analyzedCandles++;
+  if (dailyPause) {
+    blockers.push('DAILY_PAUSE');
+  }
 
-    const ticker =
-        marketTickers.get(
-            symbol
-        );
+  if (cooldownActive()) {
+    blockers.push('SMART_COOLDOWN');
+  }
 
-    const marketPrice =
-        ticker?.price ||
-        candles[
-            candles.length - 1
-        ].close;
+  if (positions[symbol]) {
+    blockers.push('ALREADY_OPEN');
+  }
 
-    const context =
-        buildMarketContext(
-            candles,
-            analysis,
-            marketPrice,
-            closeTime
-        );
+  if (symbolCooling(symbol)) {
+    blockers.push('SYMBOL_COOLDOWN');
+  }
 
-    const gate =
-        evaluateEntryGate(
-            symbol,
-            analysis
-        );
+  let decision = 'REJECTED';
 
-    let decision =
-        'WAIT';
-
-    if (
-        activePositions[
-            symbol
-        ]
-    ) {
-        decision =
-            'HOLDING';
-
-    } else {
-        decision =
-            paperBuy(
-                symbol,
-                marketPrice,
-                analysis,
-                context,
-                gate
-            );
-    }
-
-    recordOpportunity({
-        symbol,
-
-        score:
-            analysis.score,
-
-        decision,
-
-        gateEligible:
-            gate.eligible,
-
-        blockers:
-            [
-                ...gate.blockers
-            ],
-
-        price:
-            marketPrice,
-
-        cmo:
-            analysis.cmo,
-
-        volumeRatio:
-            analysis.volumeRatio,
-
-        structure:
-            analysis.structure,
-
-        reasons:
-            [
-                ...analysis.reasons
-            ],
-
-        recentStopLoss:
-            gate.recentStopLoss,
-
-        minutesSinceStopLoss:
-            gate.minutesSinceStopLoss,
-
-        context,
-
-        candleTime:
-            closeTime,
-
-        recordedAt:
-            Date.now()
-    });
-
-    latestResults.push({
-        symbol,
-
-        score:
-            analysis.score,
-
-        decision,
-
-        price:
-            marketPrice,
-
-        cmo:
-            analysis.cmo
-                .toFixed(2),
-
-        volume:
-            analysis.volumeRatio
-                .toFixed(2),
-
-        structure:
-            analysis.structure,
-
-        ema20DistancePct:
-            context
-                .ema20DistancePct
-                .toFixed(2),
-
-        atrPct:
-            context
-                .atrPct
-                .toFixed(2),
-
-        extension5Pct:
-            context
-                .extension5Pct
-                .toFixed(2),
-
-        blockers:
-            gate.blockers
-                .join(', '),
-
-        reasons:
-            analysis.reasons
-                .join(', '),
-
-        candleTime:
-            closeTime
-    });
-
-    latestResults =
-        latestResults
-            .sort(
-                (a, b) =>
-                    b.score -
-                    a.score
-            )
-            .slice(
-                0,
-                50
-            );
-
-    scheduleSave();
-}
-
-// ============================================================
-// WEBSOCKET CONTROL QUEUE
-// ============================================================
-
-const wsControlQueue = [];
-
-let wsControlSending = false;
-
-function queueControlMessage(
-    message
-) {
-    wsControlQueue.push(
-        message
+  if (
+    analysis.eligible &&
+    !blockers.length
+  ) {
+    addCandidate(
+      symbol,
+      analysis,
+      closeTime
     );
+
+    decision = 'POOL';
+  } else {
+    logJournal({
+      type: 'ANALYSIS',
+      symbol,
+      decision: 'REJECTED',
+      blockers,
+
+      score: analysis.score,
+      trend: analysis.trend,
+      entry: analysis.entry,
+      risk: analysis.risk,
+      penalty: analysis.penalty,
+
+      cmo: analysis.cmo,
+      volumeRatio: analysis.volumeRatio,
+      ema20Distance: analysis.ema20Distance,
+      breakoutDistance: analysis.breakoutDistance,
+      ext5: analysis.ext5,
+      ext10: analysis.ext10,
+
+      warnings: analysis.warnings
+    });
+  }
+
+  latest.push({
+    symbol,
+    decision,
+
+    score: analysis.score,
+    trend: analysis.trend,
+    entry: analysis.entry,
+    risk: analysis.risk,
+    penalty: analysis.penalty,
+
+    cmo:
+      analysis.cmo.toFixed(2),
+
+    volume:
+      analysis.volumeRatio.toFixed(2),
+
+    ema:
+      analysis.ema20Distance.toFixed(2),
+
+    breakout:
+      analysis.breakoutDistance.toFixed(2),
+
+    ext5:
+      analysis.ext5.toFixed(2),
+
+    warnings:
+      analysis.warnings.join(', ')
+  });
+
+  latest =
+    latest
+      .sort(
+        (a, b) =>
+          b.score - a.score
+      )
+      .slice(0, 50);
+
+  scheduleSave();
 }
-
-async function processControlQueue() {
-    if (
-        wsControlSending ||
-        wsControlQueue.length === 0
-    ) {
-        return;
-    }
-
-    if (
-        !klineWs ||
-        klineWs.readyState !==
-            WebSocket.OPEN
-    ) {
-        return;
-    }
-
-    wsControlSending = true;
-
-    const message =
-        wsControlQueue.shift();
-
-    try {
-        klineWs.send(
-            JSON.stringify(
-                message
-            )
-        );
-
-    } catch (error) {
-        console.error(
-            'WS CONTROL:',
-            error.message
-        );
-
-    } finally {
-        await sleep(
-            CONFIG.controlMessageGapMs
-        );
-
-        wsControlSending = false;
-    }
-}
-
-setInterval(
-    processControlQueue,
-    250
-);
 
 // ============================================================
 // MINI TICKER WEBSOCKET
 // ============================================================
 
-function connectMiniTicker() {
-    if (shuttingDown) {
-        return;
-    }
+function connectMini() {
+  if (shuttingDown) return;
 
-    if (
-        miniWs &&
-        (
-            miniWs.readyState ===
-                WebSocket.OPEN ||
-            miniWs.readyState ===
-                WebSocket.CONNECTING
-        )
-    ) {
-        return;
-    }
+  if (
+    miniWs &&
+    (
+      miniWs.readyState ===
+        WebSocket.OPEN ||
+      miniWs.readyState ===
+        WebSocket.CONNECTING
+    )
+  ) {
+    return;
+  }
+
+  console.log(
+    'Connecting MINI ticker...'
+  );
+
+  miniWs =
+    new WebSocket(
+      `${WS_BASE}/ws/!miniTicker@arr`
+    );
+
+  miniWs.on('open', () => {
+    miniConnected = true;
+    lastMiniMessage = Date.now();
 
     console.log(
-        'Connecting MINI TICKER WebSocket...'
+      'MINI ticker connected.'
     );
 
-    miniWs =
-        new WebSocket(
-            `${WS_BASE}/ws/!miniTicker@arr`
+    tg(
+      '🟢 <b>LOMY V4.2 Market Stream Connected</b>'
+    );
+  });
+
+  miniWs.on('message', raw => {
+    lastMiniMessage = Date.now();
+
+    let data;
+
+    try {
+      data =
+        JSON.parse(
+          raw.toString()
         );
-
-    miniWs.on(
-        'open',
-        () => {
-            miniConnected =
-                true;
-
-            lastMiniMessage =
-                Date.now();
-
-            console.log(
-                'MINI TICKER WebSocket connected.'
-            );
-
-            sendTelegramMessage(
-                '🟢 <b>Market Price Stream Connected</b>'
-            );
-        }
-    );
-
-    miniWs.on(
-        'message',
-        raw => {
-            lastMiniMessage =
-                Date.now();
-
-            let data;
-
-            try {
-                data =
-                    JSON.parse(
-                        raw.toString()
-                    );
-
-            } catch (_) {
-                return;
-            }
-
-            if (
-                !Array.isArray(data)
-            ) {
-                return;
-            }
-
-            for (
-                const item
-                of data
-            ) {
-                const symbol =
-                    item.s;
-
-                if (
-                    !symbol ||
-                    !symbol.endsWith(
-                        'USDT'
-                    ) ||
-                    ignoredSymbol(
-                        symbol
-                    )
-                ) {
-                    continue;
-                }
-
-                const price =
-                    safeNumber(
-                        item.c
-                    );
-
-                const quoteVolume =
-                    safeNumber(
-                        item.q
-                    );
-
-                if (
-                    price <= 0
-                ) {
-                    continue;
-                }
-
-                marketTickers.set(
-                    symbol,
-                    {
-                        price,
-
-                        quoteVolume,
-
-                        updatedAt:
-                            Date.now()
-                    }
-                );
-
-                if (
-                    activePositions[
-                        symbol
-                    ]
-                ) {
-                    manageOpenPosition(
-                        symbol,
-                        price
-                    );
-                }
-            }
-
-            if (
-                !universeReady &&
-                marketTickers.size >
-                    100
-            ) {
-                universeReady =
-                    true;
-
-                setTimeout(
-                    rebalanceUniverse,
-                    3000
-                );
-            }
-        }
-    );
-
-    miniWs.on(
-        'close',
-        () => {
-            miniConnected =
-                false;
-
-            console.log(
-                'MINI WebSocket disconnected.'
-            );
-
-            scheduleMiniReconnect();
-        }
-    );
-
-    miniWs.on(
-        'error',
-        error => {
-            console.error(
-                'MINI WS:',
-                error.message
-            );
-        }
-    );
-}
-
-function scheduleMiniReconnect() {
-    if (
-        shuttingDown ||
-        miniReconnectTimer
-    ) {
-        return;
+    } catch {
+      return;
     }
 
-    miniReconnectTimer =
-        setTimeout(
-            () => {
-                miniReconnectTimer =
-                    null;
+    if (!Array.isArray(data)) return;
 
-                connectMiniTicker();
-            },
-            5000
+    for (const item of data) {
+      const symbol = item.s;
+
+      if (
+        !symbol ||
+        !symbol.endsWith('USDT') ||
+        ignored(symbol)
+      ) {
+        continue;
+      }
+
+      const price = n(item.c);
+      const quoteVolume = n(item.q);
+
+      if (price <= 0) continue;
+
+      tickers.set(
+        symbol,
+        {
+          price,
+          quoteVolume,
+          updatedAt: Date.now()
+        }
+      );
+
+      if (positions[symbol]) {
+        managePosition(
+          symbol,
+          price
         );
+      }
+    }
+
+    if (
+      !universeReady &&
+      tickers.size > 100
+    ) {
+      universeReady = true;
+
+      setTimeout(
+        rebalanceUniverse,
+        3000
+      );
+    }
+  });
+
+  miniWs.on('close', () => {
+    miniConnected = false;
+
+    console.log(
+      'MINI disconnected.'
+    );
+
+    setTimeout(
+      connectMini,
+      5000
+    );
+  });
+
+  miniWs.on('error', e => {
+    console.error(
+      'MINI:',
+      e.message
+    );
+  });
 }
 
 // ============================================================
 // KLINE WEBSOCKET
 // ============================================================
 
-function connectKlineSocket() {
-    if (shuttingDown) {
-        return;
-    }
+const controlQueue = [];
+let controlBusy = false;
 
-    if (
-        klineWs &&
-        (
-            klineWs.readyState ===
-                WebSocket.OPEN ||
-            klineWs.readyState ===
-                WebSocket.CONNECTING
-        )
-    ) {
-        return;
-    }
+function sendControl(msg) {
+  controlQueue.push(msg);
+}
+
+setInterval(async () => {
+  if (
+    controlBusy ||
+    !controlQueue.length ||
+    !klineWs ||
+    klineWs.readyState !==
+      WebSocket.OPEN
+  ) {
+    return;
+  }
+
+  controlBusy = true;
+
+  const msg =
+    controlQueue.shift();
+
+  try {
+    klineWs.send(
+      JSON.stringify(msg)
+    );
+  } catch (e) {
+    console.error(
+      'WS CONTROL:',
+      e.message
+    );
+  }
+
+  await sleep(1000);
+
+  controlBusy = false;
+}, 250);
+
+function connectKline() {
+  if (shuttingDown) return;
+
+  if (
+    klineWs &&
+    (
+      klineWs.readyState ===
+        WebSocket.OPEN ||
+      klineWs.readyState ===
+        WebSocket.CONNECTING
+    )
+  ) {
+    return;
+  }
+
+  console.log(
+    'Connecting KLINE...'
+  );
+
+  klineWs =
+    new WebSocket(
+      `${WS_BASE}/ws`
+    );
+
+  klineWs.on('open', () => {
+    klineConnected = true;
+    lastKlineMessage = Date.now();
 
     console.log(
-        'Connecting KLINE WebSocket...'
+      'KLINE connected.'
     );
 
-    klineWs =
-        new WebSocket(
-            `${WS_BASE}/ws`
+    if (subscribed.size) {
+      sendControl({
+        method: 'SUBSCRIBE',
+
+        params:
+          Array.from(subscribed)
+            .map(
+              s =>
+                `${s.toLowerCase()}@kline_${C.interval}`
+            ),
+
+        id: Date.now()
+      });
+    }
+  });
+
+  klineWs.on('message', raw => {
+    lastKlineMessage = Date.now();
+
+    let event;
+
+    try {
+      event =
+        JSON.parse(
+          raw.toString()
         );
+    } catch {
+      return;
+    }
 
-    klineWs.on(
-        'open',
-        () => {
-            klineConnected =
-                true;
-
-            lastKlineMessage =
-                Date.now();
-
-            console.log(
-                'KLINE WebSocket connected.'
-            );
-
-            if (
-                subscribedSymbols.size >
-                0
-            ) {
-                queueControlMessage({
-                    method:
-                        'SUBSCRIBE',
-
-                    params:
-                        Array.from(
-                            subscribedSymbols
-                        ).map(
-                            symbol =>
-                                `${symbol.toLowerCase()}@kline_${CONFIG.candleInterval}`
-                        ),
-
-                    id:
-                        Date.now()
-                });
-            }
-        }
-    );
-
-    klineWs.on(
-        'message',
-        raw => {
-            lastKlineMessage =
-                Date.now();
-
-            let event;
-
-            try {
-                event =
-                    JSON.parse(
-                        raw.toString()
-                    );
-
-            } catch (_) {
-                return;
-            }
-
-            // Subscription ACK
-            if (
-                Object.prototype
-                    .hasOwnProperty.call(
-                        event,
-                        'result'
-                    )
-            ) {
-                return;
-            }
-
-            if (
-                event.e !==
-                    'kline' ||
-                !event.k
-            ) {
-                return;
-            }
-
-            const kline =
-                event.k;
-
-            // Closed candles only
-            if (
-                kline.x !==
-                true
-            ) {
-                return;
-            }
-
-            const symbol =
-                event.s;
-
-            if (!symbol) {
-                return;
-            }
-
-            const candle = {
-                open:
-                    safeNumber(
-                        kline.o
-                    ),
-
-                high:
-                    safeNumber(
-                        kline.h
-                    ),
-
-                low:
-                    safeNumber(
-                        kline.l
-                    ),
-
-                close:
-                    safeNumber(
-                        kline.c
-                    ),
-
-                volume:
-                    safeNumber(
-                        kline.v
-                    ),
-
-                closeTime:
-                    kline.T
-            };
-
-            if (
-                !candleBuffers[
-                    symbol
-                ]
-            ) {
-                candleBuffers[
-                    symbol
-                ] = [];
-            }
-
-            const buffer =
-                candleBuffers[
-                    symbol
-                ];
-
-            const existingIndex =
-                buffer.findIndex(
-                    c =>
-                        c.closeTime ===
-                        candle.closeTime
-                );
-
-            if (
-                existingIndex >= 0
-            ) {
-                buffer[
-                    existingIndex
-                ] = candle;
-
-            } else {
-                buffer.push(
-                    candle
-                );
-            }
-
-            candleBuffers[
-                symbol
-            ] =
-                buffer
-                    .sort(
-                        (a, b) =>
-                            a.closeTime -
-                            b.closeTime
-                    )
-                    .slice(
-                        -CONFIG.maxStoredCandles
-                    );
-
-            analyzeClosedCandle(
-                symbol,
-                candle.closeTime
-            );
-
-            scheduleSave();
-        }
-    );
-
-    klineWs.on(
-        'close',
-        () => {
-            klineConnected =
-                false;
-
-            console.log(
-                'KLINE WebSocket disconnected.'
-            );
-
-            scheduleKlineReconnect();
-        }
-    );
-
-    klineWs.on(
-        'error',
-        error => {
-            console.error(
-                'KLINE WS:',
-                error.message
-            );
-        }
-    );
-}
-
-function scheduleKlineReconnect() {
     if (
-        shuttingDown ||
-        klineReconnectTimer
+      Object.prototype
+        .hasOwnProperty
+        .call(
+          event,
+          'result'
+        )
     ) {
-        return;
+      return;
     }
 
-    klineReconnectTimer =
-        setTimeout(
-            () => {
-                klineReconnectTimer =
-                    null;
-
-                connectKlineSocket();
-            },
-            5000
-        );
-}
-
-// ============================================================
-// TOP MARKET UNIVERSE
-// ============================================================
-
-function getTopSymbols() {
-    const rows = [];
-
-    for (
-        const [
-            symbol,
-            ticker
-        ]
-        of marketTickers
+    if (
+      event.e !== 'kline' ||
+      !event.k ||
+      event.k.x !== true
     ) {
-        if (
-            !symbol.endsWith(
-                'USDT'
-            ) ||
-            ignoredSymbol(
-                symbol
-            ) ||
-            ticker.quoteVolume <
-                CONFIG.minQuoteVolume
-        ) {
-            continue;
-        }
-
-        rows.push({
-            symbol,
-
-            quoteVolume:
-                ticker.quoteVolume
-        });
+      return;
     }
 
-    return rows
+    const symbol = event.s;
+    const k = event.k;
+
+    if (!symbol) return;
+
+    const candle = {
+      open: n(k.o),
+      high: n(k.h),
+      low: n(k.l),
+      close: n(k.c),
+      volume: n(k.v),
+      closeTime: k.T
+    };
+
+    candles[symbol] =
+      candles[symbol] || [];
+
+    const arr =
+      candles[symbol];
+
+    const index =
+      arr.findIndex(
+        x =>
+          x.closeTime ===
+          candle.closeTime
+      );
+
+    if (index >= 0) {
+      arr[index] = candle;
+    } else {
+      arr.push(candle);
+    }
+
+    candles[symbol] =
+      arr
         .sort(
-            (a, b) =>
-                b.quoteVolume -
-                a.quoteVolume
+          (a, b) =>
+            a.closeTime -
+            b.closeTime
         )
         .slice(
-            0,
-            CONFIG.universeSize
-        )
-        .map(
-            item =>
-                item.symbol
-        );
-}
-
-// ============================================================
-// SUBSCRIPTION REBALANCE
-// ============================================================
-
-function rebalanceUniverse() {
-    if (
-        marketTickers.size ===
-        0
-    ) {
-        return;
-    }
-
-    const desired =
-        new Set(
-            getTopSymbols()
+          -C.maxCandles
         );
 
-    if (
-        desired.size ===
-        0
-    ) {
-        return;
-    }
+    analyzeClosedCandle(
+      symbol,
+      candle.closeTime
+    );
+  });
 
-    const toSubscribe = [];
-    const toUnsubscribe = [];
-
-    for (
-        const symbol
-        of desired
-    ) {
-        if (
-            !subscribedSymbols.has(
-                symbol
-            )
-        ) {
-            toSubscribe.push(
-                symbol
-            );
-        }
-    }
-
-    for (
-        const symbol
-        of subscribedSymbols
-    ) {
-        if (
-            !desired.has(
-                symbol
-            )
-        ) {
-            // Keep symbols with open positions
-            if (
-                activePositions[
-                    symbol
-                ]
-            ) {
-                desired.add(
-                    symbol
-                );
-
-                continue;
-            }
-
-            toUnsubscribe.push(
-                symbol
-            );
-        }
-    }
-
-    if (
-        toUnsubscribe.length
-    ) {
-        queueControlMessage({
-            method:
-                'UNSUBSCRIBE',
-
-            params:
-                toUnsubscribe.map(
-                    symbol =>
-                        `${symbol.toLowerCase()}@kline_${CONFIG.candleInterval}`
-                ),
-
-            id:
-                Date.now()
-        });
-    }
-
-    if (
-        toSubscribe.length
-    ) {
-        queueControlMessage({
-            method:
-                'SUBSCRIBE',
-
-            params:
-                toSubscribe.map(
-                    symbol =>
-                        `${symbol.toLowerCase()}@kline_${CONFIG.candleInterval}`
-                ),
-
-            id:
-                Date.now() + 1
-        });
-    }
-
-    subscribedSymbols =
-        desired;
+  klineWs.on('close', () => {
+    klineConnected = false;
 
     console.log(
-        `Universe: ${subscribedSymbols.size} | Added ${toSubscribe.length} | Removed ${toUnsubscribe.length}`
+      'KLINE disconnected.'
     );
 
-    scheduleSave();
+    setTimeout(
+      connectKline,
+      5000
+    );
+  });
+
+  klineWs.on('error', e => {
+    console.error(
+      'KLINE:',
+      e.message
+    );
+  });
+}
+
+// ============================================================
+// UNIVERSE
+// ============================================================
+
+function topSymbols() {
+  return Array.from(
+    tickers.entries()
+  )
+    .filter(
+      ([symbol, t]) =>
+        symbol.endsWith('USDT') &&
+        !ignored(symbol) &&
+        t.quoteVolume >=
+          C.minQuoteVolume
+    )
+    .sort(
+      (a, b) =>
+        b[1].quoteVolume -
+        a[1].quoteVolume
+    )
+    .slice(
+      0,
+      C.universeSize
+    )
+    .map(
+      row =>
+        row[0]
+    );
+}
+
+function rebalanceUniverse() {
+  const wanted =
+    new Set(
+      topSymbols()
+    );
+
+  if (!wanted.size) return;
+
+  const add = [];
+  const remove = [];
+
+  for (const symbol of wanted) {
+    if (!subscribed.has(symbol)) {
+      add.push(symbol);
+    }
+  }
+
+  for (const symbol of subscribed) {
+    if (
+      !wanted.has(symbol) &&
+      !positions[symbol]
+    ) {
+      remove.push(symbol);
+    } else if (positions[symbol]) {
+      wanted.add(symbol);
+    }
+  }
+
+  if (remove.length) {
+    sendControl({
+      method: 'UNSUBSCRIBE',
+
+      params:
+        remove.map(
+          s =>
+            `${s.toLowerCase()}@kline_${C.interval}`
+        ),
+
+      id: Date.now()
+    });
+  }
+
+  if (add.length) {
+    sendControl({
+      method: 'SUBSCRIBE',
+
+      params:
+        add.map(
+          s =>
+            `${s.toLowerCase()}@kline_${C.interval}`
+        ),
+
+      id: Date.now() + 1
+    });
+  }
+
+  subscribed = wanted;
+
+  console.log(
+    `Universe ${subscribed.size} | +${add.length} | -${remove.length}`
+  );
 }
 
 setInterval(
-    rebalanceUniverse,
-    CONFIG.universeRefreshMs
+  rebalanceUniverse,
+  C.universeRefreshMs
 );
 
 // ============================================================
-// WEBSOCKET WATCHDOG
+// WATCHDOG
 // ============================================================
 
-setInterval(
-    () => {
-        if (
-            shuttingDown
-        ) {
-            return;
-        }
+setInterval(() => {
+  checkNewDay();
+  cooldownActive();
+  updateDrawdown();
 
-        const now =
-            Date.now();
+  const now = Date.now();
 
-        if (
-            miniConnected &&
-            lastMiniMessage &&
-            now -
-                lastMiniMessage >
-                90000
-        ) {
-            console.log(
-                'MINI stream stale. Reconnecting.'
-            );
+  if (
+    miniConnected &&
+    now - lastMiniMessage >
+      90000
+  ) {
+    try {
+      miniWs.terminate();
+    } catch {}
+  }
 
-            try {
-                miniWs.terminate();
-            } catch (_) {}
-        }
+  if (
+    klineConnected &&
+    now - lastKlineMessage >
+      10 * 60 * 1000
+  ) {
+    try {
+      klineWs.terminate();
+    } catch {}
+  }
 
-        if (
-            klineConnected &&
-            lastKlineMessage &&
-            now -
-                lastKlineMessage >
-                10 * 60 * 1000
-        ) {
-            console.log(
-                'KLINE stream stale. Reconnecting.'
-            );
+  if (!miniConnected) {
+    connectMini();
+  }
 
-            try {
-                klineWs.terminate();
-            } catch (_) {}
-        }
+  if (!klineConnected) {
+    connectKline();
+  }
+}, 30000);
 
-        if (
-            !miniConnected
-        ) {
-            connectMiniTicker();
-        }
+// ============================================================
+// API CONTROLS
+// ============================================================
 
-        if (
-            !klineConnected
-        ) {
-            connectKlineSocket();
-        }
+app.post('/api/pause', (req, res) => {
+  manualPause = true;
+  pool.clear();
+  scheduleSave();
+
+  tg(
+    '⏸ <b>NEW ENTRIES PAUSED</b>'
+  );
+
+  res.json({
+    success: true,
+    msg: 'New entries paused.'
+  });
+});
+
+app.post('/api/resume', (req, res) => {
+  manualPause = false;
+  pool.clear();
+  scheduleSave();
+
+  tg(
+    '▶️ <b>NEW ENTRIES RESUMED</b>'
+  );
+
+  res.json({
+    success: true,
+    msg: 'Entries resumed with fresh signals only.'
+  });
+});
+
+app.post(
+  '/api/emergency-close',
+  (req, res) => {
+    let closed = 0;
+
+    for (
+      const symbol
+      of Object.keys(positions)
+    ) {
+      const price =
+        tickers.get(symbol)?.price ||
+        positions[symbol]?.lastPrice;
+
+      if (!price) continue;
+
+      closePosition(
+        symbol,
+        price,
+        'EMERGENCY_CLOSE'
+      );
+
+      closed++;
+    }
+
+    res.json({
+      success: true,
+      msg: `Closed ${closed} positions.`
+    });
+  }
+);
+
+// ============================================================
+// EXPORT
+// ============================================================
+
+app.get('/api/export', (req, res) => {
+  res.setHeader(
+    'Content-Type',
+    'application/json'
+  );
+
+  res.setHeader(
+    'Content-Disposition',
+    `attachment; filename="lomy-v42-${Date.now()}.json"`
+  );
+
+  res.send(
+    JSON.stringify(
+      {
+        version: C.version,
+        exportedAt:
+          new Date().toISOString(),
+
+        config: C,
+
+        cash,
+        equity: equity(),
+
+        positions,
+        history,
+        journal,
+
+        stats,
+
+        entriesSinceCooldown,
+        lossStreak,
+        cooldownUntil,
+        cooldownReason
+      },
+      null,
+      2
+    )
+  );
+});
+
+// ============================================================
+// DATA API
+// ============================================================
+
+app.get('/api/data', (req, res) => {
+  const trades =
+    stats.wins +
+    stats.losses;
+
+  const winRate =
+    trades
+      ? (
+          stats.wins /
+          trades
+        ) *
+        100
+      : 0;
+
+  const pf =
+    stats.grossLoss
+      ? stats.grossProfit /
+        stats.grossLoss
+      : stats.grossProfit
+        ? 999
+        : 0;
+
+  let ready = 0;
+
+  for (const symbol of subscribed) {
+    if (
+      candles[symbol]?.length >=
+      C.warmup
+    ) {
+      ready++;
+    }
+  }
+
+  res.json({
+    version: C.version,
+
+    miniConnected,
+    klineConnected,
+
+    symbols:
+      subscribed.size,
+
+    ready,
+
+    cash:
+      cash.toFixed(2),
+
+    equity:
+      equity().toFixed(2),
+
+    openPositions:
+      Object.keys(positions).length,
+
+    poolSize:
+      pool.size,
+
+    journal:
+      journal.length,
+
+    dailyPnL:
+      dailyPnL.toFixed(2),
+
+    manualPause,
+    dailyPause,
+
+    cooldownActive:
+      cooldownActive(),
+
+    cooldownReason,
+
+    cooldownMinutes:
+      Math.ceil(
+        Math.max(
+          0,
+          cooldownUntil -
+          Date.now()
+        ) /
+        60000
+      ),
+
+    entriesSinceCooldown,
+
+    lossStreak,
+
+    stats: {
+      ...stats,
+
+      winRate:
+        Number(
+          winRate.toFixed(2)
+        ),
+
+      profitFactor:
+        Number(
+          pf.toFixed(2)
+        )
     },
-    30000
-);
 
-// ============================================================
-// MANUAL PAUSE / RESUME
-// ============================================================
-
-app.post(
-    '/api/pause',
-    (req, res) => {
-        manualPause = true;
-
-        scheduleSave();
-
-        sendTelegramMessage(
-            `⏸ <b>NEW ENTRIES PAUSED</b>\n\n` +
-            `Market monitoring and data collection continue.`
-        );
-
-        res.json({
-            success: true,
-
-            msg:
-                'New entries paused. Data collection continues.'
-        });
-    }
-);
-
-app.post(
-    '/api/resume',
-    (req, res) => {
-        manualPause = false;
-
-        scheduleSave();
-
-        sendTelegramMessage(
-            `▶️ <b>NEW ENTRIES RESUMED</b>`
-        );
-
-        res.json({
-            success: true,
-
-            msg:
-                'Paper entries resumed.'
-        });
-    }
-);
-
-// ============================================================
-// EMERGENCY PAPER CLOSE
-// ============================================================
-
-app.post(
-    '/api/emergency-close',
-    (req, res) => {
-        const symbols =
-            Object.keys(
-                activePositions
-            );
-
-        if (
-            symbols.length ===
-            0
-        ) {
-            return res.json({
-                success: false,
-
-                msg:
-                    'No open paper positions.'
-            });
-        }
-
-        let closed = 0;
-
-        for (
-            const symbol
-            of symbols
-        ) {
-            const trade =
-                activePositions[
-                    symbol
-                ];
-
-            if (!trade) {
-                continue;
-            }
-
-            const ticker =
-                marketTickers.get(
-                    symbol
-                );
-
-            const price =
-                ticker?.price ||
-                trade.lastPrice;
-
-            if (
-                !price ||
-                price <= 0
-            ) {
-                continue;
-            }
-
-            closePaperPosition(
-                symbol,
-                price,
-                'EMERGENCY_CLOSE'
-            );
-
-            closed++;
-        }
-
-        res.json({
-            success: true,
-
-            msg:
-                `Closed ${closed} paper positions.`
-        });
-    }
-);
-
-// ============================================================
-// RESET PAPER ACCOUNT
-// ============================================================
-
-app.post(
-    '/api/reset-paper',
-    (req, res) => {
-        if (
-            Object.keys(
-                activePositions
-            ).length >
-            0
-        ) {
-            return res
-                .status(400)
-                .json({
-                    success: false,
-
-                    msg:
-                        'Close all paper positions before reset.'
-                });
-        }
-
-        paperBalance =
-            CONFIG.startingBalance;
-
-        tradeHistory = [];
-
-        opportunityJournal = [];
-
-        lastStopLossBySymbol = {};
-
-        stats = {
-            totalTrades: 0,
-            winningTrades: 0,
-            losingTrades: 0,
-
-            grossProfit: 0,
-            grossLoss: 0,
-
-            netProfit: 0,
-            totalFees: 0,
-
-            bestTrade: 0,
-            worstTrade: 0,
-
-            maxDrawdown: 0
-        };
-
-        journalStats = {
-            analyzedCandles: 0,
-            journaledCandidates: 0,
-            paperEntries: 0,
-            rejectedCandidates: 0
-        };
-
-        peakEquity =
-            CONFIG.startingBalance;
-
-        dailyPnL = 0;
-
-        dailyStartingEquity =
-            CONFIG.startingBalance;
-
-        currentDay =
-            utcDay();
-
-        tradingPaused = false;
-
-        manualPause = false;
-
-        saveState();
-
-        res.json({
-            success: true,
-
-            msg:
-                'Paper account and journal reset.'
-        });
-    }
-);
-
-// ============================================================
-// JOURNAL EXPORT
-// ============================================================
-
-app.get(
-    '/api/export',
-    (req, res) => {
-        res.setHeader(
-            'Content-Type',
-            'application/json'
-        );
-
-        res.setHeader(
-            'Content-Disposition',
-            `attachment; filename="lomy-journal-${Date.now()}.json"`
-        );
-
-        res.send(
-            JSON.stringify(
-                {
-                    version:
-                        CONFIG.version,
-
-                    exportedAt:
-                        new Date()
-                            .toISOString(),
-
-                    configSnapshot: {
-                        startingBalance:
-                            CONFIG.startingBalance,
-
-                        maxPositions:
-                            CONFIG.maxPositions,
-
-                        minimumScore:
-                            CONFIG.minimumScore,
-
-                        stopLossPct:
-                            CONFIG.stopLossPct,
-
-                        takeProfitPct:
-                            CONFIG.takeProfitPct,
-
-                        feePct:
-                            CONFIG.feePct,
-
-                        slippagePct:
-                            CONFIG.slippagePct,
-
-                        candleInterval:
-                            CONFIG.candleInterval,
-
-                        universeSize:
-                            CONFIG.universeSize,
-
-                        journalMinimumScore:
-                            CONFIG.journalMinimumScore
-                    },
-
-                    stats,
-
-                    journalStats,
-
-                    paperBalance,
-
-                    equity:
-                        currentEquity(),
-
-                    activePositions,
-
-                    tradeHistory,
-
-                    opportunityJournal,
-
-                    lastStopLossBySymbol
-                },
-                null,
-                2
-            )
-        );
-    }
-);
-
-app.get(
-    '/api/journal',
-    (req, res) => {
-        res.json({
-            count:
-                opportunityJournal.length,
-
-            journal:
-                opportunityJournal.slice(
-                    -1000
-                )
-        });
-    }
-);
-
-// ============================================================
-// MAIN DATA API
-// ============================================================
-
-app.get(
-    '/api/data',
-    (req, res) => {
-        const closedTrades =
-            stats.winningTrades +
-            stats.losingTrades;
-
-        const winRate =
-            closedTrades > 0
-                ? (
-                    stats.winningTrades /
-                    closedTrades
-                  ) * 100
-                : 0;
-
-        const profitFactor =
-            stats.grossLoss > 0
-                ? stats.grossProfit /
-                  stats.grossLoss
-
-                : stats.grossProfit > 0
-                    ? 999
-                    : 0;
-
-        let readySymbols = 0;
-
-        for (
-            const symbol
-            of subscribedSymbols
-        ) {
-            if (
-                candleBuffers[
-                    symbol
-                ]?.length >=
-                CONFIG.minWarmupCandles
-            ) {
-                readySymbols++;
-            }
-        }
-
-        res.json({
-            version:
-                CONFIG.version,
-
-            mode:
-                'WEBSOCKET MARKET / PAPER EXECUTION / DATA COLLECTOR',
-
-            miniConnected,
-
-            klineConnected,
-
-            tickerCount:
-                marketTickers.size,
-
-            subscribedSymbols:
-                subscribedSymbols.size,
-
-            readySymbols,
-
-            warmupNeeded:
-                CONFIG.minWarmupCandles,
-
-            startingBalance:
-                CONFIG.startingBalance,
-
-            cashBalance:
-                paperBalance.toFixed(2),
-
-            equity:
-                currentEquity()
-                    .toFixed(2),
-
-            activePositions:
-                Object.keys(
-                    activePositions
-                ).length,
-
-            positions:
-                Object.values(
-                    activePositions
-                ),
-
-            dailyPnL:
-                dailyPnL.toFixed(2),
-
-            tradingPaused,
-
-            manualPause,
-
-            journalStats,
-
-            journalRecords:
-                opportunityJournal.length,
-
-            stats: {
-                ...stats,
-
-                winRate:
-                    Number(
-                        winRate.toFixed(2)
-                    ),
-
-                profitFactor:
-                    Number(
-                        profitFactor.toFixed(2)
-                    )
-            },
-
-            live:
-                latestResults,
-
-            history:
-                tradeHistory.slice(
-                    -100
-                )
-        });
-    }
-);
+    latest
+  });
+});
 
 // ============================================================
 // HEALTH
 // ============================================================
 
-app.get(
-    '/health',
-    (req, res) => {
-        res.json({
-            status:
-                miniConnected &&
-                klineConnected
-                    ? 'OK'
-                    : 'DEGRADED',
+app.get('/health', (req, res) => {
+  res.json({
+    status:
+      miniConnected &&
+      klineConnected
+        ? 'OK'
+        : 'DEGRADED',
 
-            version:
-                CONFIG.version,
+    version: C.version,
 
-            execution:
-                'PAPER ONLY',
+    execution:
+      'PAPER ONLY',
 
-            restRequests:
-                0,
+    restRequests:
+      0,
 
-            miniWebSocket:
-                miniConnected,
+    symbols:
+      subscribed.size,
 
-            klineWebSocket:
-                klineConnected,
+    positions:
+      Object.keys(positions).length,
 
-            marketSymbols:
-                marketTickers.size,
-
-            subscribedSymbols:
-                subscribedSymbols.size,
-
-            openPositions:
-                Object.keys(
-                    activePositions
-                ).length,
-
-            manualPause,
-
-            journalRecords:
-                opportunityJournal.length,
-
-            equity:
-                currentEquity()
-                    .toFixed(2)
-        });
-    }
-);
+    equity:
+      equity().toFixed(2)
+  });
+});
 
 // ============================================================
 // DASHBOARD
 // ============================================================
 
-app.get(
-    '/',
-    (req, res) => {
-        res.send(`
-<!DOCTYPE html>
-
+app.get('/', (req, res) => {
+  res.send(`
+<!doctype html>
 <html>
-
 <head>
-
 <meta charset="UTF-8">
-
-<meta
-name="viewport"
-content="width=device-width,initial-scale=1">
-
-<title>LOMY V4.1</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LOMY V4.2 Compact</title>
 
 <style>
-
-*{
-box-sizing:border-box
-}
-
 body{
-margin:0;
 background:#0b0e11;
 color:#eaecef;
-font-family:Arial,sans-serif;
+font-family:Arial;
 text-align:center;
-padding:18px
+margin:0;
+padding:16px
 }
-
-h1{
-color:#f3ba2f
-}
-
+h1{color:#f3ba2f}
 .badge{
-display:inline-block;
 background:#f3ba2f;
 color:#000;
-font-weight:bold;
-padding:9px 16px;
-border-radius:8px
-}
-
-.status{
-margin:14px;
+padding:10px;
+border-radius:8px;
 font-weight:bold
 }
-
 .grid{
 display:grid;
-grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
-gap:10px;
-max-width:1350px;
-margin:18px auto
+grid-template-columns:repeat(auto-fit,minmax(145px,1fr));
+gap:9px;
+margin:18px auto;
+max-width:1200px
 }
-
 .card{
 background:#1e2329;
-border:1px solid #2b3139;
 padding:15px;
-border-radius:9px
+border-radius:9px;
+border:1px solid #2b3139
 }
-
 .label{
 color:#848e9c;
 font-size:11px
 }
-
 .value{
-font-size:21px;
+font-size:22px;
 font-weight:bold;
-margin-top:6px
+margin-top:7px
 }
-
-.green{
-color:#0ecb81
-}
-
-.red{
-color:#f6465d
-}
-
-.yellow{
-color:#f3ba2f
-}
-
+.green{color:#0ecb81}
+.red{color:#f6465d}
+.yellow{color:#f3ba2f}
 button{
-color:#fff;
 border:0;
 padding:12px 18px;
+margin:6px;
 border-radius:7px;
 font-weight:bold;
-cursor:pointer;
-margin:7px
+cursor:pointer
 }
-
-.danger{
-background:#f6465d
-}
-
-.pause{
-background:#f0b90b;
-color:#000
-}
-
-.resume{
-background:#0ecb81
-}
-
-.export{
-background:#3772ff
-}
-
+.pause{background:#f3ba2f}
+.resume{background:#0ecb81}
+.close{background:#f6465d;color:white}
+.export{background:#3772ff;color:white}
 table{
 width:100%;
-max-width:1400px;
-margin:20px auto;
+margin-top:20px;
 border-collapse:collapse;
 background:#1e2329
 }
-
 th{
 background:#2b3139;
 color:#848e9c
 }
-
-th,td{
-padding:9px;
-border-bottom:1px solid #2b3139;
-font-size:12px
+td,th{
+padding:8px;
+font-size:11px;
+border-bottom:1px solid #2b3139
 }
-
 </style>
-
 </head>
 
 <body>
 
-<h1>
-🤖 LOMY PRECISION V4.1
-</h1>
+<h1>🤖 LOMY V4.2 COMPACT</h1>
 
 <div class="badge">
-WEBSOCKET • PAPER ONLY • ADVANCED DATA COLLECTOR
+ENTRY PRECISION • SMART COOLDOWN • PAPER ONLY
 </div>
 
-<div
-class="status"
-id="connection">
-Connecting...
-</div>
-
-<div
-class="status"
-id="tradeState">
-Checking entry state...
-</div>
+<h3 id="status">Connecting...</h3>
+<h3 id="cooldown"></h3>
 
 <div class="grid">
-
-<div class="card">
-<div class="label">START</div>
-<div class="value">$10,000</div>
-</div>
 
 <div class="card">
 <div class="label">CASH</div>
@@ -3490,13 +2267,13 @@ Checking entry state...
 </div>
 
 <div class="card">
-<div class="label">CLOSED TRADES</div>
+<div class="label">CLOSED</div>
 <div class="value" id="trades">0</div>
 </div>
 
 <div class="card">
 <div class="label">WIN RATE</div>
-<div class="value" id="winrate">0%</div>
+<div class="value" id="win">0%</div>
 </div>
 
 <div class="card">
@@ -3510,13 +2287,13 @@ Checking entry state...
 </div>
 
 <div class="card">
-<div class="label">MAX DRAWDOWN</div>
-<div class="value" id="dd">0%</div>
+<div class="label">OPEN</div>
+<div class="value" id="open">0</div>
 </div>
 
 <div class="card">
-<div class="label">OPEN POSITIONS</div>
-<div class="value" id="positions">0</div>
+<div class="label">POOL</div>
+<div class="value" id="pool">0</div>
 </div>
 
 <div class="card">
@@ -3525,7 +2302,7 @@ Checking entry state...
 </div>
 
 <div class="card">
-<div class="label">READY SYMBOLS</div>
+<div class="label">READY</div>
 <div class="value" id="ready">0</div>
 </div>
 
@@ -3539,524 +2316,239 @@ Checking entry state...
 <div class="value" id="daily">$0</div>
 </div>
 
+<div class="card">
+<div class="label">BATCH</div>
+<div class="value" id="batch">0/10</div>
 </div>
 
-<button
-class="pause"
-onclick="pauseTrading()">
-⏸ PAUSE NEW ENTRIES
-</button>
+<div class="card">
+<div class="label">LOSS STREAK</div>
+<div class="value" id="loss">0/3</div>
+</div>
 
-<button
-class="resume"
-onclick="resumeTrading()">
-▶ RESUME ENTRIES
-</button>
+</div>
 
-<button
-class="danger"
-onclick="emergencyClose()">
-🚨 CLOSE ALL PAPER POSITIONS
-</button>
-
-<button
-class="export"
-onclick="window.location='/api/export'">
-⬇ EXPORT JOURNAL JSON
-</button>
+<button class="pause" onclick="pause()">⏸ PAUSE</button>
+<button class="resume" onclick="resume()">▶ RESUME</button>
+<button class="close" onclick="closeAll()">🚨 CLOSE ALL</button>
+<button class="export" onclick="location='/api/export'">⬇ EXPORT JSON</button>
 
 <div style="overflow-x:auto">
 
 <table>
-
 <thead>
-
 <tr>
-
 <th>Symbol</th>
 <th>Score</th>
+<th>Trend</th>
+<th>Entry</th>
+<th>Risk</th>
+<th>Penalty</th>
 <th>Status</th>
 <th>CMO</th>
 <th>Volume</th>
-<th>Structure</th>
-<th>EMA20 Dist</th>
-<th>ATR%</th>
-<th>5C Ext%</th>
-<th>Blockers</th>
-<th>Price</th>
-
+<th>EMA%</th>
+<th>Breakout%</th>
+<th>5C%</th>
+<th>Warnings</th>
 </tr>
-
 </thead>
 
 <tbody id="table">
-
-<tr>
-<td colspan="11">
-Collecting WebSocket candles...
-</td>
-</tr>
-
+<tr><td colspan="13">Collecting candles...</td></tr>
 </tbody>
-
 </table>
 
 </div>
 
 <script>
 
-async function loadData(){
-
+async function load(){
 try{
 
-const response =
-await fetch('/api/data');
+const r=await fetch('/api/data');
+const d=await r.json();
 
-const data =
-await response.json();
+cash.innerText='$'+d.cash;
+equity.innerText='$'+d.equity;
+trades.innerText=d.stats.totalTrades;
+win.innerText=d.stats.winRate+'%';
+profit.innerText='$'+Number(d.stats.netProfit).toFixed(2);
+pf.innerText=d.stats.profitFactor;
+open.innerText=d.openPositions;
+pool.innerText=d.poolSize;
+symbols.innerText=d.symbols;
+ready.innerText=d.ready;
+journal.innerText=d.journal;
+daily.innerText='$'+d.dailyPnL;
+batch.innerText=d.entriesSinceCooldown+'/10';
+loss.innerText=d.lossStreak+'/3';
 
-document.getElementById(
-'cash'
-).innerText =
-'$' + data.cashBalance;
+status.innerText=
+d.miniConnected&&d.klineConnected
+?'🟢 MARKET WEBSOCKETS LIVE • REST=0'
+:'🔴 CONNECTING...';
 
-document.getElementById(
-'equity'
-).innerText =
-'$' + data.equity;
+status.className=
+d.miniConnected&&d.klineConnected
+?'green':'red';
 
-document.getElementById(
-'trades'
-).innerText =
-data.stats.totalTrades;
+cooldown.innerText=
+d.cooldownActive
+?'🧠 COOLDOWN '+d.cooldownReason+' • '+d.cooldownMinutes+' MIN'
+:'✅ SMART COOLDOWN READY';
 
-document.getElementById(
-'winrate'
-).innerText =
-data.stats.winRate + '%';
+cooldown.className=
+d.cooldownActive?'yellow':'green';
 
-document.getElementById(
-'profit'
-).innerText =
-'$' +
-Number(
-data.stats.netProfit
-).toFixed(2);
+table.innerHTML='';
 
-document.getElementById(
-'pf'
-).innerText =
-data.stats.profitFactor;
-
-document.getElementById(
-'dd'
-).innerText =
-Number(
-data.stats.maxDrawdown
-).toFixed(2) +
-'%';
-
-document.getElementById(
-'positions'
-).innerText =
-data.activePositions;
-
-document.getElementById(
-'symbols'
-).innerText =
-data.subscribedSymbols;
-
-document.getElementById(
-'ready'
-).innerText =
-data.readySymbols;
-
-document.getElementById(
-'journal'
-).innerText =
-data.journalRecords;
-
-document.getElementById(
-'daily'
-).innerText =
-'$' + data.dailyPnL;
-
-const connection =
-document.getElementById(
-'connection'
-);
-
-if(
-data.miniConnected &&
-data.klineConnected
-){
-
-connection.innerText =
-'🟢 MARKET WEBSOCKETS LIVE • REST REQUESTS = 0';
-
-connection.className =
-'status green';
-
-}else{
-
-connection.innerText =
-'🔴 WebSocket reconnecting...';
-
-connection.className =
-'status red';
-
-}
-
-const tradeState =
-document.getElementById(
-'tradeState'
-);
-
-if(
-data.manualPause
-){
-
-tradeState.innerText =
-'⏸ NEW ENTRIES PAUSED • DATA COLLECTION CONTINUES';
-
-tradeState.className =
-'status yellow';
-
-}else if(
-data.tradingPaused
-){
-
-tradeState.innerText =
-'🛑 DAILY RISK PAUSE';
-
-tradeState.className =
-'status red';
-
-}else{
-
-tradeState.innerText =
-'▶ PAPER ENTRIES ENABLED';
-
-tradeState.className =
-'status green';
-
-}
-
-const tbody =
-document.getElementById(
-'table'
-);
-
-tbody.innerHTML = '';
-
-if(
-!data.live.length
-){
-
-tbody.innerHTML =
-'<tr><td colspan="11">Warm-up / collecting candidates. Ready: ' +
-data.readySymbols +
-' / ' +
-data.subscribedSymbols +
-'</td></tr>';
-
+if(!d.latest.length){
+table.innerHTML=
+'<tr><td colspan="13">Warm-up: '+d.ready+' / '+d.symbols+'</td></tr>';
 return;
-
 }
 
-data.live.forEach(
-item => {
-
-tbody.innerHTML +=
-
-'<tr>' +
-
-'<td><b>' +
-item.symbol +
-'</b></td>' +
-
-'<td class="yellow">' +
-item.score +
-'</td>' +
-
-'<td>' +
-item.decision +
-'</td>' +
-
-'<td>' +
-item.cmo +
-'</td>' +
-
-'<td>' +
-item.volume +
-'x</td>' +
-
-'<td>' +
-item.structure +
-'</td>' +
-
-'<td>' +
-item.ema20DistancePct +
-'%</td>' +
-
-'<td>' +
-item.atrPct +
-'%</td>' +
-
-'<td>' +
-item.extension5Pct +
-'%</td>' +
-
-'<td>' +
-item.blockers +
-'</td>' +
-
-'<td>' +
-item.price +
-'</td>' +
-
+d.latest.forEach(x=>{
+table.innerHTML+=
+'<tr>'+
+'<td><b>'+x.symbol+'</b></td>'+
+'<td>'+x.score+'</td>'+
+'<td>'+x.trend+'</td>'+
+'<td>'+x.entry+'</td>'+
+'<td>'+x.risk+'</td>'+
+'<td>'+x.penalty+'</td>'+
+'<td>'+x.decision+'</td>'+
+'<td>'+x.cmo+'</td>'+
+'<td>'+x.volume+'x</td>'+
+'<td>'+x.ema+'%</td>'+
+'<td>'+x.breakout+'%</td>'+
+'<td>'+x.ext5+'%</td>'+
+'<td>'+x.warnings+'</td>'+
 '</tr>';
-
 });
 
-}catch(error){
-
-console.error(
-error
-);
-
+}catch(e){
+console.error(e);
+}
 }
 
+async function pause(){
+await fetch('/api/pause',{method:'POST'});
+load();
 }
 
-async function pauseTrading(){
-
-const response =
-await fetch(
-'/api/pause',
-{
-method:'POST'
-}
-);
-
-const data =
-await response.json();
-
-alert(
-data.msg
-);
-
-loadData();
-
+async function resume(){
+await fetch('/api/resume',{method:'POST'});
+load();
 }
 
-async function resumeTrading(){
-
-const response =
-await fetch(
-'/api/resume',
-{
-method:'POST'
-}
-);
-
-const data =
-await response.json();
-
-alert(
-data.msg
-);
-
-loadData();
-
+async function closeAll(){
+if(!confirm('Close all PAPER positions?'))return;
+await fetch('/api/emergency-close',{method:'POST'});
+load();
 }
 
-async function emergencyClose(){
-
-if(
-!confirm(
-'Close all PAPER positions?'
-)
-){
-return;
-}
-
-const response =
-await fetch(
-'/api/emergency-close',
-{
-method:'POST'
-}
-);
-
-const data =
-await response.json();
-
-alert(
-data.msg
-);
-
-loadData();
-
-}
-
-setInterval(
-loadData,
-3000
-);
-
-loadData();
+setInterval(load,3000);
+load();
 
 </script>
-
 </body>
-
 </html>
-        `);
-    }
-);
+  `);
+});
 
 // ============================================================
-// GRACEFUL SHUTDOWN
+// SHUTDOWN
 // ============================================================
 
-function shutdown(
-    signal
-) {
-    if (
-        shuttingDown
-    ) {
-        return;
-    }
+function shutdown(signal) {
+  if (shuttingDown) return;
 
-    shuttingDown =
-        true;
+  shuttingDown = true;
 
-    console.log(
-        `${signal}: saving state`
-    );
+  console.log(
+    signal,
+    'saving state'
+  );
 
-    saveState();
+  saveState();
 
-    try {
-        miniWs?.close();
-    } catch (_) {}
+  try {
+    miniWs?.close();
+  } catch {}
 
-    try {
-        klineWs?.close();
-    } catch (_) {}
+  try {
+    klineWs?.close();
+  } catch {}
 
-    setTimeout(
-        () =>
-            process.exit(0),
-        1000
-    );
+  setTimeout(
+    () => process.exit(0),
+    1000
+  );
 }
 
 process.on(
-    'SIGTERM',
-    () =>
-        shutdown(
-            'SIGTERM'
-        )
+  'SIGTERM',
+  () => shutdown('SIGTERM')
 );
 
 process.on(
-    'SIGINT',
-    () =>
-        shutdown(
-            'SIGINT'
-        )
+  'SIGINT',
+  () => shutdown('SIGINT')
 );
 
 process.on(
-    'unhandledRejection',
-    error => {
-        console.error(
-            'UNHANDLED REJECTION:',
-            error
-        );
-    }
+  'unhandledRejection',
+  e =>
+    console.error(
+      'UNHANDLED:',
+      e
+    )
 );
 
 process.on(
-    'uncaughtException',
-    error => {
-        console.error(
-            'UNCAUGHT EXCEPTION:',
-            error
-        );
-    }
+  'uncaughtException',
+  e =>
+    console.error(
+      'UNCAUGHT:',
+      e
+    )
 );
 
 // ============================================================
 // START
 // ============================================================
 
-app.listen(
-    PORT,
-    () => {
-        console.log('');
+app.listen(PORT, () => {
+  console.log('');
+  console.log('==============================');
+  console.log('LOMY V4.2 COMPACT');
+  console.log('ENTRY PRECISION ENGINE');
+  console.log('OPPORTUNITY POOL: ON');
+  console.log('SMART COOLDOWN: ON');
+  console.log('MARKET DATA: WEBSOCKET ONLY');
+  console.log('REST SCANNER: OFF');
+  console.log('EXECUTION: PAPER ONLY');
+  console.log(`UNIVERSE: TOP ${C.universeSize}`);
+  console.log(`MAX POSITIONS: ${C.maxPositions}`);
+  console.log(`MAX NEW/CYCLE: ${C.maxEntriesPerCycle}`);
+  console.log(`MIN SCORE: ${C.minScore}`);
+  console.log('==============================');
 
-        console.log(
-            '=========================================='
-        );
+  loadState();
 
-        console.log(
-            'LOMY PRECISION ENGINE V4.1'
-        );
+  connectMini();
+  connectKline();
 
-        console.log(
-            'Mode: ADVANCED DATA COLLECTOR'
-        );
-
-        console.log(
-            'Market Data: BINANCE WEBSOCKET ONLY'
-        );
-
-        console.log(
-            'REST Scanner: DISABLED'
-        );
-
-        console.log(
-            'Execution: PAPER ONLY'
-        );
-
-        console.log(
-            `Universe: TOP ${CONFIG.universeSize}`
-        );
-
-        console.log(
-            `Entry Score: ${CONFIG.minimumScore}+`
-        );
-
-        console.log(
-            `Journal Candidates: Score ${CONFIG.journalMinimumScore}+`
-        );
-
-        console.log(
-            `Warmup: ${CONFIG.minWarmupCandles} CLOSED 5m candles`
-        );
-
-        console.log(
-            '=========================================='
-        );
-
-        loadState();
-
-        connectMiniTicker();
-
-        connectKlineSocket();
-
-        sendTelegramMessage(
-            `🚀 <b>LOMY V4.1 STARTED</b>\n\n` +
-            `Mode: <b>ADVANCED DATA COLLECTOR</b>\n` +
-            `Market Data: <b>WEBSOCKET ONLY</b>\n` +
-            `REST Scanner: <b>OFF</b>\n` +
-            `Execution: <b>PAPER ONLY</b>\n` +
-            `Balance: $${currentEquity().toFixed(2)}\n` +
-            `Universe: Top ${CONFIG.universeSize}\n` +
-            `Entry Score: ${CONFIG.minimumScore}+`
-        );
-    }
-);
+  tg(
+    `🚀 <b>LOMY V4.2 COMPACT STARTED</b>\n\n` +
+    `Entry Precision: <b>ON</b>\n` +
+    `Opportunity Pool: <b>ON</b>\n` +
+    `Smart Cooldown: <b>ON</b>\n` +
+    `REST Scanner: <b>OFF</b>\n` +
+    `Execution: <b>PAPER ONLY</b>\n\n` +
+    `Balance: $${equity().toFixed(2)}\n` +
+    `Universe: Top ${C.universeSize}`
+  );
+});
