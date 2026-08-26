@@ -11,59 +11,54 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 5000;
 
-// ============================================================
-// LOMY PRECISION ENGINE V4
-// REAL BINANCE MARKET DATA
-// WEBSOCKET ONLY
-// PAPER EXECUTION ONLY
-// ============================================================
-
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-// Binance market-data-only websocket endpoint
 const WS_BASE = 'wss://data-stream.binance.vision';
 
 // ============================================================
-// CONFIG
+// LOMY PRECISION ENGINE V4.1
+// ADVANCED DATA COLLECTOR
+// WEBSOCKET MARKET DATA ONLY
+// PAPER TRADING ONLY
 // ============================================================
 
 const CONFIG = {
+    version: '4.1-DATA-COLLECTOR',
+
     paperTrading: true,
 
     startingBalance: 10000,
-
     maxPositions: 10,
-
     minimumScore: 80,
 
-    // Risk
     stopLossPct: 0.01,
     takeProfitPct: 0.02,
     dailyLossLimitPct: 0.10,
 
-    // Simulated execution costs
     feePct: 0.001,
     slippagePct: 0.0005,
 
-    // Market
     candleInterval: '5m',
 
-    // We need >= 50 closed candles for EMA50.
     minWarmupCandles: 55,
     maxStoredCandles: 70,
 
-    // Keep well below Binance's 1024-stream limit.
     universeSize: 300,
-
     minQuoteVolume: 250000,
 
-    // Re-evaluate top market universe every 30 minutes.
     universeRefreshMs: 30 * 60 * 1000,
-
-    // One websocket control message per second.
-    // This is deliberately conservative.
     controlMessageGapMs: 1000,
+
+    journalMinimumScore: 60,
+    journalMaxRecords: 15000,
+    tradeHistoryMaxRecords: 3000,
+
+    cooldownTrackingMs: 6 * 60 * 60 * 1000,
+
+    // V4.1 only records cooldown information.
+    // It does NOT block trades because of cooldown.
+    enforceLossCooldown: false,
 
     stateFile: path.join(__dirname, 'paper-state.json')
 };
@@ -75,8 +70,9 @@ const CONFIG = {
 let paperBalance = CONFIG.startingBalance;
 
 let activePositions = {};
-
 let tradeHistory = [];
+let opportunityJournal = [];
+let lastStopLossBySymbol = {};
 
 let stats = {
     totalTrades: 0,
@@ -95,19 +91,29 @@ let stats = {
     maxDrawdown: 0
 };
 
+let journalStats = {
+    analyzedCandles: 0,
+    journaledCandidates: 0,
+    paperEntries: 0,
+    rejectedCandidates: 0
+};
+
 let peakEquity = CONFIG.startingBalance;
 
 let dailyPnL = 0;
-
 let dailyStartingEquity = CONFIG.startingBalance;
 
-let currentDay = getUtcDay();
+let currentDay = utcDay();
 
 let tradingPaused = false;
 
-// ------------------------------------------------------------
+// Manual pause stops NEW entries only.
+// WebSockets and data collection continue.
+let manualPause = false;
+
+// ============================================================
 // MARKET CACHE
-// ------------------------------------------------------------
+// ============================================================
 
 const marketTickers = new Map();
 
@@ -119,9 +125,9 @@ let subscribedSymbols = new Set();
 
 let latestResults = [];
 
-// ------------------------------------------------------------
+// ============================================================
 // WEBSOCKET STATE
-// ------------------------------------------------------------
+// ============================================================
 
 let miniWs = null;
 let klineWs = null;
@@ -136,7 +142,6 @@ let miniReconnectTimer = null;
 let klineReconnectTimer = null;
 
 let universeReady = false;
-
 let shuttingDown = false;
 
 // ============================================================
@@ -152,11 +157,21 @@ function safeNumber(value, fallback = 0) {
     return Number.isFinite(n) ? n : fallback;
 }
 
-function getUtcDay() {
+function utcDay() {
     return new Date().toISOString().slice(0, 10);
 }
 
-function stableIgnored(symbol) {
+function pct(numerator, denominator) {
+    if (!denominator) return 0;
+
+    return (numerator / denominator) * 100;
+}
+
+function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+}
+
+function ignoredSymbol(symbol) {
     const ignored = new Set([
         'USDCUSDT',
         'FDUSDUSDT',
@@ -164,10 +179,51 @@ function stableIgnored(symbol) {
         'USDPUSDT',
         'BUSDUSDT',
         'DAIUSDT',
-        'USDEUSDT'
+        'USDEUSDT',
+        'USD1USDT'
     ]);
 
     return ignored.has(symbol);
+}
+
+function getSessionUTC(timestamp = Date.now()) {
+    const hour = new Date(timestamp).getUTCHours();
+
+    if (hour >= 0 && hour < 7) {
+        return 'ASIA';
+    }
+
+    if (hour >= 7 && hour < 13) {
+        return 'LONDON';
+    }
+
+    if (hour >= 13 && hour < 16) {
+        return 'LONDON_NY_OVERLAP';
+    }
+
+    if (hour >= 16 && hour < 21) {
+        return 'NEW_YORK';
+    }
+
+    return 'LATE_US';
+}
+
+function recentStop(symbol) {
+    const last = safeNumber(lastStopLossBySymbol[symbol]);
+
+    if (!last) {
+        return {
+            recentStopLoss: false,
+            minutesSinceStopLoss: null
+        };
+    }
+
+    const elapsed = Date.now() - last;
+
+    return {
+        recentStopLoss: elapsed < CONFIG.cooldownTrackingMs,
+        minutesSinceStopLoss: elapsed / 60000
+    };
 }
 
 // ============================================================
@@ -187,37 +243,46 @@ function scheduleSave() {
 
 function saveState() {
     try {
-        const persistedBuffers = {};
+        const buffers = {};
 
-        for (const symbol of Object.keys(candleBuffers)) {
-            if (!Array.isArray(candleBuffers[symbol])) continue;
-
-            persistedBuffers[symbol] =
-                candleBuffers[symbol].slice(-CONFIG.maxStoredCandles);
+        for (const [symbol, candles] of Object.entries(candleBuffers)) {
+            if (Array.isArray(candles)) {
+                buffers[symbol] = candles.slice(
+                    -CONFIG.maxStoredCandles
+                );
+            }
         }
 
         const state = {
-            paperBalance,
+            version: CONFIG.version,
+            savedAt: new Date().toISOString(),
 
+            paperBalance,
             activePositions,
 
-            tradeHistory:
-                tradeHistory.slice(-2000),
+            tradeHistory: tradeHistory.slice(
+                -CONFIG.tradeHistoryMaxRecords
+            ),
+
+            opportunityJournal: opportunityJournal.slice(
+                -CONFIG.journalMaxRecords
+            ),
+
+            lastStopLossBySymbol,
 
             stats,
+            journalStats,
 
             peakEquity,
 
             dailyPnL,
-
             dailyStartingEquity,
-
             currentDay,
 
             tradingPaused,
+            manualPause,
 
-            candleBuffers:
-                persistedBuffers,
+            candleBuffers: buffers,
 
             lastAnalyzedCloseTime
         };
@@ -244,20 +309,17 @@ function loadState() {
             return;
         }
 
-        const raw =
+        const state = JSON.parse(
             fs.readFileSync(
                 CONFIG.stateFile,
                 'utf8'
-            );
+            )
+        );
 
-        const state =
-            JSON.parse(raw);
-
-        paperBalance =
-            safeNumber(
-                state.paperBalance,
-                CONFIG.startingBalance
-            );
+        paperBalance = safeNumber(
+            state.paperBalance,
+            CONFIG.startingBalance
+        );
 
         activePositions =
             state.activePositions || {};
@@ -265,43 +327,50 @@ function loadState() {
         tradeHistory =
             state.tradeHistory || [];
 
+        opportunityJournal =
+            state.opportunityJournal || [];
+
+        lastStopLossBySymbol =
+            state.lastStopLossBySymbol || {};
+
         stats = {
             ...stats,
             ...(state.stats || {})
         };
 
-        peakEquity =
-            safeNumber(
-                state.peakEquity,
-                CONFIG.startingBalance
-            );
+        journalStats = {
+            ...journalStats,
+            ...(state.journalStats || {})
+        };
 
-        dailyPnL =
-            safeNumber(
-                state.dailyPnL
-            );
+        peakEquity = safeNumber(
+            state.peakEquity,
+            CONFIG.startingBalance
+        );
 
-        dailyStartingEquity =
-            safeNumber(
-                state.dailyStartingEquity,
-                CONFIG.startingBalance
-            );
+        dailyPnL = safeNumber(
+            state.dailyPnL
+        );
+
+        dailyStartingEquity = safeNumber(
+            state.dailyStartingEquity,
+            CONFIG.startingBalance
+        );
 
         currentDay =
             state.currentDay ||
-            getUtcDay();
+            utcDay();
 
         tradingPaused =
-            Boolean(
-                state.tradingPaused
-            );
+            Boolean(state.tradingPaused);
+
+        manualPause =
+            Boolean(state.manualPause);
 
         if (state.candleBuffers) {
             for (
                 const [symbol, candles]
-                of Object.entries(
-                    state.candleBuffers
-                )
+                of Object.entries(state.candleBuffers)
             ) {
                 if (Array.isArray(candles)) {
                     candleBuffers[symbol] =
@@ -320,7 +389,7 @@ function loadState() {
         }
 
         console.log(
-            `State restored | Cash $${paperBalance.toFixed(2)} | Open ${Object.keys(activePositions).length}`
+            `State restored | Cash $${paperBalance.toFixed(2)} | Open ${Object.keys(activePositions).length} | Journal ${opportunityJournal.length}`
         );
 
     } catch (error) {
@@ -340,7 +409,9 @@ const telegramQueue = [];
 let telegramSending = false;
 
 function sendTelegramMessage(text) {
-    if (!TELEGRAM_TOKEN || !CHAT_ID) return;
+    if (!TELEGRAM_TOKEN || !CHAT_ID) {
+        return;
+    }
 
     telegramQueue.push(text);
 }
@@ -348,15 +419,14 @@ function sendTelegramMessage(text) {
 async function processTelegramQueue() {
     if (
         telegramSending ||
-        telegramQueue.length === 0
+        !telegramQueue.length
     ) {
         return;
     }
 
     telegramSending = true;
 
-    const text =
-        telegramQueue.shift();
+    const text = telegramQueue.shift();
 
     try {
         await axios.post(
@@ -376,6 +446,7 @@ async function processTelegramQueue() {
             telegramQueue.unshift(text);
 
             await sleep(5000);
+
         } else {
             console.error(
                 'Telegram:',
@@ -405,26 +476,21 @@ function currentEquity() {
         const position
         of Object.values(activePositions)
     ) {
-        const ticker =
-            marketTickers.get(
-                position.symbol
-            );
-
         const price =
-            ticker?.price ||
+            marketTickers.get(position.symbol)?.price ||
             position.lastPrice ||
             position.entryPrice;
 
         equity +=
-            position.qty * price;
+            position.qty *
+            price;
     }
 
     return equity;
 }
 
 function updateDrawdown() {
-    const equity =
-        currentEquity();
+    const equity = currentEquity();
 
     if (equity > peakEquity) {
         peakEquity = equity;
@@ -432,13 +498,10 @@ function updateDrawdown() {
 
     const drawdown =
         peakEquity > 0
-            ? (
-                (
-                    peakEquity -
-                    equity
-                ) /
+            ? pct(
+                peakEquity - equity,
                 peakEquity
-              ) * 100
+            )
             : 0;
 
     stats.maxDrawdown =
@@ -453,10 +516,11 @@ function updateDrawdown() {
 // ============================================================
 
 function checkDailyReset() {
-    const today =
-        getUtcDay();
+    const today = utcDay();
 
-    if (today === currentDay) return;
+    if (today === currentDay) {
+        return;
+    }
 
     currentDay = today;
 
@@ -490,10 +554,9 @@ function checkDailyLossLimit() {
         scheduleSave();
 
         sendTelegramMessage(
-            `🛑 <b>DAILY LOSS LIMIT</b>\n\n` +
+            `🛑 <b>DAILY LOSS LIMIT</b>\n` +
             `Daily PnL: $${dailyPnL.toFixed(2)}\n` +
-            `Maximum: -$${limit.toFixed(2)}\n\n` +
-            `New entries have been stopped.`
+            `New entries stopped.`
         );
     }
 }
@@ -510,70 +573,56 @@ setInterval(
 // INDICATORS
 // ============================================================
 
-function calculateSMA(
-    data,
-    period,
-    key
-) {
+function sma(data, period, key) {
     if (data.length < period) {
         return null;
     }
 
-    let sum = 0;
-
-    for (
-        let i =
-            data.length - period;
-        i < data.length;
-        i++
-    ) {
-        sum += data[i][key];
-    }
-
-    return sum / period;
+    return data
+        .slice(-period)
+        .reduce(
+            (sum, item) =>
+                sum + item[key],
+            0
+        ) / period;
 }
 
-function calculateEMA(
-    data,
-    period,
-    key
-) {
+function ema(data, period, key) {
     if (data.length < period) {
         return null;
     }
+
+    let result =
+        data
+            .slice(0, period)
+            .reduce(
+                (sum, item) =>
+                    sum + item[key],
+                0
+            ) /
+        period;
 
     const multiplier =
         2 / (period + 1);
-
-    let ema = 0;
-
-    for (let i = 0; i < period; i++) {
-        ema += data[i][key];
-    }
-
-    ema /= period;
 
     for (
         let i = period;
         i < data.length;
         i++
     ) {
-        ema =
+        result =
             (
                 data[i][key] -
-                ema
+                result
             ) *
             multiplier +
-            ema;
+            result;
     }
 
-    return ema;
+    return result;
 }
 
-function calculateCMO(
-    data,
-    period
-) {
+function cmo(data, period) {
     if (
         data.length <
         period + 1
@@ -584,12 +633,9 @@ function calculateCMO(
     let up = 0;
     let down = 0;
 
-    const start =
-        data.length -
-        period;
-
     for (
-        let i = start;
+        let i =
+            data.length - period;
         i < data.length;
         i++
     ) {
@@ -608,22 +654,23 @@ function calculateCMO(
     const total =
         up + down;
 
-    return total === 0
-        ? 0
-        : 100 *
-          (
-              (
-                  up -
-                  down
-              ) /
-              total
-          );
+    if (total === 0) {
+        return 0;
+    }
+
+    return (
+        100 *
+        (
+            (
+                up -
+                down
+            ) /
+            total
+        )
+    );
 }
 
-function calculateATR(
-    data,
-    period
-) {
+function atr(data, period) {
     if (
         data.length <
         period + 1
@@ -638,50 +685,37 @@ function calculateATR(
         i < data.length;
         i++
     ) {
-        const high =
-            data[i].high;
-
-        const low =
-            data[i].low;
-
-        const previousClose =
-            data[i - 1].close;
-
         ranges.push(
             Math.max(
-                high - low,
+                data[i].high -
+                    data[i].low,
+
                 Math.abs(
-                    high -
-                    previousClose
+                    data[i].high -
+                    data[i - 1].close
                 ),
+
                 Math.abs(
-                    low -
-                    previousClose
+                    data[i].low -
+                    data[i - 1].close
                 )
             )
         );
     }
 
-    const recent =
-        ranges.slice(
-            -period
-        );
-
-    return (
-        recent.reduce(
-            (a, b) =>
-                a + b,
+    return ranges
+        .slice(-period)
+        .reduce(
+            (a, b) => a + b,
             0
-        ) /
-        recent.length
-    );
+        ) / period;
 }
 
 // ============================================================
 // MARKET STRUCTURE
 // ============================================================
 
-function getStructure(candles) {
+function structure(candles) {
     if (candles.length < 4) {
         return 'NEUTRAL';
     }
@@ -697,19 +731,15 @@ function getStructure(candles) {
         ];
 
     if (
-        last.high >
-            previous.high &&
-        last.low >
-            previous.low
+        last.high > previous.high &&
+        last.low > previous.low
     ) {
         return 'BULLISH';
     }
 
     if (
-        last.high <
-            previous.high &&
-        last.low <
-            previous.low
+        last.high < previous.high &&
+        last.low < previous.low
     ) {
         return 'BEARISH';
     }
@@ -721,7 +751,7 @@ function getStructure(candles) {
 // SUPPORT / RESISTANCE
 // ============================================================
 
-function getSupportResistance(
+function supportResistance(
     candles,
     period = 20
 ) {
@@ -750,63 +780,47 @@ function getSupportResistance(
 }
 
 // ============================================================
-// FIBONACCI
+// FIBONACCI POSITION
 // ============================================================
 
-function getFibScore(candles) {
+function fibPosition(candles) {
     const recent =
         candles.slice(-30);
 
     if (recent.length < 20) {
-        return 0;
+        return null;
     }
 
     const high =
         Math.max(
             ...recent.map(
-                x => x.high
+                c => c.high
             )
         );
 
     const low =
         Math.min(
             ...recent.map(
-                x => x.low
+                c => c.low
             )
         );
 
-    const range =
-        high - low;
+    if (high <= low) {
+        return null;
+    }
 
-    if (range <= 0) return 0;
-
-    const close =
-        candles[
-            candles.length - 1
-        ].close;
-
-    const position =
+    return (
         (
-            close -
+            candles[
+                candles.length - 1
+            ].close -
             low
         ) /
-        range;
-
-    if (
-        position >= 0.382 &&
-        position <= 0.618
-    ) {
-        return 5;
-    }
-
-    if (
-        position >= 0.30 &&
-        position <= 0.70
-    ) {
-        return 3;
-    }
-
-    return 0;
+        (
+            high -
+            low
+        )
+    );
 }
 
 // ============================================================
@@ -827,44 +841,49 @@ function calculateScore(candles) {
         ];
 
     const ema20 =
-        calculateEMA(
+        ema(
             candles,
             20,
             'close'
         );
 
     const ema50 =
-        calculateEMA(
+        ema(
             candles,
             50,
             'close'
         );
 
     const volumeSMA =
-        calculateSMA(
+        sma(
             candles,
             20,
             'volume'
         );
 
-    const cmo =
-        calculateCMO(
+    const CMO =
+        cmo(
             candles,
             9
         );
 
-    const atr =
-        calculateATR(
+    const ATR =
+        atr(
             candles,
             14
         );
 
     if (
-        ema20 === null ||
-        ema50 === null ||
-        volumeSMA === null ||
-        cmo === null ||
-        atr === null
+        [
+            ema20,
+            ema50,
+            volumeSMA,
+            CMO,
+            ATR
+        ].some(
+            value =>
+                value === null
+        )
     ) {
         return null;
     }
@@ -873,14 +892,7 @@ function calculateScore(candles) {
 
     const reasons = [];
 
-    // --------------------------------------------------------
-    // Trend
-    // --------------------------------------------------------
-
-    if (
-        candle.close >
-        ema20
-    ) {
+    if (candle.close > ema20) {
         score += 10;
         reasons.push('EMA20');
     }
@@ -892,10 +904,6 @@ function calculateScore(candles) {
         score += 15;
         reasons.push('UPTREND');
     }
-
-    // --------------------------------------------------------
-    // Candle strength
-    // --------------------------------------------------------
 
     const range =
         candle.high -
@@ -926,54 +934,36 @@ function calculateScore(candles) {
         );
     }
 
-    // --------------------------------------------------------
-    // Volume + liquidity
-    // --------------------------------------------------------
-
     const volumeRatio =
         volumeSMA > 0
             ? candle.volume /
               volumeSMA
             : 0;
 
-    if (
-        volumeRatio >= 1.4
-    ) {
+    if (volumeRatio >= 1.4) {
         score += 15;
         reasons.push(
             'VOLUME_SPIKE'
         );
     }
 
-    if (
-        volumeRatio >= 1.2
-    ) {
+    if (volumeRatio >= 1.2) {
         score += 10;
         reasons.push(
             'LIQUIDITY'
         );
     }
 
-    // --------------------------------------------------------
-    // Momentum
-    // --------------------------------------------------------
-
-    if (cmo >= 50) {
+    if (CMO >= 50) {
         score += 15;
         reasons.push('CMO');
     }
 
-    // --------------------------------------------------------
-    // Structure
-    // --------------------------------------------------------
-
-    const structure =
-        getStructure(
-            candles
-        );
+    const marketStructure =
+        structure(candles);
 
     if (
-        structure ===
+        marketStructure ===
         'BULLISH'
     ) {
         score += 10;
@@ -982,14 +972,25 @@ function calculateScore(candles) {
         );
     }
 
-    // --------------------------------------------------------
-    // Fibonacci
-    // --------------------------------------------------------
+    const fib =
+        fibPosition(candles);
 
-    const fibScore =
-        getFibScore(
-            candles
-        );
+    let fibScore = 0;
+
+    if (fib !== null) {
+        if (
+            fib >= 0.382 &&
+            fib <= 0.618
+        ) {
+            fibScore = 5;
+
+        } else if (
+            fib >= 0.30 &&
+            fib <= 0.70
+        ) {
+            fibScore = 3;
+        }
+    }
 
     score += fibScore;
 
@@ -997,55 +998,46 @@ function calculateScore(candles) {
         reasons.push('FIB');
     }
 
-    // --------------------------------------------------------
-    // ATR
-    // --------------------------------------------------------
-
     if (
         range >=
-        atr * 0.8
+        ATR * 0.8
     ) {
         score += 5;
         reasons.push('ATR');
     }
 
-    // --------------------------------------------------------
-    // Support / Resistance
-    // --------------------------------------------------------
+    const previous =
+        candles.slice(
+            -21,
+            -1
+        );
+
+    const previousResistance =
+        previous.length
+            ? Math.max(
+                ...previous.map(
+                    c => c.high
+                )
+            )
+            : 0;
+
+    const breakout =
+        previousResistance > 0 &&
+        candle.close >
+            previousResistance;
+
+    if (breakout) {
+        score += 5;
+        reasons.push(
+            'BREAKOUT'
+        );
+    }
 
     const sr =
-        getSupportResistance(
+        supportResistance(
             candles,
             20
         );
-
-    let breakout = false;
-
-    if (sr) {
-        const previousCandles =
-            candles.slice(
-                -21,
-                -1
-            );
-
-        const previousResistance =
-            Math.max(
-                ...previousCandles.map(
-                    c => c.high
-                )
-            );
-
-        breakout =
-            candle.close >
-            previousResistance;
-
-        if (breakout) {
-            score += 5;
-            reasons.push(
-                'BREAKOUT'
-            );
-        }
-    }
 
     return {
         score:
@@ -1059,17 +1051,16 @@ function calculateScore(candles) {
         ema20,
         ema50,
 
-        cmo,
-
-        atr,
+        cmo: CMO,
+        atr: ATR,
 
         volumeRatio,
-
         bodyRatio,
 
         bullishCandle,
 
-        structure,
+        structure:
+            marketStructure,
 
         breakout,
 
@@ -1077,54 +1068,276 @@ function calculateScore(candles) {
             sr?.support || 0,
 
         resistance:
-            sr?.resistance || 0
+            sr?.resistance || 0,
+
+        fibPosition:
+            fib,
+
+        range
     };
 }
 
 // ============================================================
-// PAPER BUY
+// ADVANCED MARKET CONTEXT
 // ============================================================
 
-function paperBuy(
-    symbol,
+function buildMarketContext(
+    candles,
+    analysis,
     marketPrice,
+    closeTime
+) {
+    const candle =
+        candles[
+            candles.length - 1
+        ];
+
+    const previous =
+        candles[
+            candles.length - 2
+        ];
+
+    const range =
+        candle.high -
+        candle.low;
+
+    const upperWick =
+        range > 0
+            ? (
+                candle.high -
+                Math.max(
+                    candle.open,
+                    candle.close
+                )
+              ) / range
+            : 0;
+
+    const lowerWick =
+        range > 0
+            ? (
+                Math.min(
+                    candle.open,
+                    candle.close
+                ) -
+                candle.low
+              ) / range
+            : 0;
+
+    const closeLocation =
+        range > 0
+            ? (
+                candle.close -
+                candle.low
+              ) / range
+            : 0;
+
+    const extension5 =
+        candles.length >= 6
+            ? pct(
+                candle.close -
+                    candles[
+                        candles.length - 6
+                    ].close,
+
+                candles[
+                    candles.length - 6
+                ].close
+            )
+            : 0;
+
+    const extension10 =
+        candles.length >= 11
+            ? pct(
+                candle.close -
+                    candles[
+                        candles.length - 11
+                    ].close,
+
+                candles[
+                    candles.length - 11
+                ].close
+            )
+            : 0;
+
+    const ema20DistancePct =
+        pct(
+            marketPrice -
+                analysis.ema20,
+            analysis.ema20
+        );
+
+    const ema50DistancePct =
+        pct(
+            marketPrice -
+                analysis.ema50,
+            analysis.ema50
+        );
+
+    const atrPct =
+        pct(
+            analysis.atr,
+            marketPrice
+        );
+
+    const distanceFromSupportPct =
+        analysis.support > 0
+            ? pct(
+                marketPrice -
+                    analysis.support,
+                analysis.support
+            )
+            : null;
+
+    const distanceToResistancePct =
+        analysis.resistance > 0
+            ? pct(
+                analysis.resistance -
+                    marketPrice,
+                marketPrice
+            )
+            : null;
+
+    const previousResistance =
+        Math.max(
+            ...candles
+                .slice(
+                    -21,
+                    -1
+                )
+                .map(
+                    c => c.high
+                )
+        );
+
+    const breakoutDistancePct =
+        previousResistance > 0
+            ? pct(
+                candle.close -
+                    previousResistance,
+                previousResistance
+            )
+            : 0;
+
+    return {
+        timestamp:
+            Date.now(),
+
+        isoTime:
+            new Date()
+                .toISOString(),
+
+        candleCloseTime:
+            closeTime,
+
+        sessionUTC:
+            getSessionUTC(),
+
+        marketPrice,
+
+        open:
+            candle.open,
+
+        high:
+            candle.high,
+
+        low:
+            candle.low,
+
+        close:
+            candle.close,
+
+        previousClose:
+            previous?.close ||
+            null,
+
+        bodyRatio:
+            analysis.bodyRatio,
+
+        upperWickRatio:
+            upperWick,
+
+        lowerWickRatio:
+            lowerWick,
+
+        closeLocationRatio:
+            clamp(
+                closeLocation,
+                0,
+                1
+            ),
+
+        ema20:
+            analysis.ema20,
+
+        ema50:
+            analysis.ema50,
+
+        ema20DistancePct,
+
+        ema50DistancePct,
+
+        atr:
+            analysis.atr,
+
+        atrPct,
+
+        cmo:
+            analysis.cmo,
+
+        volumeRatio:
+            analysis.volumeRatio,
+
+        structure:
+            analysis.structure,
+
+        breakout:
+            analysis.breakout,
+
+        breakoutDistancePct,
+
+        support:
+            analysis.support,
+
+        resistance:
+            analysis.resistance,
+
+        distanceFromSupportPct,
+
+        distanceToResistancePct,
+
+        fibPosition:
+            analysis.fibPosition,
+
+        extension5Pct:
+            extension5,
+
+        extension10Pct:
+            extension10,
+
+        score:
+            analysis.score,
+
+        reasons:
+            [
+                ...analysis.reasons
+            ]
+    };
+}
+
+// ============================================================
+// ENTRY GATE
+// ============================================================
+
+function evaluateEntryGate(
+    symbol,
     analysis
 ) {
-    if (
-        !CONFIG.paperTrading
-    ) {
-        return 'DISABLED';
-    }
+    const blockers = [];
 
-    if (
-        tradingPaused
-    ) {
-        return 'PAUSED';
-    }
+    const stopInfo =
+        recentStop(symbol);
 
-    if (
-        activePositions[
-            symbol
-        ]
-    ) {
-        return 'HOLDING';
-    }
-
-    if (
-        Object.keys(
-            activePositions
-        ).length >=
-        CONFIG.maxPositions
-    ) {
-        return 'MAX_POSITIONS';
-    }
-
-    // --------------------------------------------------------
-    // Hard confirmations
-    // Score alone is NOT enough
-    // --------------------------------------------------------
-
-    const requiredConditions =
+    const confirmations =
         analysis.bullishCandle &&
         analysis.ema20 >
             analysis.ema50 &&
@@ -1136,30 +1349,178 @@ function paperBuy(
         analysis.structure ===
             'BULLISH';
 
+    if (!CONFIG.paperTrading) {
+        blockers.push(
+            'PAPER_DISABLED'
+        );
+    }
+
+    if (manualPause) {
+        blockers.push(
+            'MANUAL_PAUSE'
+        );
+    }
+
+    if (tradingPaused) {
+        blockers.push(
+            'DAILY_RISK_PAUSE'
+        );
+    }
+
+    if (
+        activePositions[
+            symbol
+        ]
+    ) {
+        blockers.push(
+            'ALREADY_OPEN'
+        );
+    }
+
+    if (
+        Object.keys(
+            activePositions
+        ).length >=
+        CONFIG.maxPositions
+    ) {
+        blockers.push(
+            'MAX_POSITIONS'
+        );
+    }
+
     if (
         analysis.score <
-            CONFIG.minimumScore ||
-        !requiredConditions
+        CONFIG.minimumScore
     ) {
+        blockers.push(
+            'SCORE_LT_MIN'
+        );
+    }
+
+    if (!confirmations) {
+        blockers.push(
+            'HARD_CONFIRMATIONS_FAILED'
+        );
+    }
+
+    if (
+        CONFIG.enforceLossCooldown &&
+        stopInfo.recentStopLoss
+    ) {
+        blockers.push(
+            'LOSS_COOLDOWN'
+        );
+    }
+
+    return {
+        eligible:
+            blockers.length === 0,
+
+        blockers,
+
+        ...stopInfo
+    };
+}
+
+// ============================================================
+// JOURNAL
+// ============================================================
+
+function recordOpportunity(
+    record
+) {
+    if (
+        record.score <
+        CONFIG.journalMinimumScore
+    ) {
+        return;
+    }
+
+    opportunityJournal.push(
+        record
+    );
+
+    journalStats
+        .journaledCandidates++;
+
+    if (
+        record.decision ===
+        'PAPER_BOUGHT'
+    ) {
+        journalStats
+            .paperEntries++;
+
+    } else if (
+        !record.gateEligible
+    ) {
+        journalStats
+            .rejectedCandidates++;
+    }
+
+    if (
+        opportunityJournal.length >
+        CONFIG.journalMaxRecords
+    ) {
+        opportunityJournal =
+            opportunityJournal.slice(
+                -CONFIG.journalMaxRecords
+            );
+    }
+
+    scheduleSave();
+}
+
+// ============================================================
+// PAPER BUY
+// ============================================================
+
+function paperBuy(
+    symbol,
+    marketPrice,
+    analysis,
+    context,
+    gate
+) {
+    if (!gate.eligible) {
+        if (
+            gate.blockers.includes(
+                'MANUAL_PAUSE'
+            ) ||
+            gate.blockers.includes(
+                'DAILY_RISK_PAUSE'
+            )
+        ) {
+            return 'PAUSED';
+        }
+
+        if (
+            gate.blockers.includes(
+                'MAX_POSITIONS'
+            )
+        ) {
+            return 'MAX_POSITIONS';
+        }
+
+        if (
+            gate.blockers.includes(
+                'ALREADY_OPEN'
+            )
+        ) {
+            return 'HOLDING';
+        }
+
         return 'WAIT';
     }
 
-    const equity =
-        currentEquity();
-
     let allocation =
-        equity /
-        CONFIG.maxPositions;
-
-    allocation =
         Math.min(
-            allocation,
+            currentEquity() /
+                CONFIG.maxPositions,
+
             paperBalance
         );
 
-    if (
-        allocation < 10
-    ) {
+    if (allocation < 10) {
         return 'NO_BALANCE';
     }
 
@@ -1174,12 +1535,11 @@ function paperBuy(
         allocation *
         CONFIG.feePct;
 
-    const usable =
-        allocation -
-        buyFee;
-
     const qty =
-        usable /
+        (
+            allocation -
+            buyFee
+        ) /
         entryPrice;
 
     paperBalance -=
@@ -1221,7 +1581,9 @@ function paperBuy(
             analysis.score,
 
         reasons:
-            analysis.reasons,
+            [
+                ...analysis.reasons
+            ],
 
         cmo:
             analysis.cmo,
@@ -1231,6 +1593,9 @@ function paperBuy(
 
         structure:
             analysis.structure,
+
+        entryContext:
+            context,
 
         entryTime:
             Date.now()
@@ -1243,7 +1608,7 @@ function paperBuy(
     );
 
     sendTelegramMessage(
-        `🟢 <b>PAPER BUY</b>\n\n` +
+        `🟢 <b>PAPER BUY V4.1</b>\n\n` +
         `<b>${symbol}</b>\n` +
         `Score: ${analysis.score}/100\n` +
         `Amount: $${allocation.toFixed(2)}\n` +
@@ -1251,12 +1616,18 @@ function paperBuy(
         `SL: ${activePositions[symbol].stopLoss.toFixed(8)}\n` +
         `TP: ${activePositions[symbol].takeProfit.toFixed(8)}\n` +
         `CMO: ${analysis.cmo.toFixed(2)}\n` +
-        `Volume: ${analysis.volumeRatio.toFixed(2)}x`
+        `Volume: ${analysis.volumeRatio.toFixed(2)}x\n` +
+        `EMA20 dist: ${context.ema20DistancePct.toFixed(2)}%\n` +
+        `ATR: ${context.atrPct.toFixed(2)}%`
     );
 
     return 'PAPER_BOUGHT';
 }
 
+// ============================================================
+// END OF PART 1
+// PART 2 MUST BE PASTED DIRECTLY BELOW THIS LINE
+// ============================================================
 // ============================================================
 // PAPER CLOSE
 // ============================================================
@@ -1267,18 +1638,15 @@ function closePaperPosition(
     reason
 ) {
     const trade =
-        activePositions[
-            symbol
-        ];
+        activePositions[symbol];
 
-    if (!trade) return null;
+    if (!trade) {
+        return null;
+    }
 
     const exitPrice =
         marketPrice *
-        (
-            1 -
-            CONFIG.slippagePct
-        );
+        (1 - CONFIG.slippagePct);
 
     const grossExit =
         trade.qty *
@@ -1335,6 +1703,23 @@ function closePaperPosition(
     dailyPnL +=
         profit;
 
+    if (
+        reason ===
+        'STOP_LOSS'
+    ) {
+        lastStopLossBySymbol[
+            symbol
+        ] = Date.now();
+    }
+
+    const holdingMs =
+        Date.now() -
+        trade.entryTime;
+
+    const buyFee =
+        trade.investedUSDT *
+        CONFIG.feePct;
+
     tradeHistory.push({
         symbol,
 
@@ -1349,7 +1734,16 @@ function closePaperPosition(
         qty:
             trade.qty,
 
+        investedUSDT:
+            trade.investedUSDT,
+
         profit,
+
+        profitPct:
+            pct(
+                profit,
+                trade.investedUSDT
+            ),
 
         reason,
 
@@ -1365,12 +1759,61 @@ function closePaperPosition(
         reasons:
             trade.reasons,
 
+        buyFee,
+
+        sellFee,
+
+        estimatedTotalFees:
+            buyFee +
+            sellFee,
+
+        simulatedSlippagePct:
+            CONFIG.slippagePct,
+
+        holdingMs,
+
+        holdingMinutes:
+            holdingMs /
+            60000,
+
+        entryContext:
+            trade.entryContext ||
+            null,
+
+        exitContext: {
+            marketPrice,
+
+            exitPrice,
+
+            timestamp:
+                Date.now(),
+
+            isoTime:
+                new Date()
+                    .toISOString(),
+
+            sessionUTC:
+                getSessionUTC(),
+
+            reason
+        },
+
         entryTime:
             trade.entryTime,
 
         exitTime:
             Date.now()
     });
+
+    if (
+        tradeHistory.length >
+        CONFIG.tradeHistoryMaxRecords
+    ) {
+        tradeHistory =
+            tradeHistory.slice(
+                -CONFIG.tradeHistoryMaxRecords
+            );
+    }
 
     delete activePositions[
         symbol
@@ -1387,10 +1830,11 @@ function closePaperPosition(
     );
 
     sendTelegramMessage(
-        `${profit >= 0 ? '✅' : '❌'} <b>PAPER CLOSE</b>\n\n` +
+        `${profit >= 0 ? '✅' : '❌'} <b>PAPER CLOSE V4.1</b>\n\n` +
         `<b>${symbol}</b>\n` +
         `Reason: ${reason}\n` +
         `PnL: $${profit.toFixed(2)}\n` +
+        `Holding: ${(holdingMs / 60000).toFixed(1)} min\n` +
         `Cash: $${paperBalance.toFixed(2)}`
     );
 
@@ -1399,7 +1843,6 @@ function closePaperPosition(
 
 // ============================================================
 // LIVE POSITION MONITOR
-// Runs from miniTicker WebSocket
 // ============================================================
 
 function manageOpenPosition(
@@ -1411,7 +1854,9 @@ function manageOpenPosition(
             symbol
         ];
 
-    if (!position) return;
+    if (!position) {
+        return;
+    }
 
     position.lastPrice =
         price;
@@ -1479,18 +1924,37 @@ function analyzeClosedCandle(
             candles
         );
 
-    if (!analysis) return;
+    if (!analysis) {
+        return;
+    }
+
+    journalStats
+        .analyzedCandles++;
 
     const ticker =
         marketTickers.get(
             symbol
         );
 
-    const currentPrice =
+    const marketPrice =
         ticker?.price ||
         candles[
             candles.length - 1
         ].close;
+
+    const context =
+        buildMarketContext(
+            candles,
+            analysis,
+            marketPrice,
+            closeTime
+        );
+
+    const gate =
+        evaluateEntryGate(
+            symbol,
+            analysis
+        );
 
     let decision =
         'WAIT';
@@ -1507,10 +1971,60 @@ function analyzeClosedCandle(
         decision =
             paperBuy(
                 symbol,
-                currentPrice,
-                analysis
+                marketPrice,
+                analysis,
+                context,
+                gate
             );
     }
+
+    recordOpportunity({
+        symbol,
+
+        score:
+            analysis.score,
+
+        decision,
+
+        gateEligible:
+            gate.eligible,
+
+        blockers:
+            [
+                ...gate.blockers
+            ],
+
+        price:
+            marketPrice,
+
+        cmo:
+            analysis.cmo,
+
+        volumeRatio:
+            analysis.volumeRatio,
+
+        structure:
+            analysis.structure,
+
+        reasons:
+            [
+                ...analysis.reasons
+            ],
+
+        recentStopLoss:
+            gate.recentStopLoss,
+
+        minutesSinceStopLoss:
+            gate.minutesSinceStopLoss,
+
+        context,
+
+        candleTime:
+            closeTime,
+
+        recordedAt:
+            Date.now()
+    });
 
     latestResults.push({
         symbol,
@@ -1521,21 +2035,41 @@ function analyzeClosedCandle(
         decision,
 
         price:
-            currentPrice,
+            marketPrice,
 
         cmo:
-            analysis.cmo.toFixed(2),
+            analysis.cmo
+                .toFixed(2),
 
         volume:
-            analysis.volumeRatio.toFixed(2),
+            analysis.volumeRatio
+                .toFixed(2),
 
         structure:
             analysis.structure,
 
+        ema20DistancePct:
+            context
+                .ema20DistancePct
+                .toFixed(2),
+
+        atrPct:
+            context
+                .atrPct
+                .toFixed(2),
+
+        extension5Pct:
+            context
+                .extension5Pct
+                .toFixed(2),
+
+        blockers:
+            gate.blockers
+                .join(', '),
+
         reasons:
-            analysis.reasons.join(
-                ', '
-            ),
+            analysis.reasons
+                .join(', '),
 
         candleTime:
             closeTime
@@ -1557,8 +2091,7 @@ function analyzeClosedCandle(
 }
 
 // ============================================================
-// CONTROL MESSAGE QUEUE
-// Prevent websocket-control flooding
+// WEBSOCKET CONTROL QUEUE
 // ============================================================
 
 const wsControlQueue = [];
@@ -1626,9 +2159,9 @@ setInterval(
 // ============================================================
 
 function connectMiniTicker() {
-    if (
-        shuttingDown
-    ) return;
+    if (shuttingDown) {
+        return;
+    }
 
     if (
         miniWs &&
@@ -1654,7 +2187,9 @@ function connectMiniTicker() {
     miniWs.on(
         'open',
         () => {
-            miniConnected = true;
+            miniConnected =
+                true;
+
             lastMiniMessage =
                 Date.now();
 
@@ -1693,7 +2228,8 @@ function connectMiniTicker() {
             }
 
             for (
-                const item of data
+                const item
+                of data
             ) {
                 const symbol =
                     item.s;
@@ -1703,7 +2239,7 @@ function connectMiniTicker() {
                     !symbol.endsWith(
                         'USDT'
                     ) ||
-                    stableIgnored(
+                    ignoredSymbol(
                         symbol
                     )
                 ) {
@@ -1720,7 +2256,9 @@ function connectMiniTicker() {
                         item.q
                     );
 
-                if (price <= 0) {
+                if (
+                    price <= 0
+                ) {
                     continue;
                 }
 
@@ -1728,7 +2266,9 @@ function connectMiniTicker() {
                     symbol,
                     {
                         price,
+
                         quoteVolume,
+
                         updatedAt:
                             Date.now()
                     }
@@ -1812,9 +2352,9 @@ function scheduleMiniReconnect() {
 // ============================================================
 
 function connectKlineSocket() {
-    if (
-        shuttingDown
-    ) return;
+    if (shuttingDown) {
+        return;
+    }
 
     if (
         klineWs &&
@@ -1850,7 +2390,6 @@ function connectKlineSocket() {
                 'KLINE WebSocket connected.'
             );
 
-            // Resubscribe after reconnect.
             if (
                 subscribedSymbols.size >
                 0
@@ -1905,7 +2444,7 @@ function connectKlineSocket() {
 
             if (
                 event.e !==
-                'kline' ||
+                    'kline' ||
                 !event.k
             ) {
                 return;
@@ -1914,9 +2453,10 @@ function connectKlineSocket() {
             const kline =
                 event.k;
 
-            // Only use fully closed candles.
+            // Closed candles only
             if (
-                kline.x !== true
+                kline.x !==
+                true
             ) {
                 return;
             }
@@ -1924,7 +2464,9 @@ function connectKlineSocket() {
             const symbol =
                 event.s;
 
-            if (!symbol) return;
+            if (!symbol) {
+                return;
+            }
 
             const candle = {
                 open:
@@ -1986,7 +2528,9 @@ function connectKlineSocket() {
                 ] = candle;
 
             } else {
-                buffer.push(candle);
+                buffer.push(
+                    candle
+                );
             }
 
             candleBuffers[
@@ -2074,7 +2618,7 @@ function getTopSymbols() {
             !symbol.endsWith(
                 'USDT'
             ) ||
-            stableIgnored(
+            ignoredSymbol(
                 symbol
             ) ||
             ticker.quoteVolume <
@@ -2125,16 +2669,14 @@ function rebalanceUniverse() {
         );
 
     if (
-        desired.size === 0
+        desired.size ===
+        0
     ) {
         return;
     }
 
-    const toSubscribe =
-        [];
-
-    const toUnsubscribe =
-        [];
+    const toSubscribe = [];
+    const toUnsubscribe = [];
 
     for (
         const symbol
@@ -2160,7 +2702,7 @@ function rebalanceUniverse() {
                 symbol
             )
         ) {
-            // Keep open-position symbols subscribed.
+            // Keep symbols with open positions
             if (
                 activePositions[
                     symbol
@@ -2169,6 +2711,7 @@ function rebalanceUniverse() {
                 desired.add(
                     symbol
                 );
+
                 continue;
             }
 
@@ -2237,7 +2780,9 @@ setInterval(
     () => {
         if (
             shuttingDown
-        ) return;
+        ) {
+            return;
+        }
 
         const now =
             Date.now();
@@ -2290,6 +2835,51 @@ setInterval(
 );
 
 // ============================================================
+// MANUAL PAUSE / RESUME
+// ============================================================
+
+app.post(
+    '/api/pause',
+    (req, res) => {
+        manualPause = true;
+
+        scheduleSave();
+
+        sendTelegramMessage(
+            `⏸ <b>NEW ENTRIES PAUSED</b>\n\n` +
+            `Market monitoring and data collection continue.`
+        );
+
+        res.json({
+            success: true,
+
+            msg:
+                'New entries paused. Data collection continues.'
+        });
+    }
+);
+
+app.post(
+    '/api/resume',
+    (req, res) => {
+        manualPause = false;
+
+        scheduleSave();
+
+        sendTelegramMessage(
+            `▶️ <b>NEW ENTRIES RESUMED</b>`
+        );
+
+        res.json({
+            success: true,
+
+            msg:
+                'Paper entries resumed.'
+        });
+    }
+);
+
+// ============================================================
 // EMERGENCY PAPER CLOSE
 // ============================================================
 
@@ -2302,10 +2892,12 @@ app.post(
             );
 
         if (
-            symbols.length === 0
+            symbols.length ===
+            0
         ) {
             return res.json({
                 success: false,
+
                 msg:
                     'No open paper positions.'
             });
@@ -2322,7 +2914,9 @@ app.post(
                     symbol
                 ];
 
-            if (!trade) continue;
+            if (!trade) {
+                continue;
+            }
 
             const ticker =
                 marketTickers.get(
@@ -2351,6 +2945,7 @@ app.post(
 
         res.json({
             success: true,
+
             msg:
                 `Closed ${closed} paper positions.`
         });
@@ -2370,17 +2965,24 @@ app.post(
             ).length >
             0
         ) {
-            return res.status(400).json({
-                success: false,
-                msg:
-                    'Close all paper positions before reset.'
-            });
+            return res
+                .status(400)
+                .json({
+                    success: false,
+
+                    msg:
+                        'Close all paper positions before reset.'
+                });
         }
 
         paperBalance =
             CONFIG.startingBalance;
 
         tradeHistory = [];
+
+        opportunityJournal = [];
+
+        lastStopLossBySymbol = {};
 
         stats = {
             totalTrades: 0,
@@ -2399,6 +3001,13 @@ app.post(
             maxDrawdown: 0
         };
 
+        journalStats = {
+            analyzedCandles: 0,
+            journaledCandidates: 0,
+            paperEntries: 0,
+            rejectedCandidates: 0
+        };
+
         peakEquity =
             CONFIG.startingBalance;
 
@@ -2408,23 +3017,123 @@ app.post(
             CONFIG.startingBalance;
 
         currentDay =
-            getUtcDay();
+            utcDay();
 
-        tradingPaused =
-            false;
+        tradingPaused = false;
+
+        manualPause = false;
 
         saveState();
 
         res.json({
             success: true,
+
             msg:
-                'Paper account reset to $10,000.'
+                'Paper account and journal reset.'
         });
     }
 );
 
 // ============================================================
-// API
+// JOURNAL EXPORT
+// ============================================================
+
+app.get(
+    '/api/export',
+    (req, res) => {
+        res.setHeader(
+            'Content-Type',
+            'application/json'
+        );
+
+        res.setHeader(
+            'Content-Disposition',
+            `attachment; filename="lomy-journal-${Date.now()}.json"`
+        );
+
+        res.send(
+            JSON.stringify(
+                {
+                    version:
+                        CONFIG.version,
+
+                    exportedAt:
+                        new Date()
+                            .toISOString(),
+
+                    configSnapshot: {
+                        startingBalance:
+                            CONFIG.startingBalance,
+
+                        maxPositions:
+                            CONFIG.maxPositions,
+
+                        minimumScore:
+                            CONFIG.minimumScore,
+
+                        stopLossPct:
+                            CONFIG.stopLossPct,
+
+                        takeProfitPct:
+                            CONFIG.takeProfitPct,
+
+                        feePct:
+                            CONFIG.feePct,
+
+                        slippagePct:
+                            CONFIG.slippagePct,
+
+                        candleInterval:
+                            CONFIG.candleInterval,
+
+                        universeSize:
+                            CONFIG.universeSize,
+
+                        journalMinimumScore:
+                            CONFIG.journalMinimumScore
+                    },
+
+                    stats,
+
+                    journalStats,
+
+                    paperBalance,
+
+                    equity:
+                        currentEquity(),
+
+                    activePositions,
+
+                    tradeHistory,
+
+                    opportunityJournal,
+
+                    lastStopLossBySymbol
+                },
+                null,
+                2
+            )
+        );
+    }
+);
+
+app.get(
+    '/api/journal',
+    (req, res) => {
+        res.json({
+            count:
+                opportunityJournal.length,
+
+            journal:
+                opportunityJournal.slice(
+                    -1000
+                )
+        });
+    }
+);
+
+// ============================================================
+// MAIN DATA API
 // ============================================================
 
 app.get(
@@ -2446,8 +3155,8 @@ app.get(
             stats.grossLoss > 0
                 ? stats.grossProfit /
                   stats.grossLoss
-                : stats.grossProfit >
-                  0
+
+                : stats.grossProfit > 0
                     ? 999
                     : 0;
 
@@ -2468,8 +3177,11 @@ app.get(
         }
 
         res.json({
+            version:
+                CONFIG.version,
+
             mode:
-                'WEBSOCKET MARKET / PAPER EXECUTION',
+                'WEBSOCKET MARKET / PAPER EXECUTION / DATA COLLECTOR',
 
             miniConnected,
 
@@ -2493,7 +3205,8 @@ app.get(
                 paperBalance.toFixed(2),
 
             equity:
-                currentEquity().toFixed(2),
+                currentEquity()
+                    .toFixed(2),
 
             activePositions:
                 Object.keys(
@@ -2510,21 +3223,24 @@ app.get(
 
             tradingPaused,
 
+            manualPause,
+
+            journalStats,
+
+            journalRecords:
+                opportunityJournal.length,
+
             stats: {
                 ...stats,
 
                 winRate:
                     Number(
-                        winRate.toFixed(
-                            2
-                        )
+                        winRate.toFixed(2)
                     ),
 
                 profitFactor:
                     Number(
-                        profitFactor.toFixed(
-                            2
-                        )
+                        profitFactor.toFixed(2)
                     )
             },
 
@@ -2553,6 +3269,9 @@ app.get(
                     ? 'OK'
                     : 'DEGRADED',
 
+            version:
+                CONFIG.version,
+
             execution:
                 'PAPER ONLY',
 
@@ -2576,6 +3295,11 @@ app.get(
                     activePositions
                 ).length,
 
+            manualPause,
+
+            journalRecords:
+                opportunityJournal.length,
+
             equity:
                 currentEquity()
                     .toFixed(2)
@@ -2594,6 +3318,7 @@ app.get(
 <!DOCTYPE html>
 
 <html>
+
 <head>
 
 <meta charset="UTF-8">
@@ -2602,7 +3327,7 @@ app.get(
 name="viewport"
 content="width=device-width,initial-scale=1">
 
-<title>LOMY V4</title>
+<title>LOMY V4.1</title>
 
 <style>
 
@@ -2639,10 +3364,9 @@ font-weight:bold
 
 .grid{
 display:grid;
-grid-template-columns:
-repeat(auto-fit,minmax(150px,1fr));
+grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
 gap:10px;
-max-width:1250px;
+max-width:1350px;
 margin:18px auto
 }
 
@@ -2677,19 +3401,35 @@ color:#f3ba2f
 }
 
 button{
-background:#f6465d;
 color:#fff;
 border:0;
-padding:12px 20px;
+padding:12px 18px;
 border-radius:7px;
 font-weight:bold;
 cursor:pointer;
-margin:10px
+margin:7px
+}
+
+.danger{
+background:#f6465d
+}
+
+.pause{
+background:#f0b90b;
+color:#000
+}
+
+.resume{
+background:#0ecb81
+}
+
+.export{
+background:#3772ff
 }
 
 table{
 width:100%;
-max-width:1250px;
+max-width:1400px;
 margin:20px auto;
 border-collapse:collapse;
 background:#1e2329
@@ -2713,11 +3453,11 @@ font-size:12px
 <body>
 
 <h1>
-🤖 LOMY PRECISION V4
+🤖 LOMY PRECISION V4.1
 </h1>
 
 <div class="badge">
-100% WEBSOCKET MARKET DATA • PAPER ONLY
+WEBSOCKET • PAPER ONLY • ADVANCED DATA COLLECTOR
 </div>
 
 <div
@@ -2726,143 +3466,103 @@ id="connection">
 Connecting...
 </div>
 
+<div
+class="status"
+id="tradeState">
+Checking entry state...
+</div>
+
 <div class="grid">
 
 <div class="card">
-<div class="label">
-START
-</div>
-<div class="value">
-$10,000
-</div>
+<div class="label">START</div>
+<div class="value">$10,000</div>
 </div>
 
 <div class="card">
-<div class="label">
-CASH
-</div>
-<div
-class="value"
-id="cash">
-$0
-</div>
+<div class="label">CASH</div>
+<div class="value" id="cash">$0</div>
 </div>
 
 <div class="card">
-<div class="label">
-EQUITY
-</div>
-<div
-class="value"
-id="equity">
-$0
-</div>
+<div class="label">EQUITY</div>
+<div class="value" id="equity">$0</div>
 </div>
 
 <div class="card">
-<div class="label">
-CLOSED TRADES
-</div>
-<div
-class="value"
-id="trades">
-0
-</div>
+<div class="label">CLOSED TRADES</div>
+<div class="value" id="trades">0</div>
 </div>
 
 <div class="card">
-<div class="label">
-WIN RATE
-</div>
-<div
-class="value"
-id="winrate">
-0%
-</div>
+<div class="label">WIN RATE</div>
+<div class="value" id="winrate">0%</div>
 </div>
 
 <div class="card">
-<div class="label">
-NET PROFIT
-</div>
-<div
-class="value"
-id="profit">
-$0
-</div>
+<div class="label">NET PROFIT</div>
+<div class="value" id="profit">$0</div>
 </div>
 
 <div class="card">
-<div class="label">
-PROFIT FACTOR
-</div>
-<div
-class="value"
-id="pf">
-0
-</div>
+<div class="label">PROFIT FACTOR</div>
+<div class="value" id="pf">0</div>
 </div>
 
 <div class="card">
-<div class="label">
-MAX DRAWDOWN
-</div>
-<div
-class="value"
-id="dd">
-0%
-</div>
+<div class="label">MAX DRAWDOWN</div>
+<div class="value" id="dd">0%</div>
 </div>
 
 <div class="card">
-<div class="label">
-OPEN POSITIONS
-</div>
-<div
-class="value"
-id="positions">
-0
-</div>
+<div class="label">OPEN POSITIONS</div>
+<div class="value" id="positions">0</div>
 </div>
 
 <div class="card">
-<div class="label">
-WS SYMBOLS
-</div>
-<div
-class="value"
-id="symbols">
-0
-</div>
+<div class="label">WS SYMBOLS</div>
+<div class="value" id="symbols">0</div>
 </div>
 
 <div class="card">
-<div class="label">
-READY SYMBOLS
-</div>
-<div
-class="value"
-id="ready">
-0
-</div>
+<div class="label">READY SYMBOLS</div>
+<div class="value" id="ready">0</div>
 </div>
 
 <div class="card">
-<div class="label">
-TODAY PNL
+<div class="label">JOURNAL</div>
+<div class="value" id="journal">0</div>
 </div>
-<div
-class="value"
-id="daily">
-$0
-</div>
+
+<div class="card">
+<div class="label">TODAY PNL</div>
+<div class="value" id="daily">$0</div>
 </div>
 
 </div>
 
 <button
+class="pause"
+onclick="pauseTrading()">
+⏸ PAUSE NEW ENTRIES
+</button>
+
+<button
+class="resume"
+onclick="resumeTrading()">
+▶ RESUME ENTRIES
+</button>
+
+<button
+class="danger"
 onclick="emergencyClose()">
 🚨 CLOSE ALL PAPER POSITIONS
+</button>
+
+<button
+class="export"
+onclick="window.location='/api/export'">
+⬇ EXPORT JOURNAL JSON
 </button>
 
 <div style="overflow-x:auto">
@@ -2870,21 +3570,29 @@ onclick="emergencyClose()">
 <table>
 
 <thead>
+
 <tr>
+
 <th>Symbol</th>
 <th>Score</th>
 <th>Status</th>
 <th>CMO</th>
 <th>Volume</th>
 <th>Structure</th>
+<th>EMA20 Dist</th>
+<th>ATR%</th>
+<th>5C Ext%</th>
+<th>Blockers</th>
 <th>Price</th>
+
 </tr>
+
 </thead>
 
 <tbody id="table">
 
 <tr>
-<td colspan="7">
+<td colspan="11">
 Collecting WebSocket candles...
 </td>
 </tr>
@@ -2931,7 +3639,9 @@ document.getElementById(
 'profit'
 ).innerText =
 '$' +
-data.stats.netProfit.toFixed(2);
+Number(
+data.stats.netProfit
+).toFixed(2);
 
 document.getElementById(
 'pf'
@@ -2941,7 +3651,9 @@ data.stats.profitFactor;
 document.getElementById(
 'dd'
 ).innerText =
-data.stats.maxDrawdown.toFixed(2) +
+Number(
+data.stats.maxDrawdown
+).toFixed(2) +
 '%';
 
 document.getElementById(
@@ -2958,6 +3670,11 @@ document.getElementById(
 'ready'
 ).innerText =
 data.readySymbols;
+
+document.getElementById(
+'journal'
+).innerText =
+data.journalRecords;
 
 document.getElementById(
 'daily'
@@ -2990,17 +3707,54 @@ connection.className =
 
 }
 
+const tradeState =
+document.getElementById(
+'tradeState'
+);
+
+if(
+data.manualPause
+){
+
+tradeState.innerText =
+'⏸ NEW ENTRIES PAUSED • DATA COLLECTION CONTINUES';
+
+tradeState.className =
+'status yellow';
+
+}else if(
+data.tradingPaused
+){
+
+tradeState.innerText =
+'🛑 DAILY RISK PAUSE';
+
+tradeState.className =
+'status red';
+
+}else{
+
+tradeState.innerText =
+'▶ PAPER ENTRIES ENABLED';
+
+tradeState.className =
+'status green';
+
+}
+
 const tbody =
 document.getElementById(
 'table'
 );
 
-tbody.innerHTML='';
+tbody.innerHTML = '';
 
-if(!data.live.length){
+if(
+!data.live.length
+){
 
 tbody.innerHTML =
-'<tr><td colspan="7">Warm-up in progress. Ready: ' +
+'<tr><td colspan="11">Warm-up / collecting candidates. Ready: ' +
 data.readySymbols +
 ' / ' +
 data.subscribedSymbols +
@@ -3010,7 +3764,8 @@ return;
 
 }
 
-data.live.forEach(item=>{
+data.live.forEach(
+item => {
 
 tbody.innerHTML +=
 
@@ -3041,6 +3796,22 @@ item.structure +
 '</td>' +
 
 '<td>' +
+item.ema20DistancePct +
+'%</td>' +
+
+'<td>' +
+item.atrPct +
+'%</td>' +
+
+'<td>' +
+item.extension5Pct +
+'%</td>' +
+
+'<td>' +
+item.blockers +
+'</td>' +
+
+'<td>' +
 item.price +
 '</td>' +
 
@@ -3050,9 +3821,53 @@ item.price +
 
 }catch(error){
 
-console.error(error);
+console.error(
+error
+);
 
 }
+
+}
+
+async function pauseTrading(){
+
+const response =
+await fetch(
+'/api/pause',
+{
+method:'POST'
+}
+);
+
+const data =
+await response.json();
+
+alert(
+data.msg
+);
+
+loadData();
+
+}
+
+async function resumeTrading(){
+
+const response =
+await fetch(
+'/api/resume',
+{
+method:'POST'
+}
+);
+
+const data =
+await response.json();
+
+alert(
+data.msg
+);
+
+loadData();
 
 }
 
@@ -3077,7 +3892,9 @@ method:'POST'
 const data =
 await response.json();
 
-alert(data.msg);
+alert(
+data.msg
+);
 
 loadData();
 
@@ -3093,6 +3910,7 @@ loadData();
 </script>
 
 </body>
+
 </html>
         `);
     }
@@ -3102,10 +3920,17 @@ loadData();
 // GRACEFUL SHUTDOWN
 // ============================================================
 
-function shutdown(signal) {
-    if (shuttingDown) return;
+function shutdown(
+    signal
+) {
+    if (
+        shuttingDown
+    ) {
+        return;
+    }
 
-    shuttingDown = true;
+    shuttingDown =
+        true;
 
     console.log(
         `${signal}: saving state`
@@ -3122,7 +3947,8 @@ function shutdown(signal) {
     } catch (_) {}
 
     setTimeout(
-        () => process.exit(0),
+        () =>
+            process.exit(0),
         1000
     );
 }
@@ -3130,13 +3956,17 @@ function shutdown(signal) {
 process.on(
     'SIGTERM',
     () =>
-        shutdown('SIGTERM')
+        shutdown(
+            'SIGTERM'
+        )
 );
 
 process.on(
     'SIGINT',
     () =>
-        shutdown('SIGINT')
+        shutdown(
+            'SIGINT'
+        )
 );
 
 process.on(
@@ -3165,32 +3995,49 @@ process.on(
 
 app.listen(
     PORT,
-    async () => {
+    () => {
         console.log('');
+
         console.log(
             '=========================================='
         );
+
         console.log(
-            'LOMY PRECISION ENGINE V4'
+            'LOMY PRECISION ENGINE V4.1'
         );
+
+        console.log(
+            'Mode: ADVANCED DATA COLLECTOR'
+        );
+
         console.log(
             'Market Data: BINANCE WEBSOCKET ONLY'
         );
+
         console.log(
             'REST Scanner: DISABLED'
         );
+
         console.log(
             'Execution: PAPER ONLY'
         );
+
         console.log(
             `Universe: TOP ${CONFIG.universeSize}`
         );
+
         console.log(
             `Entry Score: ${CONFIG.minimumScore}+`
         );
+
+        console.log(
+            `Journal Candidates: Score ${CONFIG.journalMinimumScore}+`
+        );
+
         console.log(
             `Warmup: ${CONFIG.minWarmupCandles} CLOSED 5m candles`
         );
+
         console.log(
             '=========================================='
         );
@@ -3202,7 +4049,8 @@ app.listen(
         connectKlineSocket();
 
         sendTelegramMessage(
-            `🚀 <b>LOMY V4 STARTED</b>\n\n` +
+            `🚀 <b>LOMY V4.1 STARTED</b>\n\n` +
+            `Mode: <b>ADVANCED DATA COLLECTOR</b>\n` +
             `Market Data: <b>WEBSOCKET ONLY</b>\n` +
             `REST Scanner: <b>OFF</b>\n` +
             `Execution: <b>PAPER ONLY</b>\n` +
