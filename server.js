@@ -152,10 +152,13 @@ let dailyPnL = 0;
 let dailyStartEquity = C.startingBalance;
 let currentDay = utcDay();
 let peakEquity = C.startingBalance;
+
 let manualPause = false;
 let dailyPause = false;
+
 let cooldownUntil = 0;
 let cooldownReason = null;
+
 let entriesSinceCooldown = 0;
 let lossStreak = 0;
 
@@ -192,6 +195,13 @@ let warmupQueue = [];
 let warmupWorkers = 0;
 let warmupBlockedUntil = 0;
 let warmupResumeTimer = null;
+
+/*
+ * مهم:
+ * عند حصول Binance على 418/429، لا نستمر في إرسال
+ * Historical REST requests إلى Binance.
+ */
+let binanceRestBlockedUntil = 0;
 
 const warmupStats = {
   restLoaded: 0,
@@ -265,8 +275,7 @@ const networkMB = bytes =>
   +(bytes / 1024 / 1024).toFixed(2);
 
 function sessionUTC() {
-  const h =
-    new Date().getUTCHours();
+  const h = new Date().getUTCHours();
 
   if (h < 7) return 'ASIA';
   if (h < 13) return 'LONDON';
@@ -287,24 +296,16 @@ function networkSnapshot() {
       ),
 
     telegramMB:
-      networkMB(
-        networkMeter.telegramBytes
-      ),
+      networkMB(networkMeter.telegramBytes),
 
     mongoWriteMB:
-      networkMB(
-        networkMeter.mongoWriteBytes
-      ),
+      networkMB(networkMeter.mongoWriteBytes),
 
     restRequestMB:
-      networkMB(
-        networkMeter.restRequestBytes
-      ),
+      networkMB(networkMeter.restRequestBytes),
 
     wsControlMB:
-      networkMB(
-        networkMeter.wsControlBytes
-      ),
+      networkMB(networkMeter.wsControlBytes),
 
     journalWrites:
       networkMeter.journalWrites,
@@ -329,12 +330,12 @@ function networkSnapshot() {
   };
 }
 
+
 // ============================================================
 // TELEGRAM
 // ============================================================
 
 const tgQueue = [];
-
 let tgBusy = false;
 
 function tg(text) {
@@ -342,9 +343,7 @@ function tg(text) {
     TELEGRAM_TOKEN &&
     CHAT_ID
   ) {
-    tgQueue.push(
-      String(text)
-    );
+    tgQueue.push(String(text));
   }
 }
 
@@ -366,13 +365,9 @@ setInterval(
     try {
 
       const payload = {
-        chat_id:
-          CHAT_ID,
-
+        chat_id: CHAT_ID,
         text,
-
-        parse_mode:
-          'HTML'
+        parse_mode: 'HTML'
       };
 
       networkMeter.telegramBytes +=
@@ -393,13 +388,9 @@ setInterval(
         429
       ) {
 
-        tgQueue.unshift(
-          text
-        );
+        tgQueue.unshift(text);
 
-        await sleep(
-          5000
-        );
+        await sleep(5000);
 
       } else {
 
@@ -417,6 +408,7 @@ setInterval(
   },
   1200
 );
+
 
 // ============================================================
 // MONGODB
@@ -487,8 +479,7 @@ async function loadCloudState() {
     await db
       .collection('state')
       .findOne({
-        _id:
-          C.stateKey
+        _id: C.stateKey
       });
 
   if (!state) {
@@ -507,8 +498,7 @@ async function loadCloudState() {
     );
 
   positions =
-    state.positions ||
-    {};
+    state.positions || {};
 
   stats = {
     ...stats,
@@ -516,9 +506,7 @@ async function loadCloudState() {
   };
 
   dailyPnL =
-    n(
-      state.dailyPnL
-    );
+    n(state.dailyPnL);
 
   dailyStartEquity =
     n(
@@ -543,23 +531,17 @@ async function loadCloudState() {
     !!state.dailyPause;
 
   cooldownUntil =
-    n(
-      state.cooldownUntil
-    );
+    n(state.cooldownUntil);
 
   cooldownReason =
     state.cooldownReason ||
     null;
 
   entriesSinceCooldown =
-    n(
-      state.entriesSinceCooldown
-    );
+    n(state.entriesSinceCooldown);
 
   lossStreak =
-    n(
-      state.lossStreak
-    );
+    n(state.lossStreak);
 
   Object.assign(
     lastLossBySymbol,
@@ -571,9 +553,7 @@ async function loadCloudState() {
     `STATE RESTORED | Cash $${cash.toFixed(
       2
     )} | Open ${
-      Object.keys(
-        positions
-      ).length
+      Object.keys(positions).length
     }`
   );
 }
@@ -587,11 +567,8 @@ async function saveCloudState() {
   try {
 
     const payload = {
-      version:
-        C.version,
-
-      updatedAt:
-        Date.now(),
+      version: C.version,
+      updatedAt: Date.now(),
 
       cash,
       positions,
@@ -623,16 +600,13 @@ async function saveCloudState() {
       .collection('state')
       .updateOne(
         {
-          _id:
-            C.stateKey
+          _id: C.stateKey
         },
         {
-          $set:
-            payload
+          $set: payload
         },
         {
-          upsert:
-            true
+          upsert: true
         }
       );
 
@@ -656,26 +630,20 @@ async function cloudJournal(
 
   if (
     !force &&
-    row.type ===
-      'ANALYSIS' &&
+    row.type === 'ANALYSIS' &&
     Math.random() >
       C.analysisJournalSampleRate
   ) {
 
     networkMeter.skippedAnalysisLogs++;
-
     return;
   }
 
   try {
 
     const doc = {
-      time:
-        Date.now(),
-
-      version:
-        C.version,
-
+      time: Date.now(),
+      version: C.version,
       ...row
     };
 
@@ -706,9 +674,7 @@ async function saveTrade(record) {
   try {
 
     const doc = {
-      version:
-        C.version,
-
+      version: C.version,
       ...record
     };
 
@@ -730,6 +696,7 @@ async function saveTrade(record) {
   }
 }
 
+
 // ============================================================
 // CANDLES / WARMUP
 // ============================================================
@@ -737,35 +704,16 @@ async function saveTrade(record) {
 function parseKline(row) {
 
   return {
-    open:
-      n(row[1]),
-
-    high:
-      n(row[2]),
-
-    low:
-      n(row[3]),
-
-    close:
-      n(row[4]),
-
-    volume:
-      n(row[5]),
-
-    closeTime:
-      n(row[6]),
-
-    quoteVolume:
-      n(row[7]),
-
-    trades:
-      n(row[8]),
-
-    takerBuyBase:
-      n(row[9]),
-
-    takerBuyQuote:
-      n(row[10])
+    open: n(row[1]),
+    high: n(row[2]),
+    low: n(row[3]),
+    close: n(row[4]),
+    volume: n(row[5]),
+    closeTime: n(row[6]),
+    quoteVolume: n(row[7]),
+    trades: n(row[8]),
+    takerBuyBase: n(row[9]),
+    takerBuyQuote: n(row[10])
   };
 }
 
@@ -774,8 +722,7 @@ function mergeCandles(
   incoming
 ) {
 
-  const map =
-    new Map();
+  const map = new Map();
 
   for (
     const candle
@@ -821,6 +768,7 @@ function scheduleWarmupResume(ms) {
     setTimeout(
       () =>
         processWarmupQueue(),
+
       Math.max(
         1000,
         ms
@@ -828,6 +776,347 @@ function scheduleWarmupResume(ms) {
     );
 }
 
+
+/*
+ * ============================================================
+ * EXTERNAL HISTORICAL WARMUP
+ * Binance -> Bybit -> OKX
+ * ============================================================
+ */
+
+function intervalMilliseconds(
+  interval
+) {
+
+  const match =
+    String(interval).match(
+      /^(\d+)([mhd])$/i
+    );
+
+  if (!match) {
+    return 5 * 60 * 1000;
+  }
+
+  const value =
+    Number(match[1]);
+
+  const unit =
+    match[2]
+      .toLowerCase();
+
+  if (unit === 'm') {
+    return value *
+      60 *
+      1000;
+  }
+
+  if (unit === 'h') {
+    return value *
+      60 *
+      60 *
+      1000;
+  }
+
+  if (unit === 'd') {
+    return value *
+      24 *
+      60 *
+      60 *
+      1000;
+  }
+
+  return 5 * 60 * 1000;
+}
+
+function bybitIntervalValue(
+  interval
+) {
+
+  const match =
+    String(interval).match(
+      /^(\d+)([mhd])$/i
+    );
+
+  if (!match) {
+    return '5';
+  }
+
+  const value =
+    Number(match[1]);
+
+  const unit =
+    match[2]
+      .toLowerCase();
+
+  if (unit === 'm') {
+    return String(value);
+  }
+
+  if (unit === 'h') {
+    return String(
+      value * 60
+    );
+  }
+
+  if (
+    unit === 'd' &&
+    value === 1
+  ) {
+    return 'D';
+  }
+
+  return '5';
+}
+
+async function fetchWarmupViaBybit(
+  symbol
+) {
+
+  const intervalMs =
+    intervalMilliseconds(
+      C.interval
+    );
+
+  const response =
+    await axios.get(
+      'https://api.bybit.com/v5/market/kline',
+      {
+        params: {
+          category: 'spot',
+          symbol,
+
+          interval:
+            bybitIntervalValue(
+              C.interval
+            ),
+
+          limit:
+            Math.min(
+              C.maxCandles,
+              200
+            )
+        },
+
+        timeout: 12000
+      }
+    );
+
+  if (
+    n(
+      response.data?.retCode,
+      -1
+    ) !== 0 ||
+    !Array.isArray(
+      response.data
+        ?.result?.list
+    )
+  ) {
+
+    throw new Error(
+      `BYBIT_${
+        response.data?.retCode ??
+        'INVALID'
+      }`
+    );
+  }
+
+  const now =
+    Date.now();
+
+  const rows =
+    response.data
+      .result
+      .list
+
+      .map(row => {
+
+        const openTime =
+          n(row[0]);
+
+        return {
+          open: n(row[1]),
+          high: n(row[2]),
+          low: n(row[3]),
+          close: n(row[4]),
+          volume: n(row[5]),
+
+          closeTime:
+            openTime +
+            intervalMs -
+            1,
+
+          quoteVolume:
+            n(row[6]),
+
+          /*
+           * Bybit public candle response does not expose
+           * Binance taker-buy fields.
+           * They remain unavailable until Binance LIVE
+           * klines start replacing the most recent candles.
+           */
+          trades: 0,
+          takerBuyBase: 0,
+          takerBuyQuote: 0
+        };
+      })
+
+      .filter(
+        candle =>
+          candle.closeTime <
+            now &&
+          candle.open > 0 &&
+          candle.high > 0 &&
+          candle.low > 0 &&
+          candle.close > 0
+      )
+
+      .sort(
+        (a, b) =>
+          a.closeTime -
+          b.closeTime
+      );
+
+  if (
+    rows.length <
+    C.warmupCandles
+  ) {
+
+    throw new Error(
+      `BYBIT_INCOMPLETE_${rows.length}`
+    );
+  }
+
+  return rows;
+}
+
+async function fetchWarmupViaOkx(
+  symbol
+) {
+
+  const intervalMs =
+    intervalMilliseconds(
+      C.interval
+    );
+
+  const instId =
+    symbol.endsWith(
+      'USDT'
+    )
+      ? `${
+          symbol.slice(
+            0,
+            -4
+          )
+        }-USDT`
+      : symbol;
+
+  const response =
+    await axios.get(
+      'https://www.okx.com/api/v5/market/candles',
+      {
+        params: {
+          instId,
+
+          bar:
+            C.interval,
+
+          limit:
+            Math.min(
+              C.maxCandles,
+              100
+            )
+        },
+
+        timeout: 12000
+      }
+    );
+
+  if (
+    String(
+      response.data?.code
+    ) !== '0' ||
+    !Array.isArray(
+      response.data?.data
+    )
+  ) {
+
+    throw new Error(
+      `OKX_${
+        response.data?.code ??
+        'INVALID'
+      }`
+    );
+  }
+
+  const now =
+    Date.now();
+
+  const rows =
+    response.data
+      .data
+
+      .map(row => {
+
+        const openTime =
+          n(row[0]);
+
+        return {
+          open: n(row[1]),
+          high: n(row[2]),
+          low: n(row[3]),
+          close: n(row[4]),
+          volume: n(row[5]),
+
+          closeTime:
+            openTime +
+            intervalMs -
+            1,
+
+          quoteVolume:
+            n(
+              row[7] ||
+              row[6]
+            ),
+
+          trades: 0,
+          takerBuyBase: 0,
+          takerBuyQuote: 0
+        };
+      })
+
+      .filter(
+        candle =>
+          candle.closeTime <
+            now &&
+          candle.open > 0 &&
+          candle.high > 0 &&
+          candle.low > 0 &&
+          candle.close > 0
+      )
+
+      .sort(
+        (a, b) =>
+          a.closeTime -
+          b.closeTime
+      );
+
+  if (
+    rows.length <
+    C.warmupCandles
+  ) {
+
+    throw new Error(
+      `OKX_INCOMPLETE_${rows.length}`
+    );
+  }
+
+  return rows;
+}
+
+
+/*
+ * MAIN WARMUP FUNCTION
+ */
 async function fetchWarmup(symbol) {
 
   if (
@@ -840,228 +1129,239 @@ async function fetchWarmup(symbol) {
 
   warmupLoading.add(symbol);
 
-  async function fetchViaWsApi() {
-
-    return new Promise((resolve, reject) => {
-
-      const ws =
-        new WebSocket(
-          'wss://ws-api.binance.com/ws-api/v3'
-        );
-
-      const requestId =
-        `warmup-${symbol}-${Date.now()}`;
-
-      const timeout =
-        setTimeout(() => {
-
-          try {
-            ws.terminate();
-          } catch {}
-
-          reject(
-            new Error(
-              'WS_API_WARMUP_TIMEOUT'
-            )
-          );
-
-        }, 15000);
-
-      ws.on('open', () => {
-
-        ws.send(
-          JSON.stringify({
-            id: requestId,
-            method: 'klines',
-            params: {
-              symbol,
-              interval: C.interval,
-              limit: C.maxCandles
-            }
-          })
-        );
-      });
-
-      ws.on('message', raw => {
-
-        try {
-
-          const data =
-            JSON.parse(
-              raw.toString()
-            );
-
-          if (
-            data.id !== requestId
-          ) {
-            return;
-          }
-
-          clearTimeout(timeout);
-
-          try {
-            ws.close();
-          } catch {}
-
-          if (
-            data.status === 200 &&
-            Array.isArray(data.result)
-          ) {
-
-            resolve(data.result);
-
-          } else {
-
-            reject(
-              new Error(
-                `WS_API_STATUS_${data.status || 'UNKNOWN'}`
-              )
-            );
-          }
-
-        } catch (error) {
-
-          clearTimeout(timeout);
-
-          try {
-            ws.close();
-          } catch {}
-
-          reject(error);
-        }
-      });
-
-      ws.on('error', error => {
-
-        clearTimeout(timeout);
-
-        reject(error);
-      });
-
-      ws.on('close', () => {
-        clearTimeout(timeout);
-      });
-
-    });
-  }
-
   try {
 
-    let rows = null;
-    let source = 'REST';
+    let historical = null;
+    let source = null;
+    let binanceFailure = null;
 
-    try {
+    /*
+     * --------------------------------------------
+     * 1) TRY BINANCE REST
+     * --------------------------------------------
+     */
+    if (
+      Date.now() >=
+      binanceRestBlockedUntil
+    ) {
 
-      warmupStats.restRequests++;
+      try {
 
-      const response =
-        await axios.get(
-          `${REST_BASE}/api/v3/klines`,
-          {
-            params: {
-              symbol,
-              interval: C.interval,
-              limit: C.maxCandles
-            },
+        warmupStats.restRequests++;
 
-            timeout: 12000
-          }
-        );
+        const response =
+          await axios.get(
+            `${REST_BASE}/api/v3/klines`,
+            {
+              params: {
+                symbol,
+                interval: C.interval,
+                limit: C.maxCandles
+              },
 
-      rows =
-        response.data;
-
-    } catch (restError) {
-
-      const status =
-        restError.response?.status;
-
-      if (
-        status === 418 ||
-        status === 429
-      ) {
-
-        warmupStats.rateLimited++;
-        warmupStats.last429 =
-          Date.now();
-
-        console.warn(
-          `Warmup REST ${status} | ${symbol} | trying WS API`
-        );
-
-        try {
-
-          rows =
-            await fetchViaWsApi();
-
-          source =
-            'WS_API';
-
-          console.log(
-            `Warmup WS API OK | ${symbol}`
+              timeout: 12000
+            }
           );
 
-        } catch (wsError) {
+        if (
+          !Array.isArray(
+            response.data
+          )
+        ) {
+          throw new Error(
+            'BINANCE_INVALID_KLINES'
+          );
+        }
 
-          warmupStats.failed++;
+        const now =
+          Date.now();
+
+        historical =
+          response.data
+            .map(parseKline)
+            .filter(
+              candle =>
+                candle.closeTime <
+                now
+            );
+
+        source =
+          'BINANCE_REST';
+
+      } catch (error) {
+
+        binanceFailure =
+          error;
+
+        const status =
+          error.response?.status;
+
+        /*
+         * Do not hammer Binance during a ban.
+         */
+        if (
+          status === 418 ||
+          status === 429
+        ) {
+
+          warmupStats.rateLimited++;
+
+          warmupStats.last429 =
+            Date.now();
 
           const retryAfterSec =
             n(
-              restError.response
+              error.response
                 ?.headers?.[
                   'retry-after'
                 ]
             );
 
-          const pauseMs =
-            retryAfterSec > 0
-              ? retryAfterSec * 1000
-              : 15 * 60 * 1000;
+          /*
+           * 418 gets a conservative 30 minute pause.
+           * 429 gets at least 5 minutes.
+           */
+          const defaultPauseMs =
+            status === 418
+              ? 30 *
+                60 *
+                1000
+              : 5 *
+                60 *
+                1000;
 
-          warmupBlockedUntil =
+          const pauseMs =
             Math.max(
-              warmupBlockedUntil,
-              Date.now() +
-              pauseMs
+              retryAfterSec >
+                0
+                ? retryAfterSec *
+                  1000
+                : 0,
+
+              defaultPauseMs
             );
 
-          console.error(
-            `Warmup blocked | ${symbol} | REST ${status} | WS fallback failed: ${wsError.message}`
+          binanceRestBlockedUntil =
+            Math.max(
+              binanceRestBlockedUntil,
+              Date.now() +
+                pauseMs
+            );
+
+          console.warn(
+            `Warmup Binance ${status} | ${symbol} | external fallback enabled | Binance REST pause ${Math.ceil(
+              pauseMs /
+              60000
+            )}m`
           );
 
-          scheduleWarmupResume(
-            pauseMs
-          );
+        } else {
 
-          return;
+          console.warn(
+            `Warmup Binance ${symbol} failed | ${
+              status ||
+              error.message
+            } | trying external fallback`
+          );
         }
+      }
 
-      } else {
+    } else {
 
-        throw restError;
+      console.log(
+        `Warmup Binance REST paused | ${symbol} | using external fallback`
+      );
+    }
+
+
+    /*
+     * --------------------------------------------
+     * 2) BYBIT FALLBACK
+     * --------------------------------------------
+     */
+    if (!historical) {
+
+      try {
+
+        historical =
+          await fetchWarmupViaBybit(
+            symbol
+          );
+
+        source =
+          'BYBIT_SPOT';
+
+        console.log(
+          `Warmup fallback BYBIT OK | ${symbol} | ${historical.length} candles`
+        );
+
+      } catch (bybitError) {
+
+        console.warn(
+          `Warmup BYBIT failed | ${symbol} | ${bybitError.message}`
+        );
+
+
+        /*
+         * ----------------------------------------
+         * 3) OKX FALLBACK
+         * ----------------------------------------
+         */
+        try {
+
+          historical =
+            await fetchWarmupViaOkx(
+              symbol
+            );
+
+          source =
+            'OKX_SPOT';
+
+          console.log(
+            `Warmup fallback OKX OK | ${symbol} | ${historical.length} candles`
+          );
+
+        } catch (okxError) {
+
+          const binanceText =
+            binanceFailure
+              ? (
+                  binanceFailure
+                    .response
+                    ?.status ||
+                  binanceFailure
+                    .message
+                )
+              : (
+                  Date.now() <
+                    binanceRestBlockedUntil
+                    ? 'PAUSED'
+                    : 'UNKNOWN'
+                );
+
+          throw new Error(
+            `ALL_WARMUP_SOURCES_FAILED | Binance=${binanceText} | Bybit=${bybitError.message} | OKX=${okxError.message}`
+          );
+        }
       }
     }
 
+
+    /*
+     * --------------------------------------------
+     * VALIDATE + MERGE
+     * --------------------------------------------
+     */
     if (
-      !Array.isArray(rows)
+      !Array.isArray(
+        historical
+      )
     ) {
 
       throw new Error(
         'INVALID_WARMUP_DATA'
       );
     }
-
-    const now =
-      Date.now();
-
-    const historical =
-      rows
-        .map(parseKline)
-        .filter(
-          candle =>
-            candle.closeTime <
-            now
-        );
 
     mergeCandles(
       symbol,
@@ -1094,7 +1394,7 @@ async function fetchWarmup(symbol) {
       warmupStats.failed++;
 
       console.warn(
-        `Warmup incomplete ${symbol} | ${count}/${C.warmupCandles}`
+        `Warmup incomplete ${symbol} | ${count}/${C.warmupCandles} | ${source}`
       );
 
       const retries =
@@ -1119,8 +1419,15 @@ async function fetchWarmup(symbol) {
 
         setTimeout(
           () =>
-            queueWarmup(symbol),
-          10000
+            queueWarmup(
+              symbol
+            ),
+
+          Math.min(
+            C.warmupRetryMaxMs,
+            C.warmupRetryBaseMs *
+              retries
+          )
         );
       }
     }
@@ -1131,7 +1438,6 @@ async function fetchWarmup(symbol) {
 
     console.error(
       `Warmup ${symbol}:`,
-      error.response?.status ||
       error.message
     );
 
@@ -1149,17 +1455,29 @@ async function fetchWarmup(symbol) {
     );
 
     if (
-      retries <= 2 &&
+      retries <=
+        C.warmupMaxRetries &&
       !shuttingDown
     ) {
 
       warmupStats.retries++;
 
+      const retryMs =
+        Math.min(
+          C.warmupRetryMaxMs,
+
+          C.warmupRetryBaseMs *
+            Math.max(
+              1,
+              retries
+            )
+        );
+
       setTimeout(
         () =>
           queueWarmup(symbol),
-        C.warmupRetryBaseMs *
-        retries
+
+        retryMs
       );
     }
 
@@ -1182,9 +1500,7 @@ function queueWarmup(symbol) {
     return;
   }
 
-  warmupQueue.push(
-    symbol
-  );
+  warmupQueue.push(symbol);
 
   processWarmupQueue();
 }
@@ -1240,6 +1556,7 @@ function processWarmupQueue() {
   }
 }
 
+
 // ============================================================
 // INDICATORS
 // ============================================================
@@ -1259,18 +1576,14 @@ function sma(
 
   return (
     arr
-      .slice(
-        -period
-      )
+      .slice(-period)
       .reduce(
         (
           sum,
           item
         ) =>
           sum +
-          n(
-            item[key]
-          ),
+          n(item[key]),
         0
       ) /
     period
@@ -1302,9 +1615,7 @@ function ema(
           item
         ) =>
           sum +
-          n(
-            item[key]
-          ),
+          n(item[key]),
         0
       ) /
     period;
@@ -1317,18 +1628,14 @@ function ema(
     );
 
   for (
-    let i =
-      period;
-    i <
-      arr.length;
+    let i = period;
+    i < arr.length;
     i++
   ) {
 
     value =
       (
-        n(
-          arr[i][key]
-        ) -
+        n(arr[i][key]) -
         value
       ) *
       multiplier +
@@ -1345,8 +1652,7 @@ function cmo(
 
   if (
     arr.length <
-    period +
-      1
+    period + 1
   ) {
     return null;
   }
@@ -1358,49 +1664,43 @@ function cmo(
     let i =
       arr.length -
       period;
+
     i <
       arr.length;
+
     i++
   ) {
 
     const diff =
       arr[i].close -
       arr[
-        i -
-        1
+        i - 1
       ].close;
 
     if (
-      diff >
-      0
+      diff > 0
     ) {
 
-      up +=
-        diff;
+      up += diff;
 
     } else {
 
       down +=
-        Math.abs(
-          diff
-        );
+        Math.abs(diff);
     }
   }
 
   return (
-    up +
-    down
+    up + down
   )
     ? (
         100 *
         (
-          up -
-          down
+          up - down
         )
       ) /
       (
-        up +
-        down
+        up + down
       )
     : 0;
 }
@@ -1412,19 +1712,16 @@ function atr(
 
   if (
     arr.length <
-    period +
-      1
+    period + 1
   ) {
     return null;
   }
 
-  const ranges =
-    [];
+  const ranges = [];
 
   for (
     let i = 1;
-    i <
-      arr.length;
+    i < arr.length;
     i++
   ) {
 
@@ -1432,15 +1729,12 @@ function atr(
       arr[i];
 
     const previous =
-      arr[
-        i -
-        1
-      ];
+      arr[i - 1];
 
     ranges.push(
       Math.max(
         current.high -
-        current.low,
+          current.low,
 
         Math.abs(
           current.high -
@@ -1466,8 +1760,7 @@ function atr(
         sum,
         value
       ) =>
-        sum +
-        value,
+        sum + value,
       0
     ) /
     recent.length
@@ -1477,8 +1770,7 @@ function atr(
 function structure(arr) {
 
   if (
-    arr.length <
-    4
+    arr.length < 4
   ) {
     return 'NEUTRAL';
   }
@@ -1493,21 +1785,16 @@ function structure(arr) {
     arr.at(-3);
 
   if (
-    a.high >
-      b.high &&
-    a.low >
-      b.low &&
-    b.low >=
-      c.low
+    a.high > b.high &&
+    a.low > b.low &&
+    b.low >= c.low
   ) {
     return 'BULLISH';
   }
 
   if (
-    a.high <
-      b.high &&
-    a.low <
-      b.low
+    a.high < b.high &&
+    a.low < b.low
   ) {
     return 'BEARISH';
   }
@@ -1518,8 +1805,7 @@ function structure(arr) {
 function volumeAcceleration(arr) {
 
   if (
-    arr.length <
-    7
+    arr.length < 7
   ) {
     return 0;
   }
@@ -1555,8 +1841,7 @@ function volumeAcceleration(arr) {
       ) /
     3;
 
-  return previous >
-    0
+  return previous > 0
     ? recent /
       previous
     : 0;
@@ -1565,8 +1850,7 @@ function volumeAcceleration(arr) {
 function priceAcceleration(arr) {
 
   if (
-    arr.length <
-    4
+    arr.length < 4
   ) {
     return 0;
   }
@@ -1582,13 +1866,11 @@ function priceAcceleration(arr) {
 
   return (
     pct(
-      a -
-      b,
+      a - b,
       b
     ) -
     pct(
-      b -
-      c,
+      b - c,
       c
     )
   );
@@ -1597,14 +1879,12 @@ function priceAcceleration(arr) {
 function takerBuyRatio(candle) {
 
   return (
-    candle.volume >
-      0 &&
-    candle.takerBuyBase >
-      0
+    candle.volume > 0 &&
+    candle.takerBuyBase > 0
   )
     ? clamp(
         candle.takerBuyBase /
-        candle.volume,
+          candle.volume,
         0,
         1
       )
@@ -1613,14 +1893,9 @@ function takerBuyRatio(candle) {
 
 function orderFlowMomentum(arr) {
 
-  let buy =
-    0;
-
-  let total =
-    0;
-
-  let valid =
-    0;
+  let buy = 0;
+  let total = 0;
+  let valid = 0;
 
   for (
     const candle
@@ -1628,10 +1903,8 @@ function orderFlowMomentum(arr) {
   ) {
 
     if (
-      candle.volume >
-        0 &&
-      candle.takerBuyBase >
-        0
+      candle.volume > 0 &&
+      candle.takerBuyBase > 0
     ) {
 
       buy +=
@@ -1646,12 +1919,10 @@ function orderFlowMomentum(arr) {
 
   return (
     valid &&
-    total >
-      0
+    total > 0
   )
     ? clamp(
-        buy /
-        total,
+        buy / total,
         0,
         1
       )
@@ -1670,16 +1941,15 @@ function breakoutAcceptance(
   const previous =
     arr.at(-2);
 
-  let score =
-    0;
+  let score = 0;
 
-  const reasons =
-    [];
+  const reasons = [];
 
   const range =
     Math.max(
       current.high -
       current.low,
+
       Number.EPSILON
     );
 
@@ -1701,6 +1971,7 @@ function breakoutAcceptance(
     pct(
       current.close -
       resistance,
+
       resistance
     );
 
@@ -1709,6 +1980,7 @@ function breakoutAcceptance(
       pct(
         previous.close -
         resistance,
+
         resistance
       )
     ) <=
@@ -1719,8 +1991,7 @@ function breakoutAcceptance(
     resistance
   ) {
 
-    score +=
-      25;
+    score += 25;
 
     reasons.push(
       'CLOSE_ABOVE_RES'
@@ -1732,8 +2003,7 @@ function breakoutAcceptance(
     0.72
   ) {
 
-    score +=
-      15;
+    score += 15;
 
     reasons.push(
       'CLOSE_HIGH'
@@ -1741,12 +2011,10 @@ function breakoutAcceptance(
   }
 
   if (
-    body >=
-    0.55
+    body >= 0.55
   ) {
 
-    score +=
-      15;
+    score += 15;
 
     reasons.push(
       'STRONG_BODY'
@@ -1754,18 +2022,15 @@ function breakoutAcceptance(
   }
 
   if (
-    breakoutPct >=
-      0 &&
+    breakoutPct >= 0 &&
     breakoutPct <=
       Math.max(
         0.55,
-        atrPct *
-        1.4
+        atrPct * 1.4
       )
   ) {
 
-    score +=
-      15;
+    score += 15;
 
     reasons.push(
       'CONTROLLED_BREAKOUT'
@@ -1783,8 +2048,7 @@ function breakoutAcceptance(
       )
   ) {
 
-    score +=
-      20;
+    score += 20;
 
     reasons.push(
       'RETEST_ACCEPTED'
@@ -1798,8 +2062,7 @@ function breakoutAcceptance(
       previous.close
   ) {
 
-    score +=
-      10;
+    score += 10;
 
     reasons.push(
       'SECOND_CLOSE_CONFIRM'
@@ -1889,14 +2152,12 @@ function btcContext() {
     pct(
       current.close -
       arr.at(-6).close,
+
       arr.at(-6).close
     );
 
-  let score =
-    0;
-
-  let freshness =
-    100;
+  let score = 0;
+  let freshness = 100;
 
   if (
     current.close >
@@ -1906,47 +2167,39 @@ function btcContext() {
   }
 
   if (
-    e20 >
-    e50
+    e20 > e50
   ) {
     score += 30;
   }
 
   if (
-    structure(
-      arr
-    ) ===
-      'BULLISH'
+    structure(arr) ===
+    'BULLISH'
   ) {
     score += 20;
   }
 
   if (
-    momentum >=
-      45 &&
-    momentum <=
-      70
+    momentum >= 45 &&
+    momentum <= 70
   ) {
     score += 20;
   }
 
   if (
-    emaDistance >
-    1.2
+    emaDistance > 1.2
   ) {
     freshness -= 30;
   }
 
   if (
-    ext5 >
-    2
+    ext5 > 2
   ) {
     freshness -= 30;
   }
 
   if (
-    momentum >
-    72
+    momentum > 72
   ) {
     freshness -= 25;
   }
@@ -1980,11 +2233,8 @@ function btcContext() {
 
 function calculateMarketRegime() {
 
-  let ready =
-    0;
-
-  let bullish =
-    0;
+  let ready = 0;
+  let bullish = 0;
 
   for (
     const symbol
@@ -1992,14 +2242,12 @@ function calculateMarketRegime() {
   ) {
 
     const arr =
-      candles[
-        symbol
-      ];
+      candles[symbol];
 
     if (
       !arr ||
       arr.length <
-        C.warmupCandles
+      C.warmupCandles
     ) {
       continue;
     }
@@ -2015,7 +2263,7 @@ function calculateMarketRegime() {
     if (
       e20 &&
       arr.at(-1).close >
-        e20
+      e20
     ) {
       bullish++;
     }
@@ -2038,8 +2286,7 @@ function calculateMarketRegime() {
 
   if (
     btc.bullish &&
-    breadth >=
-      55
+    breadth >= 55
   ) {
 
     regime =
@@ -2047,8 +2294,7 @@ function calculateMarketRegime() {
 
   } else if (
     btc.ready &&
-    breadth >=
-      45
+    breadth >= 45
   ) {
 
     regime =
@@ -2061,15 +2307,13 @@ function calculateMarketRegime() {
     (
       breadth >=
         C.overextendedRiskOnBreadth ||
-      btc.freshness <
-        55
+      btc.freshness < 55
     );
 
   marketRegime = {
 
     ready:
-      ready >=
-      20,
+      ready >= 20,
 
     btcBullish:
       btc.bullish,
@@ -2081,15 +2325,12 @@ function calculateMarketRegime() {
       btc.freshness,
 
     breadth:
-      +breadth.toFixed(
-        2
-      ),
+      +breadth.toFixed(2),
 
     regime:
       (
         marketRegime.ready ||
-        ready >=
-          20
+        ready >= 20
       )
         ? regime
         : 'WARMING',
@@ -2100,6 +2341,9 @@ function calculateMarketRegime() {
       Date.now()
   };
 }
+// ============================================================
+// SCORE / ANALYSIS
+// ============================================================
 
 function buildScore(ctx) {
 
@@ -2124,71 +2368,41 @@ function buildScore(ctx) {
     closeLocation
   } = ctx;
 
-  let trend =
-    0;
+  let trend = 0;
+  let freshness = 100;
+  let flow = 0;
+  let momentumScore = 0;
+  let volatility = 0;
+  let structureScore = 0;
+  let regimeScore = 0;
 
-  let freshness =
-    100;
+  const reasons = [];
+  const warnings = [];
 
-  let flow =
-    0;
-
-  let momentumScore =
-    0;
-
-  let volatility =
-    0;
-
-  let structureScore =
-    0;
-
-  let regimeScore =
-    0;
-
-  const reasons =
-    [];
-
-  const warnings =
-    [];
-
-  if (
-    x.close >
-    e20
-  ) {
+  if (x.close > e20) {
     trend += 35;
   }
 
-  if (
-    e20 >
-    e50
-  ) {
+  if (e20 > e50) {
     trend += 35;
   }
 
-  if (
-    marketStructure ===
-    'BULLISH'
-  ) {
+  if (marketStructure === 'BULLISH') {
     trend += 20;
   }
 
   const oldEma =
     ema(
-      arr.slice(
-        0,
-        -3
-      ),
+      arr.slice(0, -3),
       20
     );
 
   if (
     oldEma &&
     pct(
-      e20 -
-      oldEma,
+      e20 - oldEma,
       oldEma
-    ) >
-    0.02
+    ) > 0.02
   ) {
     trend += 10;
   }
@@ -2205,20 +2419,17 @@ function buildScore(ctx) {
     C.maxEmaDistancePct
   ) {
 
-    freshness -=
-      55;
+    freshness -= 55;
 
     warnings.push(
       'EMA_CHASE'
     );
 
   } else if (
-    emaDistance >
-    1.0
+    emaDistance > 1
   ) {
 
-    freshness -=
-      18;
+    freshness -= 18;
   }
 
   if (
@@ -2226,8 +2437,7 @@ function buildScore(ctx) {
     C.maxExt5Pct
   ) {
 
-    freshness -=
-      35;
+    freshness -= 35;
 
     warnings.push(
       'EXT5_CHASE'
@@ -2239,8 +2449,7 @@ function buildScore(ctx) {
     C.maxExt10Pct
   ) {
 
-    freshness -=
-      30;
+    freshness -= 30;
 
     warnings.push(
       'EXT10_CHASE'
@@ -2252,8 +2461,7 @@ function buildScore(ctx) {
     C.volumeClimaxAcceleration
   ) {
 
-    freshness -=
-      40;
+    freshness -= 40;
 
     warnings.push(
       'VOLUME_CLIMAX'
@@ -2265,8 +2473,7 @@ function buildScore(ctx) {
     C.cmoCoreMax
   ) {
 
-    freshness -=
-      30;
+    freshness -= 30;
 
     warnings.push(
       'CMO_OVERHEAT'
@@ -2274,14 +2481,11 @@ function buildScore(ctx) {
   }
 
   if (
-    priceAcceleration(
-      arr
-    ) >
-    1.0
+    priceAcceleration(arr) >
+    1
   ) {
 
-    freshness -=
-      20;
+    freshness -= 20;
 
     warnings.push(
       'PRICE_ACCEL_CHASE'
@@ -2305,8 +2509,7 @@ function buildScore(ctx) {
       C.eliteTakerBuyRatio
     ) {
 
-      flow +=
-        70;
+      flow += 70;
 
       reasons.push(
         'ELITE_TAKER_FLOW'
@@ -2317,19 +2520,15 @@ function buildScore(ctx) {
       C.minTakerBuyRatio
     ) {
 
-      flow +=
-        42;
+      flow += 42;
     }
 
     if (
-      takerRatio >=
-        0.70 &&
-      takerRatio <
-        0.80
+      takerRatio >= 0.70 &&
+      takerRatio < 0.80
     ) {
 
-      flow -=
-        15;
+      flow -= 15;
 
       warnings.push(
         'MID_HIGH_FLOW_RISK'
@@ -2343,25 +2542,21 @@ function buildScore(ctx) {
   ) {
 
     if (
-      flowMomentum >=
-      0.72
+      flowMomentum >= 0.72
     ) {
 
-      flow +=
-        30;
+      flow += 30;
 
     } else if (
       flowMomentum >=
       C.minFlowMomentum
     ) {
 
-      flow +=
-        18;
+      flow += 18;
 
     } else {
 
-      flow -=
-        20;
+      flow -= 20;
     }
   }
 
@@ -2379,8 +2574,7 @@ function buildScore(ctx) {
       C.cmoCoreMax
   ) {
 
-    momentumScore =
-      100;
+    momentumScore = 100;
 
     reasons.push(
       'CMO_CORE'
@@ -2393,21 +2587,18 @@ function buildScore(ctx) {
       C.cmoSoftMax
   ) {
 
-    momentumScore =
-      68;
+    momentumScore = 68;
 
   } else if (
     momentum >
-      C.cmoSoftMax
+    C.cmoSoftMax
   ) {
 
-    momentumScore =
-      25;
+    momentumScore = 25;
 
   } else {
 
-    momentumScore =
-      20;
+    momentumScore = 20;
   }
 
   if (
@@ -2417,8 +2608,7 @@ function buildScore(ctx) {
       C.atrSweetMax
   ) {
 
-    volatility +=
-      45;
+    volatility += 45;
 
   } else if (
     atrPct >=
@@ -2427,8 +2617,7 @@ function buildScore(ctx) {
       C.maxAtrPct
   ) {
 
-    volatility +=
-      28;
+    volatility += 28;
 
   } else {
 
@@ -2438,22 +2627,18 @@ function buildScore(ctx) {
   }
 
   if (
-    volumeRatio >=
-      1.05 &&
-    volumeRatio <=
-      1.80
+    volumeRatio >= 1.05 &&
+    volumeRatio <= 1.80
   ) {
 
-    volatility +=
-      30;
+    volatility += 30;
 
   } else if (
     volumeRatio <=
     C.maxVolumeRatio
   ) {
 
-    volatility +=
-      18;
+    volatility += 18;
   }
 
   if (
@@ -2463,16 +2648,14 @@ function buildScore(ctx) {
       C.volumeAccelSweetMax
   ) {
 
-    volatility +=
-      25;
+    volatility += 25;
 
   } else if (
     volumeAccel >
     C.volumeClimaxAcceleration
   ) {
 
-    volatility -=
-      25;
+    volatility -= 25;
   }
 
   volatility =
@@ -2487,22 +2670,19 @@ function buildScore(ctx) {
     0.65;
 
   if (
-    bodyRatio >=
-    0.55
+    bodyRatio >= 0.55
   ) {
     structureScore += 15;
   }
 
   if (
-    upperWickRatio <=
-    0.30
+    upperWickRatio <= 0.30
   ) {
     structureScore += 10;
   }
 
   if (
-    closeLocation >=
-    0.72
+    closeLocation >= 0.72
   ) {
     structureScore += 10;
   }
@@ -2519,29 +2699,25 @@ function buildScore(ctx) {
     'RISK_ON'
   ) {
 
-    regimeScore =
-      85;
+    regimeScore = 85;
 
   } else if (
     marketRegime.regime ===
     'NEUTRAL'
   ) {
 
-    regimeScore =
-      70;
+    regimeScore = 70;
 
   } else {
 
-    regimeScore =
-      35;
+    regimeScore = 35;
   }
 
   if (
     marketRegime.overextended
   ) {
 
-    regimeScore -=
-      30;
+    regimeScore -= 30;
 
     warnings.push(
       'RISK_ON_OVEREXTENDED'
@@ -2549,8 +2725,7 @@ function buildScore(ctx) {
   }
 
   if (
-    sessionUTC() ===
-      'ASIA' &&
+    sessionUTC() === 'ASIA' &&
     marketRegime.regime ===
       'RISK_ON'
   ) {
@@ -2572,51 +2747,34 @@ function buildScore(ctx) {
 
   const edgeScore =
     Math.round(
-      trend *
-        0.15 +
-      freshness *
-        0.22 +
-      flow *
-        0.20 +
-      momentumScore *
-        0.15 +
-      volatility *
-        0.10 +
-      structureScore *
-        0.10 +
-      regimeScore *
-        0.08
+      trend * 0.15 +
+      freshness * 0.22 +
+      flow * 0.20 +
+      momentumScore * 0.15 +
+      volatility * 0.10 +
+      structureScore * 0.10 +
+      regimeScore * 0.08
     );
 
   const shadowEdge =
-    momentum >=
-      50 &&
-    momentum <=
-      65 &&
-    takerRatio !==
-      null &&
-    takerRatio >=
-      0.80 &&
-    atrPct >=
-      0.18;
+    momentum >= 50 &&
+    momentum <= 65 &&
+    takerRatio !== null &&
+    takerRatio >= 0.80 &&
+    atrPct >= 0.18;
 
   return {
+
     edgeScore,
 
     trendScore:
-      Math.round(
-        trend
-      ),
+      Math.round(trend),
 
     freshnessScore:
-      Math.round(
-        freshness
-      ),
+      Math.round(freshness),
 
     flowScore:
-      Math.round(
-        flow
-      ),
+      Math.round(flow),
 
     momentumScore:
       Math.round(
@@ -2643,6 +2801,7 @@ function buildScore(ctx) {
     warnings
   };
 }
+
 
 function analyze(
   arr,
@@ -2700,8 +2859,7 @@ function analyze(
       volumeSma
     ].some(
       value =>
-        value ===
-        null
+        value === null
     )
   ) {
     return null;
@@ -2712,8 +2870,7 @@ function analyze(
     current.low;
 
   if (
-    range <=
-    0
+    range <= 0
   ) {
     return null;
   }
@@ -2747,8 +2904,7 @@ function analyze(
     current.open;
 
   const volumeRatio =
-    volumeSma >
-      0
+    volumeSma > 0
       ? current.volume /
         volumeSma
       : 0;
@@ -2792,6 +2948,13 @@ function analyze(
       -1
     );
 
+  if (
+    prior.length <
+    10
+  ) {
+    return null;
+  }
+
   const resistance =
     Math.max(
       ...prior.map(
@@ -2832,8 +2995,7 @@ function analyze(
   const score =
     buildScore({
       arr,
-      x:
-        current,
+      x: current,
       e20,
       e50,
       momentum,
@@ -2856,6 +3018,7 @@ function analyze(
     [];
 
   if (!bullish) {
+
     hardBlocks.push(
       'NOT_BULLISH'
     );
@@ -2962,8 +3125,7 @@ function analyze(
   }
 
   if (
-    takerRatio !==
-      null &&
+    takerRatio !== null &&
     takerRatio <
       C.minTakerBuyRatio
   ) {
@@ -2974,8 +3136,7 @@ function analyze(
   }
 
   if (
-    flowMomentum !==
-      null &&
+    flowMomentum !== null &&
     flowMomentum <
       C.minFlowMomentum
   ) {
@@ -2995,9 +3156,20 @@ function analyze(
     );
   }
 
+  /*
+   * External warmup candles do not contain
+   * Binance taker-buy fields.
+   *
+   * We only enforce FLOW_SCORE_LOW when
+   * actual live Binance flow exists.
+   */
   if (
+    (
+      takerRatio !== null ||
+      flowMomentum !== null
+    ) &&
     score.flowScore <
-    C.minFlowScore
+      C.minFlowScore
   ) {
 
     hardBlocks.push(
@@ -3024,6 +3196,9 @@ function analyze(
     );
   }
 
+  /*
+   * Shadow edge needs real Binance flow.
+   */
   if (
     marketRegime.regime ===
       'DEFENSIVE' &&
@@ -3054,20 +3229,17 @@ function analyze(
 
   const grade =
     (
-      score.edgeScore >=
-        84 &&
-      score.freshnessScore >=
-        75 &&
-      score.flowScore >=
-        75
+      score.edgeScore >= 84 &&
+      score.freshnessScore >= 75 &&
+      score.flowScore >= 75
     )
       ? 'A'
-      : score.edgeScore >=
-          72
+      : score.edgeScore >= 72
         ? 'B'
         : 'C';
 
   return {
+
     symbol,
 
     eligible:
@@ -3126,11 +3298,8 @@ function analyze(
     upperWickRatio,
     closeLocation,
 
-    ema20:
-      e20,
-
-    ema50:
-      e50,
+    ema20: e20,
+    ema50: e50,
 
     emaDistance,
 
@@ -3141,6 +3310,7 @@ function analyze(
       atrValue,
 
     atrPct,
+
     volumeRatio,
 
     volumeAcceleration:
@@ -3187,6 +3357,8 @@ function analyze(
     hardBlocks
   };
 }
+
+
 // ============================================================
 // RISK / PAPER TRADING
 // ============================================================
@@ -3217,6 +3389,7 @@ function equity() {
 
   return value;
 }
+
 
 function updateDrawdown() {
 
@@ -3251,6 +3424,7 @@ function updateDrawdown() {
     );
 }
 
+
 function checkDay() {
 
   const day =
@@ -3266,17 +3440,16 @@ function checkDay() {
   currentDay =
     day;
 
-  dailyPnL =
-    0;
+  dailyPnL = 0;
 
-  dailyPause =
-    false;
+  dailyPause = false;
 
   dailyStartEquity =
     equity();
 
   saveCloudState();
 }
+
 
 function checkDailyLoss() {
 
@@ -3297,14 +3470,13 @@ function checkDailyLoss() {
 
     tg(
       `🛑 <b>LOMY V5.1.1 DAILY PROTECTION</b>
-PnL: $${dailyPnL.toFixed(
-        2
-      )}`
+PnL: $${dailyPnL.toFixed(2)}`
     );
 
     saveCloudState();
   }
 }
+
 
 function cooldownActive() {
 
@@ -3317,14 +3489,11 @@ function cooldownActive() {
     cooldownUntil
   ) {
 
-    cooldownUntil =
-      0;
+    cooldownUntil = 0;
 
-    cooldownReason =
-      null;
+    cooldownReason = null;
 
-    entriesSinceCooldown =
-      0;
+    entriesSinceCooldown = 0;
 
     candidatePool.clear();
 
@@ -3335,6 +3504,7 @@ function cooldownActive() {
 
   return true;
 }
+
 
 function startCooldown(
   ms,
@@ -3363,16 +3533,16 @@ function startCooldown(
   tg(
     `⏸ <b>LOMY V5.1.1 COOLDOWN</b>
 ${reason}
-${Math.ceil(
-      ms /
-      60000
-    )} minutes`
+${Math.ceil(ms / 60000)} minutes`
   );
 
   saveCloudState();
 }
 
-function symbolCooling(symbol) {
+
+function symbolCooling(
+  symbol
+) {
 
   const lastLoss =
     n(
@@ -3388,6 +3558,7 @@ function symbolCooling(symbol) {
       C.symbolLossCooldownMs
   );
 }
+
 
 function paperAllocation() {
 
@@ -3418,7 +3589,10 @@ function paperAllocation() {
   );
 }
 
-function candidateValid(candidate) {
+
+function candidateValid(
+  candidate
+) {
 
   if (
     !candidate ||
@@ -3429,8 +3603,7 @@ function candidateValid(candidate) {
 
     return {
       ok: false,
-      reason:
-        'MISSING'
+      reason: 'MISSING'
     };
   }
 
@@ -3442,8 +3615,7 @@ function candidateValid(candidate) {
 
     return {
       ok: false,
-      reason:
-        'EXPIRED'
+      reason: 'EXPIRED'
     };
   }
 
@@ -3483,6 +3655,7 @@ function candidateValid(candidate) {
     pct(
       live -
       candidate.signalPrice,
+
       candidate.signalPrice
     );
 
@@ -3503,13 +3676,15 @@ function candidateValid(candidate) {
 
   return {
     ok: true,
-    price:
-      live,
+    price: live,
     drift
   };
 }
 
-function openPaper(candidate) {
+
+function openPaper(
+  candidate
+) {
 
   if (
     !C.paperTrading ||
@@ -3534,7 +3709,9 @@ function openPaper(candidate) {
       candidate
     );
 
-  if (!validation.ok) {
+  if (
+    !validation.ok
+  ) {
 
     candidatePool.delete(
       candidate.symbol
@@ -3547,10 +3724,8 @@ function openPaper(candidate) {
     paperAllocation();
 
   if (
-    allocation <
-      10 ||
-    cash <
-      10
+    allocation < 10 ||
+    cash < 10
   ) {
     return false;
   }
@@ -3577,6 +3752,10 @@ function openPaper(candidate) {
     netInvest /
     entry;
 
+  /*
+   * atrPct is percentage.
+   * Convert it to decimal before stop calculation.
+   */
   const stopPct =
     clamp(
       (
@@ -3584,6 +3763,7 @@ function openPaper(candidate) {
         100
       ) *
       C.atrStopMultiplier,
+
       C.minStopPct,
       C.maxStopPct
     );
@@ -3648,11 +3828,8 @@ function openPaper(candidate) {
     lastPrice:
       entry,
 
-    mfePct:
-      0,
-
-    maePct:
-      0,
+    mfePct: 0,
+    maePct: 0,
 
     profitLockActive:
       false,
@@ -3721,13 +3898,13 @@ function openPaper(candidate) {
 
   cloudJournal(
     {
-      type:
-        'ENTRY',
+      type: 'ENTRY',
 
       symbol:
         candidate.symbol,
 
       entry,
+
       stopPct,
       targetPct,
 
@@ -3764,6 +3941,7 @@ Entry: ${entry.toFixed(8)}`
 
   return true;
 }
+
 
 function closePaper(
   symbol,
@@ -3838,8 +4016,7 @@ function closePaper(
     profit;
 
   stats.bestTrade =
-    stats.totalTrades ===
-      1
+    stats.totalTrades === 1
       ? profit
       : Math.max(
           stats.bestTrade,
@@ -3847,8 +4024,7 @@ function closePaper(
         );
 
   stats.worstTrade =
-    stats.totalTrades ===
-      1
+    stats.totalTrades === 1
       ? profit
       : Math.min(
           stats.worstTrade,
@@ -3856,8 +4032,7 @@ function closePaper(
         );
 
   if (
-    profit >
-    0
+    profit > 0
   ) {
 
     stats.wins++;
@@ -3865,8 +4040,7 @@ function closePaper(
     stats.grossProfit +=
       profit;
 
-    lossStreak =
-      0;
+    lossStreak = 0;
 
   } else {
 
@@ -3958,15 +4132,11 @@ function closePaper(
       Date.now()
   };
 
-  saveTrade(
-    record
-  );
+  saveTrade(record);
 
   cloudJournal(
     {
-      type:
-        'EXIT',
-
+      type: 'EXIT',
       ...record
     },
     true
@@ -3997,6 +4167,7 @@ PnL: $${profit.toFixed(2)} (${profitPct.toFixed(2)}%)`
   saveCloudState();
 }
 
+
 function managePosition(
   symbol,
   price
@@ -4010,11 +4181,8 @@ function managePosition(
   if (
     !position ||
     position.closing ||
-    !Number.isFinite(
-      price
-    ) ||
-    price <=
-      0
+    !Number.isFinite(price) ||
+    price <= 0
   ) {
     return;
   }
@@ -4041,6 +4209,7 @@ function managePosition(
       pct(
         position.highestPrice -
         position.entryPrice,
+
         position.entryPrice
       )
     );
@@ -4052,6 +4221,7 @@ function managePosition(
       pct(
         position.lowestPrice -
         position.entryPrice,
+
         position.entryPrice
       )
     );
@@ -4211,11 +4381,14 @@ function managePosition(
   }
 }
 
+
 // ============================================================
 // CANDIDATES
 // ============================================================
 
-function addCandidate(analysis) {
+function addCandidate(
+  analysis
+) {
 
   if (
     !analysis?.eligible ||
@@ -4233,12 +4406,12 @@ function addCandidate(analysis) {
     analysis.symbol,
     {
       ...analysis,
-
       createdAt:
         Date.now()
     }
   );
 }
+
 
 function pruneCandidates() {
 
@@ -4272,6 +4445,7 @@ function pruneCandidates() {
   }
 }
 
+
 function executeCandidates() {
 
   if (
@@ -4297,8 +4471,7 @@ function executeCandidates() {
     ).length;
 
   if (
-    slots <=
-    0
+    slots <= 0
   ) {
     return;
   }
@@ -4315,8 +4488,7 @@ function executeCandidates() {
             a.flowScore
       );
 
-  let opened =
-    0;
+  let opened = 0;
 
   for (
     const candidate
@@ -4344,8 +4516,9 @@ function executeCandidates() {
   }
 }
 
+
 // ============================================================
-// CLOSED CANDLE HANDLING
+// CLOSED KLINE
 // ============================================================
 
 function onClosedKline(
@@ -4388,14 +4561,14 @@ function onClosedKline(
 
   mergeCandles(
     symbol,
-    [
-      candle
-    ]
+    [candle]
   );
 
   if (
     (
-      candles[symbol]?.length ||
+      candles[
+        symbol
+      ]?.length ||
       0
     ) <
     C.warmupCandles
@@ -4426,6 +4599,14 @@ function onClosedKline(
   ] =
     candle.closeTime;
 
+  /*
+   * Important:
+   * external warmup has no Binance taker flow.
+   *
+   * We allow warmup to establish EMA/ATR/CMO,
+   * while the most recent live Binance candles
+   * progressively restore actual flow information.
+   */
   const analysis =
     analyze(
       candles[
@@ -4486,6 +4667,7 @@ function onClosedKline(
   executeCandidates();
 }
 
+
 // ============================================================
 // WEBSOCKET
 // ============================================================
@@ -4511,12 +4693,11 @@ function wsSend(
   networkMeter.wsControlBytes +=
     byteLen(text);
 
-  ws.send(
-    text
-  );
+  ws.send(text);
 
   return true;
 }
+
 
 function chunks(
   array,
@@ -4528,23 +4709,21 @@ function chunks(
 
   for (
     let i = 0;
-    i <
-      array.length;
-    i +=
-      size
+    i < array.length;
+    i += size
   ) {
 
     output.push(
       array.slice(
         i,
-        i +
-        size
+        i + size
       )
     );
   }
 
   return output;
 }
+
 
 function connectMiniWs() {
 
@@ -4621,18 +4800,13 @@ function connectMiniWs() {
           }
 
           const price =
-            n(
-              row.c
-            );
+            n(row.c);
 
           const quoteVolume =
-            n(
-              row.q
-            );
+            n(row.q);
 
           if (
-            price <=
-            0
+            price <= 0
           ) {
             continue;
           }
@@ -4642,6 +4816,7 @@ function connectMiniWs() {
             {
               price,
               quoteVolume,
+
               time:
                 Date.now()
             }
@@ -4695,6 +4870,7 @@ function connectMiniWs() {
             Math.min(
               miniReconnectAttempts -
               1,
+
               5
             )
           )
@@ -4716,6 +4892,7 @@ function connectMiniWs() {
       )
   );
 }
+
 
 function connectKlineWs() {
 
@@ -4755,8 +4932,7 @@ function connectKlineWs() {
               `${symbol.toLowerCase()}@kline_${C.interval}`
           );
 
-      let id =
-        1;
+      let id = 1;
 
       for (
         const group
@@ -4780,9 +4956,7 @@ function connectKlineWs() {
           }
         );
 
-        await sleep(
-          250
-        );
+        await sleep(250);
       }
     }
   );
@@ -4854,6 +5028,7 @@ function connectKlineWs() {
             Math.min(
               klineReconnectAttempts -
               1,
+
               5
             )
           )
@@ -4876,6 +5051,7 @@ function connectKlineWs() {
   );
 }
 
+
 // ============================================================
 // UNIVERSE
 // ============================================================
@@ -4886,130 +5062,218 @@ async function refreshUniverse() {
 
     let ranked = [];
 
-    try {
+    /*
+     * Do not keep testing Binance REST during
+     * an active 418 pause.
+     */
+    if (
+      Date.now() >=
+      binanceRestBlockedUntil
+    ) {
 
-      const url =
-        `${REST_BASE}/api/v3/ticker/24hr`;
+      try {
 
-      networkMeter.restRequestBytes +=
-        byteLen(url);
+        const url =
+          `${REST_BASE}/api/v3/ticker/24hr`;
 
-      const response =
-        await axios.get(
-          url,
-          {
-            timeout: 15000
-          }
-        );
+        networkMeter.restRequestBytes +=
+          byteLen(url);
 
-      const rows =
-        Array.isArray(response.data)
-          ? response.data
-          : [];
-
-      ranked =
-        rows
-          .filter(
-            row =>
-              String(
-                row.symbol || ''
-              ).endsWith('USDT')
-          )
-          .filter(
-            row =>
-              !IGNORED.has(
-                row.symbol
-              )
-          )
-          .filter(
-            row =>
-              n(
-                row.quoteVolume
-              ) >=
-              C.minQuoteVolume
-          )
-          .sort(
-            (a, b) =>
-              n(b.quoteVolume) -
-              n(a.quoteVolume)
-          )
-          .slice(
-            0,
-            C.universeSize
-          )
-          .map(
-            row =>
-              row.symbol
+        const response =
+          await axios.get(
+            url,
+            {
+              timeout: 15000
+            }
           );
 
-      console.log(
-        `UNIVERSE REST OK | ${ranked.length} symbols`
-      );
-
-    } catch (error) {
-
-      const status =
-        error.response?.status;
-
-      if (
-        status === 418 ||
-        status === 429
-      ) {
-
-        console.warn(
-          `UNIVERSE REST ${status} | USING MINI WS FALLBACK`
-        );
-
-        // Give MINI WebSocket time to receive its first ticker batch.
-        if (
-          tickers.size <
-          20
-        ) {
-
-          await sleep(3000);
-        }
+        const rows =
+          Array.isArray(
+            response.data
+          )
+            ? response.data
+            : [];
 
         ranked =
-          [...tickers.entries()]
+          rows
             .filter(
-              ([symbol]) =>
-                symbol.endsWith('USDT') &&
-                !IGNORED.has(symbol)
+              row =>
+                String(
+                  row.symbol ||
+                  ''
+                ).endsWith(
+                  'USDT'
+                )
             )
+
             .filter(
-              ([, data]) =>
+              row =>
+                !IGNORED.has(
+                  row.symbol
+                )
+            )
+
+            .filter(
+              row =>
                 n(
-                  data.quoteVolume
+                  row.quoteVolume
                 ) >=
                 C.minQuoteVolume
             )
+
             .sort(
               (a, b) =>
                 n(
-                  b[1].quoteVolume
+                  b.quoteVolume
                 ) -
                 n(
-                  a[1].quoteVolume
+                  a.quoteVolume
                 )
             )
+
             .slice(
               0,
               C.universeSize
             )
+
             .map(
-              ([symbol]) =>
-                symbol
+              row =>
+                row.symbol
             );
 
         console.log(
-          `UNIVERSE MINI FALLBACK | ${ranked.length} symbols`
+          `UNIVERSE REST OK | ${ranked.length} symbols`
         );
 
-      } else {
+      } catch (error) {
 
-        throw error;
+        const status =
+          error.response?.status;
+
+        if (
+          status === 418 ||
+          status === 429
+        ) {
+
+          const retryAfterSec =
+            n(
+              error.response
+                ?.headers?.[
+                  'retry-after'
+                ]
+            );
+
+          const pauseMs =
+            Math.max(
+              retryAfterSec > 0
+                ? retryAfterSec *
+                  1000
+                : 0,
+
+              status === 418
+                ? 30 *
+                  60 *
+                  1000
+                : 5 *
+                  60 *
+                  1000
+            );
+
+          binanceRestBlockedUntil =
+            Math.max(
+              binanceRestBlockedUntil,
+
+              Date.now() +
+              pauseMs
+            );
+
+          console.warn(
+            `UNIVERSE REST ${status} | USING MINI WS FALLBACK`
+          );
+
+        } else {
+
+          console.warn(
+            `UNIVERSE REST FAILED | ${
+              status ||
+              error.message
+            } | USING MINI WS FALLBACK`
+          );
+        }
       }
+
+    } else {
+
+      console.log(
+        'UNIVERSE REST PAUSED | USING MINI WS FALLBACK'
+      );
     }
+
+
+    /*
+     * If REST failed or is paused,
+     * rank symbols using the live MiniTicker WS.
+     */
+    if (
+      !ranked.length
+    ) {
+
+      if (
+        tickers.size <
+        20
+      ) {
+
+        await sleep(
+          3000
+        );
+      }
+
+      ranked =
+        [...tickers.entries()]
+
+          .filter(
+            ([symbol]) =>
+              symbol.endsWith(
+                'USDT'
+              ) &&
+              !IGNORED.has(
+                symbol
+              )
+          )
+
+          .filter(
+            ([, data]) =>
+              n(
+                data.quoteVolume
+              ) >=
+              C.minQuoteVolume
+          )
+
+          .sort(
+            (a, b) =>
+              n(
+                b[1].quoteVolume
+              ) -
+              n(
+                a[1].quoteVolume
+              )
+          )
+
+          .slice(
+            0,
+            C.universeSize
+          )
+
+          .map(
+            ([symbol]) =>
+              symbol
+          );
+
+      console.log(
+        `UNIVERSE MINI FALLBACK | ${ranked.length} symbols`
+      );
+    }
+
 
     if (
       !ranked.includes(
@@ -5030,7 +5294,8 @@ async function refreshUniverse() {
         );
 
     if (
-      ranked.length === 0
+      ranked.length ===
+      0
     ) {
 
       console.warn(
@@ -5056,6 +5321,17 @@ async function refreshUniverse() {
       [...next].some(
         symbol =>
           !subscribed.has(
+            symbol
+          )
+      );
+
+    /*
+     * Remove obsolete queued warmups.
+     */
+    warmupQueue =
+      warmupQueue.filter(
+        symbol =>
+          next.has(
             symbol
           )
       );
@@ -5100,10 +5376,10 @@ async function refreshUniverse() {
   }
 }
 
+
 function readyCount() {
 
-  let count =
-    0;
+  let count = 0;
 
   for (
     const symbol
@@ -5112,7 +5388,9 @@ function readyCount() {
 
     if (
       (
-        candles[symbol]?.length ||
+        candles[
+          symbol
+        ]?.length ||
         0
       ) >=
       C.warmupCandles
@@ -5125,10 +5403,10 @@ function readyCount() {
   return count;
 }
 
+
 function buildLatest() {
 
-  const rows =
-    [];
+  const rows = [];
 
   for (
     const symbol
@@ -5143,7 +5421,7 @@ function buildLatest() {
     if (
       !arr ||
       arr.length <
-        C.warmupCandles
+      C.warmupCandles
     ) {
       continue;
     }
@@ -5176,6 +5454,7 @@ function buildLatest() {
       );
 }
 
+
 // ============================================================
 // API
 // ============================================================
@@ -5189,6 +5468,7 @@ app.get(
 
     res.json({
       ok: true,
+
       version:
         C.version,
 
@@ -5203,10 +5483,20 @@ app.get(
         readyCount(),
 
       symbols:
-        subscribed.size
+        subscribed.size,
+
+      warmupQueue:
+        warmupQueue.length,
+
+      warmupWorkers,
+
+      binanceRestPaused:
+        Date.now() <
+        binanceRestBlockedUntil
     });
   }
 );
+
 
 app.get(
   '/api/data',
@@ -5229,12 +5519,10 @@ app.get(
         : 0;
 
     const profitFactor =
-      grossLoss >
-        0
+      grossLoss > 0
         ? stats.grossProfit /
           grossLoss
-        : stats.grossProfit >
-            0
+        : stats.grossProfit > 0
           ? 999
           : 0;
 
@@ -5247,9 +5535,7 @@ app.get(
         C.paperTrading,
 
       cash:
-        +cash.toFixed(
-          2
-        ),
+        +cash.toFixed(2),
 
       equity:
         +equity().toFixed(
@@ -5311,6 +5597,27 @@ app.get(
 
       pool:
         candidatePool.size,
+
+      warmupQueue:
+        warmupQueue.length,
+
+      warmupWorkers,
+
+      binanceRestPaused:
+        Date.now() <
+        binanceRestBlockedUntil,
+
+      binanceRestPauseMinutes:
+        Date.now() <
+          binanceRestBlockedUntil
+          ? Math.ceil(
+              (
+                binanceRestBlockedUntil -
+                Date.now()
+              ) /
+              60000
+            )
+          : 0,
 
       latest:
         latest.map(
@@ -5396,6 +5703,7 @@ app.get(
   }
 );
 
+
 app.post(
   '/api/pause',
   (
@@ -5417,6 +5725,7 @@ app.post(
   }
 );
 
+
 app.post(
   '/api/resume',
   (
@@ -5435,6 +5744,7 @@ app.post(
     });
   }
 );
+
 
 app.post(
   '/api/emergency-close',
@@ -5473,12 +5783,12 @@ app.post(
 
     res.json({
       ok: true,
-
       closed:
         symbols.length
     });
   }
 );
+
 
 // ============================================================
 // DASHBOARD
@@ -5497,40 +5807,63 @@ app.get(
       )
       .send(
 `<!doctype html>
-<html>
+<html lang="en">
+
 <head>
+
 <meta charset="utf-8">
+
 <meta
   name="viewport"
   content="width=device-width,initial-scale=1"
 >
-<title>
-LOMY V5.1.1
-</title>
+
+<title>LOMY V5.1.1</title>
 
 <style>
+
 body {
-  font-family: Arial, sans-serif;
-  background: #0b1020;
-  color: #eef2ff;
+  font-family:
+    Arial,
+    sans-serif;
+
+  background:
+    #0b1020;
+
+  color:
+    #eef2ff;
+
   margin: 0;
+
   padding: 20px;
 }
 
 h1 {
-  margin: 0 0 8px;
+  margin:
+    0 0 8px;
 }
 
 .banner,
 .status {
-  padding: 10px 12px;
-  border-radius: 10px;
-  background: #151d33;
-  margin: 8px 0;
+
+  padding:
+    10px 12px;
+
+  border-radius:
+    10px;
+
+  background:
+    #151d33;
+
+  margin:
+    8px 0;
 }
 
 .grid {
-  display: grid;
+
+  display:
+    grid;
+
   grid-template-columns:
     repeat(
       auto-fit,
@@ -5539,73 +5872,126 @@ h1 {
         1fr
       )
     );
-  gap: 8px;
-  margin: 14px 0;
+
+  gap:
+    8px;
+
+  margin:
+    14px 0;
 }
 
 .card {
-  background: #151d33;
-  padding: 12px;
-  border-radius: 10px;
+
+  background:
+    #151d33;
+
+  padding:
+    12px;
+
+  border-radius:
+    10px;
 }
 
 .label {
-  font-size: 12px;
-  opacity: .7;
+
+  font-size:
+    12px;
+
+  opacity:
+    .7;
 }
 
 .value {
-  font-size: 22px;
-  font-weight: bold;
-  margin-top: 5px;
+
+  font-size:
+    22px;
+
+  font-weight:
+    bold;
+
+  margin-top:
+    5px;
 }
 
 button {
-  padding: 10px 14px;
-  border: 0;
-  border-radius: 8px;
-  margin-right: 6px;
-  cursor: pointer;
+
+  padding:
+    10px 14px;
+
+  border:
+    0;
+
+  border-radius:
+    8px;
+
+  margin-right:
+    6px;
+
+  margin-bottom:
+    6px;
+
+  cursor:
+    pointer;
 }
 
 table {
-  width: 100%;
-  border-collapse: collapse;
-  margin-top: 15px;
-  font-size: 12px;
+
+  width:
+    100%;
+
+  border-collapse:
+    collapse;
+
+  margin-top:
+    15px;
+
+  font-size:
+    12px;
 }
 
 th,
 td {
-  padding: 7px;
+
+  padding:
+    7px;
+
   border-bottom:
     1px solid #26324f;
-  text-align: left;
-  white-space: nowrap;
+
+  text-align:
+    left;
+
+  white-space:
+    nowrap;
 }
 
 .green {
-  color: #4ade80;
+  color:
+    #4ade80;
 }
 
 .red {
-  color: #fb7185;
+  color:
+    #fb7185;
 }
 
 .yellow {
-  color: #facc15;
+  color:
+    #facc15;
 }
+
 </style>
+
 </head>
 
 <body>
 
 <h1>
-🤖 LOMY V5.1.1 WARMUP GUARD
+🤖 LOMY V5.1.1 EXTERNAL WARMUP
 </h1>
 
 <div class="banner">
-PAPER ONLY • FRESH MOMENTUM • FLOW QUALITY • ANTI-CHASE • BREAKOUT ACCEPTANCE
+PAPER ONLY • BINANCE LIVE • BYBIT/OKX HISTORICAL WARMUP FALLBACK
 </div>
 
 <div
@@ -5627,6 +6013,13 @@ Market...
   class="status"
 >
 Regime...
+</div>
+
+<div
+  id="warmup"
+  class="status"
+>
+Warmup...
 </div>
 
 <div
@@ -5659,12 +6052,16 @@ Cooldown...
 🚨 CLOSE ALL
 </button>
 
-<div style="overflow-x:auto">
+<div
+  style="overflow-x:auto"
+>
 
 <table>
 
 <thead>
+
 <tr>
+
 <th>Symbol</th>
 <th>Grade</th>
 <th>Edge</th>
@@ -5680,15 +6077,19 @@ Cooldown...
 <th>Shadow</th>
 <th>Regime</th>
 <th>Warnings</th>
+
 </tr>
+
 </thead>
 
 <tbody id="rows">
 
 <tr>
+
 <td colspan="15">
 Loading...
 </td>
+
 </tr>
 
 </tbody>
@@ -5697,9 +6098,11 @@ Loading...
 
 </div>
 
+
 <script>
 
 const defs = [
+
   ['cash', 'CASH'],
   ['equity', 'EQUITY'],
   ['closed', 'CLOSED'],
@@ -5718,6 +6121,7 @@ const defs = [
   ['trail', 'TRAILING'],
   ['locks', 'PROFIT LOCKS'],
   ['netmb', 'EST. OUT MB']
+
 ];
 
 document
@@ -5727,7 +6131,9 @@ document
   .innerHTML =
     defs
       .map(
-        function (item) {
+        function (
+          item
+        ) {
 
           return (
             '<div class="card">' +
@@ -5745,7 +6151,10 @@ document
       )
       .join('');
 
-async function post(url) {
+
+async function post(
+  url
+) {
 
   await fetch(
     url,
@@ -5757,6 +6166,7 @@ async function post(url) {
 
   await load();
 }
+
 
 async function closeAll() {
 
@@ -5771,6 +6181,7 @@ async function closeAll() {
     );
   }
 }
+
 
 async function load() {
 
@@ -5798,6 +6209,7 @@ async function load() {
             value;
       };
 
+
     set(
       'cash',
       '$' +
@@ -5824,7 +6236,10 @@ async function load() {
     set(
       'profit',
       '$' +
-      d.stats.netProfit.toFixed(
+      Number(
+        d.stats.netProfit ||
+        0
+      ).toFixed(
         2
       )
     );
@@ -5870,7 +6285,10 @@ async function load() {
 
     set(
       'dd',
-      d.stats.maxDrawdown.toFixed(
+      Number(
+        d.stats.maxDrawdown ||
+        0
+      ).toFixed(
         2
       ) +
       '%'
@@ -5902,6 +6320,7 @@ async function load() {
       ' MB'
     );
 
+
     const cloud =
       document.getElementById(
         'cloud'
@@ -5920,6 +6339,7 @@ async function load() {
           : 'red'
       );
 
+
     const ws =
       document.getElementById(
         'ws'
@@ -5930,7 +6350,7 @@ async function load() {
         d.miniConnected &&
         d.klineConnected
       )
-        ? '🟢 MARKET WEBSOCKETS LIVE'
+        ? '🟢 BINANCE MARKET WEBSOCKETS LIVE'
         : '🔴 MARKET CONNECTING';
 
     ws.className =
@@ -5941,6 +6361,7 @@ async function load() {
           ? 'green'
           : 'red'
       );
+
 
     const regime =
       document.getElementById(
@@ -5967,6 +6388,43 @@ async function load() {
             : 'red'
       );
 
+
+    const warm =
+      document.getElementById(
+        'warmup'
+      );
+
+    warm.innerText =
+      'WARMUP ' +
+      d.ready +
+      ' / ' +
+      d.symbols +
+      ' • QUEUE ' +
+      d.warmupQueue +
+      ' • BINANCE REST ' +
+      (
+        d.binanceRestPaused
+          ? (
+              'PAUSED ' +
+              d.binanceRestPauseMinutes +
+              'm'
+            )
+          : 'READY'
+      );
+
+    warm.className =
+      'status ' +
+      (
+        d.ready >=
+        Math.min(
+          20,
+          d.symbols
+        )
+          ? 'green'
+          : 'yellow'
+      );
+
+
     const cooldown =
       document.getElementById(
         'cooldown'
@@ -5991,6 +6449,7 @@ async function load() {
           : 'green'
       );
 
+
     const rows =
       document.getElementById(
         'rows'
@@ -6004,18 +6463,23 @@ async function load() {
     ) {
 
       rows.innerHTML =
-        '<tr><td colspan="15">' +
+        '<tr>' +
+        '<td colspan="15">' +
         'Warmup ' +
         d.ready +
         ' / ' +
         d.symbols +
-        '</td></tr>';
+        '</td>' +
+        '</tr>';
 
       return;
     }
 
+
     d.latest.forEach(
-      function (item) {
+      function (
+        item
+      ) {
 
         rows.innerHTML +=
           '<tr>' +
@@ -6090,13 +6554,16 @@ async function load() {
       }
     );
 
-  } catch (error) {
+  } catch (
+    error
+  ) {
 
     console.error(
       error
     );
   }
 }
+
 
 setInterval(
   load,
@@ -6108,16 +6575,20 @@ load();
 </script>
 
 </body>
+
 </html>`
       );
   }
 );
 
+
 // ============================================================
 // SHUTDOWN
 // ============================================================
 
-async function shutdown(signal) {
+async function shutdown(
+  signal
+) {
 
   if (
     shuttingDown
@@ -6133,23 +6604,36 @@ async function shutdown(signal) {
   );
 
   try {
+
     await saveCloudState();
+
   } catch {}
 
+
   try {
+
     miniWs?.close();
+
   } catch {}
 
+
   try {
+
     klineWs?.close();
+
   } catch {}
 
+
   try {
+
     await mongoClient?.close();
+
   } catch {}
+
 
   process.exit(0);
 }
+
 
 process.on(
   'SIGTERM',
@@ -6159,6 +6643,7 @@ process.on(
     )
 );
 
+
 process.on(
   'SIGINT',
   () =>
@@ -6166,6 +6651,7 @@ process.on(
       'SIGINT'
     )
 );
+
 
 process.on(
   'unhandledRejection',
@@ -6176,6 +6662,7 @@ process.on(
     )
 );
 
+
 process.on(
   'uncaughtException',
   error =>
@@ -6184,6 +6671,7 @@ process.on(
       error
     )
 );
+
 
 // ============================================================
 // START
@@ -6199,20 +6687,41 @@ async function start() {
 
   await loadCloudState();
 
+
+  /*
+   * Start live Binance mini ticker before
+   * refreshing universe so fallback has data.
+   */
   connectMiniWs();
+
+  /*
+   * Give MiniTicker a brief chance to receive
+   * its first payload.
+   */
+  await sleep(
+    1500
+  );
 
   await refreshUniverse();
 
+
+  /*
+   * Live Binance klines remain the primary
+   * real-time candle / flow source.
+   */
   connectKlineWs();
+
 
   calculateMarketRegime();
 
   buildLatest();
 
+
   setInterval(
     checkDay,
     30000
   );
+
 
   setInterval(
     () => {
@@ -6225,20 +6734,24 @@ async function start() {
     C.regimeRefreshMs
   );
 
+
   setInterval(
     buildLatest,
     C.rankRefreshMs
   );
+
 
   setInterval(
     refreshUniverse,
     C.universeRefreshMs
   );
 
+
   setInterval(
     saveCloudState,
     C.stateSaveMs
   );
+
 
   setInterval(
     () => {
@@ -6252,7 +6765,7 @@ async function start() {
 
       if (
         snapshot.estimatedOutboundMB -
-          networkMeter.lastAlertMB >=
+        networkMeter.lastAlertMB >=
         C.networkAlertMB
       ) {
 
@@ -6263,6 +6776,7 @@ async function start() {
     },
     C.networkReportMs
   );
+
 
   app.listen(
     PORT,
@@ -6276,11 +6790,13 @@ async function start() {
       tg(
         `🤖 <b>LOMY ${C.version}</b>
 PAPER ONLY
+External historical warmup enabled.
 Server started.`
       );
     }
   );
 }
+
 
 start()
   .catch(
