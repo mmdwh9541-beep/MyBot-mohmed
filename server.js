@@ -18,442 +18,223 @@ const WS_BASE = 'wss://data-stream.binance.vision';
 const REST_BASE = 'https://data-api.binance.vision';
 
 // ============================================================
-// LOMY V5.1.1
-// ENTRY INTELLIGENCE + BANDWIDTH OPTIMIZATION + 429 GUARD
-// PAPER ONLY
+// LOMY V5.1 BANDWIDTH OPTIMIZED — PAPER ONLY
 // ============================================================
-
 const C = {
   version: '5.1-BANDWIDTH-OPTIMIZED',
-  buildTag: '5.1.1-WARMUP-GUARD',
-
-  // IMPORTANT:
-  // Keep the same V5.1 state so existing V5.1 paper data continues.
   stateKey: 'main-v51',
-
   paperTrading: true,
   startingBalance: 10000,
 
   interval: '5m',
   warmupCandles: 60,
   maxCandles: 100,
-
-  // Reduced from 300 to reduce traffic while retaining broad scanning.
   universeSize: 220,
   minQuoteVolume: 500000,
   universeRefreshMs: 30 * 60 * 1000,
 
   maxPositions: 6,
   maxEntriesPerCycle: 2,
-
   candidateExpiryMs: 2 * 60 * 1000,
   maxPriceDriftPct: 0.22,
   liveChasePct: 0.16,
 
-  // ----------------------------------------------------------
-  // DATA-DRIVEN CMO
-  // ----------------------------------------------------------
   cmoCoreMin: 50,
   cmoCoreMax: 65,
-
   cmoSoftMin: 48,
   cmoSoftMax: 68,
 
-  // ----------------------------------------------------------
-  // FLOW
-  // ----------------------------------------------------------
   minTakerBuyRatio: 0.60,
   eliteTakerBuyRatio: 0.80,
   minFlowMomentum: 0.50,
 
-  // ----------------------------------------------------------
-  // VOLATILITY
-  // ----------------------------------------------------------
   minAtrPct: 0.18,
   maxAtrPct: 0.65,
-
   atrSweetMin: 0.22,
   atrSweetMax: 0.55,
 
-  // ----------------------------------------------------------
-  // VOLUME
-  // ----------------------------------------------------------
   minVolumeRatio: 1.05,
   maxVolumeRatio: 2.80,
-
   volumeAccelSweetMin: 0.75,
   volumeAccelSweetMax: 2.50,
-
   volumeClimaxAcceleration: 3.00,
 
-  // ----------------------------------------------------------
-  // ANTI-CHASE
-  // ----------------------------------------------------------
   maxEmaDistancePct: 1.35,
   maxExt5Pct: 1.80,
   maxExt10Pct: 3.00,
 
-  // ----------------------------------------------------------
-  // BREAKOUT ACCEPTANCE
-  // ----------------------------------------------------------
   minBreakoutAcceptance: 55,
   eliteBreakoutAcceptance: 78,
   retestTolerancePct: 0.18,
 
-  // ----------------------------------------------------------
-  // EDGE THRESHOLDS
-  // ----------------------------------------------------------
   minEdgeScoreRiskOn: 70,
   minEdgeScoreNeutral: 73,
   minEdgeScoreDefensive: 88,
-
   minFreshnessScore: 58,
   minFlowScore: 55,
 
-  // ----------------------------------------------------------
-  // COSTS
-  // ----------------------------------------------------------
   feePct: 0.001,
   slippagePct: 0.0005,
-
-  // ----------------------------------------------------------
-  // RISK
-  // ----------------------------------------------------------
   minStopPct: 0.0055,
   maxStopPct: 0.0105,
-
   atrStopMultiplier: 1.20,
   rewardRisk: 1.90,
 
-  // ----------------------------------------------------------
-  // PROFIT PROTECTION
-  // ----------------------------------------------------------
   profitLockMfePct: 0.35,
   profitLockBufferPct: 0.0022,
-
   breakEvenAtR: 0.55,
   breakEvenBufferPct: 0.0025,
-
   trailAtR: 0.95,
   trailLockR: 0.30,
 
-  // ----------------------------------------------------------
-  // EARLY FAILURE
-  // ----------------------------------------------------------
   earlyFailureWindowMs: 10 * 60 * 1000,
   earlyFailureLossPct: 0.0035,
   earlyFailureMfeGuardPct: 0.25,
 
-  // ----------------------------------------------------------
-  // ACCOUNT PROTECTION
-  // ----------------------------------------------------------
   dailyLossLimitPct: 0.035,
-
   entriesBeforeCooldown: 12,
   batchCooldownMs: 20 * 60 * 1000,
-
   lossStreakLimit: 3,
   lossCooldownMs: 60 * 60 * 1000,
-
   symbolLossCooldownMs: 90 * 60 * 1000,
 
   asiaRiskOnPenalty: 12,
   overextendedRiskOnBreadth: 78,
-
-  // ----------------------------------------------------------
-  // WARMUP 429 GUARD
-  // ----------------------------------------------------------
-  warmupConcurrency: 1,
-
-  // Delay between normal successful requests.
-  warmupDelayMs: 1500,
-
-  // Retry settings for 429.
-  warmupMaxRetries: 6,
-  warmupBaseBackoffMs: 15000,
-  warmupMaxBackoffMs: 120000,
-
+  warmupConcurrency: 3,
+  warmupDelayMs: 400,
   btcSymbol: 'BTCUSDT',
 
-  // ----------------------------------------------------------
-  // CLOUD OPTIMIZATION
-  // ----------------------------------------------------------
-
-  // V5 used to write state much more frequently.
   stateSaveMs: 60000,
-
-  // Only a small sample of routine rejected ANALYSIS rows is persisted.
-  // Candidate / Entry / Close are still persisted.
-  analysisJournalSampleRate: 0.01,
-
   regimeRefreshMs: 60000,
-
   journalLimitDashboard: 100,
-  historyLimitDashboard: 100
+  historyLimitDashboard: 100,
+
+  // Bandwidth protection
+  persistCandlesToCloud: false,
+  analysisJournalSampleRate: 0.01,
+  networkAlertMB: 250,
+  networkReportMs: 30 * 60 * 1000
 };
 
 // ============================================================
 // STATE
 // ============================================================
-
 let cash = C.startingBalance;
-
 let positions = {};
-
 let stats = {
   totalTrades: 0,
-
   wins: 0,
   losses: 0,
-
   grossProfit: 0,
   grossLoss: 0,
-
   netProfit: 0,
-
   fees: 0,
-
   bestTrade: 0,
   worstTrade: 0,
-
   maxDrawdown: 0,
-
   earlyFailureExits: 0,
-
   breakEvenMoves: 0,
-
   trailingActivations: 0,
-
   profitLocks: 0
 };
 
 let dailyPnL = 0;
-
-let dailyStartEquity =
-  C.startingBalance;
-
-let currentDay =
-  utcDay();
-
-let peakEquity =
-  C.startingBalance;
-
+let dailyStartEquity = C.startingBalance;
+let currentDay = utcDay();
+let peakEquity = C.startingBalance;
 let manualPause = false;
-
 let dailyPause = false;
-
 let cooldownUntil = 0;
-
 let cooldownReason = null;
-
 let entriesSinceCooldown = 0;
-
 let lossStreak = 0;
-
 const lastLossBySymbol = {};
 
-// ============================================================
-// MARKET MEMORY
-// ============================================================
-
-const tickers =
-  new Map();
-
+const tickers = new Map();
 const candles = {};
-
 const lastAnalyzed = {};
-
-let subscribed =
-  new Set();
-
-const candidatePool =
-  new Map();
-
+let subscribed = new Set();
+const candidatePool = new Map();
 let latest = [];
-
 let rankTimer = null;
 
-// ============================================================
-// WEBSOCKET
-// ============================================================
-
 let miniWs = null;
-
 let klineWs = null;
-
 let miniConnected = false;
-
 let klineConnected = false;
-
 let lastMiniMessage = 0;
-
 let lastKlineMessage = 0;
-
 let shuttingDown = false;
 
-// ============================================================
-// DATABASE
-// ============================================================
-
 let mongoClient = null;
-
 let db = null;
-
 let cloudConnected = false;
 
-// ============================================================
-// WARMUP
-// ============================================================
-
-const warmupLoaded =
-  new Set();
-
-const warmupLoading =
-  new Set();
-
+const warmupLoaded = new Set();
+const warmupLoading = new Set();
 let warmupQueue = [];
-
 let warmupWorkers = 0;
-
-let warmupStats = {
-  restLoaded: 0,
-
-  restRequests: 0,
-
-  failed: 0,
-
-  rateLimited: 0,
-
-  retries: 0,
-
-  deferred: 0
-};
-
-// ============================================================
-// MARKET REGIME
-// ============================================================
+let warmupStats = { restLoaded: 0, restRequests: 0, failed: 0 };
 
 let marketRegime = {
   ready: false,
-
   btcBullish: false,
-
   btcScore: 0,
-
   btcFreshness: 0,
-
   breadth: 0,
-
   regime: 'WARMING',
-
   overextended: false,
-
   updatedAt: 0
 };
 
 // ============================================================
-// INTERNAL NETWORK ESTIMATE
-//
-// Diagnostic only.
-// Render's own Usage page remains authoritative.
+// BANDWIDTH METER
+// App-level estimate of outbound payloads produced by this app.
+// Render's own Usage page remains the final billing source.
 // ============================================================
-
 const networkMeter = {
-  startedAt:
-    Date.now(),
-
+  startedAt: Date.now(),
   telegramBytes: 0,
-
   mongoWriteBytes: 0,
-
+  mongoStateBytes: 0,
+  mongoJournalBytes: 0,
+  mongoTradeBytes: 0,
   restRequestBytes: 0,
-
   wsControlBytes: 0,
-
-  stateWrites: 0,
-
   journalWrites: 0,
-
   tradeWrites: 0,
-
-  skippedAnalysisLogs: 0
+  stateWrites: 0,
+  skippedAnalysisLogs: 0,
+  candleCloudWrites: 0,
+  lastAlertBytes: 0
 };
 
 // ============================================================
 // HELPERS
 // ============================================================
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-const sleep = ms =>
-  new Promise(
-    resolve =>
-      setTimeout(
-        resolve,
-        ms
-      )
-  );
-
-function n(
-  value,
-  fallback = 0
-) {
-  const number =
-    Number(
-      value
-    );
-
-  return Number.isFinite(
-    number
-  )
-    ? number
-    : fallback;
+function n(v, fallback = 0) {
+  const x = Number(v);
+  return Number.isFinite(x) ? x : fallback;
 }
 
-function clamp(
-  value,
-  min,
-  max
-) {
-  return Math.max(
-    min,
-    Math.min(
-      max,
-      value
-    )
-  );
+function clamp(v, min, max) {
+  return Math.max(min, Math.min(max, v));
 }
 
-function pct(
-  diff,
-  base
-) {
-  return base
-    ? (
-        diff /
-        base
-      ) * 100
-    : 0;
+function pct(diff, base) {
+  return base ? (diff / base) * 100 : 0;
 }
 
 function utcDay() {
-  return new Date()
-    .toISOString()
-    .slice(
-      0,
-      10
-    );
+  return new Date().toISOString().slice(0, 10);
 }
 
-function byteLen(
-  value
-) {
+function byteLen(v) {
   try {
     return Buffer.byteLength(
-      typeof value === 'string'
-        ? value
-        : JSON.stringify(
-            value
-          ),
-
+      typeof v === 'string' ? v : JSON.stringify(v),
       'utf8'
     );
   } catch {
@@ -461,122 +242,63 @@ function byteLen(
   }
 }
 
-function networkSnapshot() {
-  const totalBytes =
+function networkTotalBytes() {
+  return (
     networkMeter.telegramBytes +
     networkMeter.mongoWriteBytes +
     networkMeter.restRequestBytes +
-    networkMeter.wsControlBytes;
-
-  const mb =
-    bytes =>
-      +(
-        bytes /
-        1024 /
-        1024
-      ).toFixed(
-        3
-      );
-
-  return {
-    estimatedOutboundMB:
-      mb(
-        totalBytes
-      ),
-
-    telegramMB:
-      mb(
-        networkMeter.telegramBytes
-      ),
-
-    mongoWriteMB:
-      mb(
-        networkMeter.mongoWriteBytes
-      ),
-
-    restRequestMB:
-      mb(
-        networkMeter.restRequestBytes
-      ),
-
-    wsControlMB:
-      mb(
-        networkMeter.wsControlBytes
-      ),
-
-    stateWrites:
-      networkMeter.stateWrites,
-
-    journalWrites:
-      networkMeter.journalWrites,
-
-    tradeWrites:
-      networkMeter.tradeWrites,
-
-    skippedAnalysisLogs:
-      networkMeter.skippedAnalysisLogs,
-
-    uptimeHours:
-      +(
-        (
-          Date.now() -
-          networkMeter.startedAt
-        ) /
-        3600000
-      ).toFixed(
-        2
-      )
-  };
-}
-
-const IGNORED =
-  new Set([
-    'USDCUSDT',
-    'FDUSDUSDT',
-    'TUSDUSDT',
-    'USDPUSDT',
-    'BUSDUSDT',
-    'DAIUSDT',
-    'USDEUSDT',
-    'USD1USDT'
-  ]);
-
-function ignored(
-  symbol
-) {
-  return IGNORED.has(
-    symbol
+    networkMeter.wsControlBytes
   );
 }
 
+function networkMB(bytes) {
+  return +(bytes / 1024 / 1024).toFixed(2);
+}
+
+function networkSnapshot() {
+  return {
+    estimatedOutboundMB: networkMB(networkTotalBytes()),
+    telegramMB: networkMB(networkMeter.telegramBytes),
+    mongoWriteMB: networkMB(networkMeter.mongoWriteBytes),
+    mongoStateMB: networkMB(networkMeter.mongoStateBytes),
+    mongoJournalMB: networkMB(networkMeter.mongoJournalBytes),
+    mongoTradeMB: networkMB(networkMeter.mongoTradeBytes),
+    restRequestMB: networkMB(networkMeter.restRequestBytes),
+    wsControlMB: networkMB(networkMeter.wsControlBytes),
+    journalWrites: networkMeter.journalWrites,
+    tradeWrites: networkMeter.tradeWrites,
+    stateWrites: networkMeter.stateWrites,
+    skippedAnalysisLogs: networkMeter.skippedAnalysisLogs,
+    candleCloudWrites: networkMeter.candleCloudWrites,
+    uptimeHours: +(
+      (Date.now() - networkMeter.startedAt) /
+      3600000
+    ).toFixed(2)
+  };
+}
+
+const IGNORED = new Set([
+  'USDCUSDT',
+  'FDUSDUSDT',
+  'TUSDUSDT',
+  'USDPUSDT',
+  'BUSDUSDT',
+  'DAIUSDT',
+  'USDEUSDT',
+  'USD1USDT'
+]);
+
+function ignored(symbol) {
+  return IGNORED.has(symbol);
+}
+
 function sessionUTC() {
-  const hour =
-    new Date()
-      .getUTCHours();
+  const h = new Date().getUTCHours();
 
-  if (
-    hour < 7
-  ) {
-    return 'ASIA';
-  }
-
-  if (
-    hour < 13
-  ) {
-    return 'LONDON';
-  }
-
-  if (
-    hour < 16
-  ) {
-    return 'LONDON_NY';
-  }
-
-  if (
-    hour < 21
-  ) {
-    return 'NEW_YORK';
-  }
+  if (h < 7) return 'ASIA';
+  if (h < 13) return 'LONDON';
+  if (h < 16) return 'LONDON_NY';
+  if (h < 21) return 'NEW_YORK';
 
   return 'LATE_US';
 }
@@ -584,19 +306,8 @@ function sessionUTC() {
 function readyCount() {
   let count = 0;
 
-  for (
-    const symbol
-    of subscribed
-  ) {
-    if (
-      (
-        candles[
-          symbol
-        ]?.length ||
-        0
-      ) >=
-      C.warmupCandles
-    ) {
+  for (const symbol of subscribed) {
+    if ((candles[symbol]?.length || 0) >= C.warmupCandles) {
       count++;
     }
   }
@@ -607,211 +318,125 @@ function readyCount() {
 // ============================================================
 // TELEGRAM
 // ============================================================
-
 const tgQueue = [];
-
 let tgBusy = false;
 
-function tg(
-  text
-) {
-  if (
-    TELEGRAM_TOKEN &&
-    CHAT_ID
-  ) {
-    tgQueue.push(
-      text
-    );
+function tg(text) {
+  if (TELEGRAM_TOKEN && CHAT_ID) {
+    tgQueue.push(text);
   }
 }
 
-setInterval(
-  async () => {
-    if (
-      tgBusy ||
-      !tgQueue.length
-    ) {
-      return;
-    }
-
-    tgBusy = true;
-
-    const text =
-      tgQueue.shift();
-
-    try {
-      const payload = {
-        chat_id:
-          CHAT_ID,
-
-        text,
-
-        parse_mode:
-          'HTML'
-      };
-
-      networkMeter.telegramBytes +=
-        byteLen(
-          payload
-        );
-
-      await axios.post(
-        `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,
-
-        payload,
-
-        {
-          timeout:
-            10000
-        }
-      );
-
-    } catch (error) {
-
-      if (
-        error.response?.status ===
-        429
-      ) {
-        tgQueue.unshift(
-          text
-        );
-
-        await sleep(
-          5000
-        );
-
-      } else {
-
-        console.error(
-          'Telegram:',
-          error.message
-        );
-      }
-
-    } finally {
-
-      tgBusy = false;
-    }
-  },
-
-  1200
-);
-
-// ============================================================
-// MONGODB
-// ============================================================
-
-async function connectCloud() {
-  if (
-    !MONGODB_URI
-  ) {
-    throw new Error(
-      'MONGODB_URI missing'
-    );
+setInterval(async () => {
+  if (tgBusy || !tgQueue.length) {
+    return;
   }
 
-  mongoClient =
-    new MongoClient(
-      MONGODB_URI,
-      {
-        maxPoolSize:
-          10
-      }
+  tgBusy = true;
+
+  const text = tgQueue.shift();
+
+  try {
+    const payload = {
+      chat_id: CHAT_ID,
+      text,
+      parse_mode: 'HTML'
+    };
+
+    networkMeter.telegramBytes += byteLen(payload);
+
+    await axios.post(
+      `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,
+      payload,
+      { timeout: 10000 }
     );
+  } catch (error) {
+    if (error.response?.status === 429) {
+      tgQueue.unshift(text);
+      await sleep(5000);
+    } else {
+      console.error('Telegram:', error.message);
+    }
+  } finally {
+    tgBusy = false;
+  }
+}, 1200);
+
+// ============================================================
+// MONGODB — NO CANDLE ARRAY WRITES IN V5.1
+// ============================================================
+async function connectCloud() {
+  if (!MONGODB_URI) {
+    throw new Error('MONGODB_URI missing');
+  }
+
+  mongoClient = new MongoClient(
+    MONGODB_URI,
+    { maxPoolSize: 10 }
+  );
 
   await mongoClient.connect();
 
-  db =
-    mongoClient.db(
-      MONGODB_DB
-    );
+  db = mongoClient.db(MONGODB_DB);
 
-  await db.command({
-    ping: 1
-  });
+  await db.command({ ping: 1 });
 
-  cloudConnected =
-    true;
+  cloudConnected = true;
 
   await Promise.all([
-
     db
-      .collection(
-        'trades'
-      )
+      .collection('trades')
       .createIndex({
         version: 1,
         exitTime: -1
       }),
 
     db
-      .collection(
-        'journal'
-      )
+      .collection('journal')
       .createIndex({
         version: 1,
         time: -1
       }),
 
     db
-      .collection(
-        'journal'
-      )
+      .collection('journal')
       .createIndex({
         symbol: 1,
         time: -1
       })
-
   ]);
 
-  console.log(
-    'MongoDB CLOUD CONNECTED'
-  );
+  console.log('MongoDB CLOUD CONNECTED');
 }
 
 async function loadCloudState() {
   const state =
     await db
-      .collection(
-        'state'
-      )
+      .collection('state')
       .findOne({
-        _id:
-          C.stateKey
+        _id: C.stateKey
       });
 
-  if (
-    !state
-  ) {
-    console.log(
-      'Fresh V5.1 PAPER account.'
-    );
-
+  if (!state) {
+    console.log('Fresh V5.1 PAPER account.');
     return;
   }
 
-  cash =
-    n(
-      state.cash,
-      C.startingBalance
-    );
+  cash = n(
+    state.cash,
+    C.startingBalance
+  );
 
   positions =
-    state.positions ||
-    {};
+    state.positions || {};
 
   stats = {
     ...stats,
-    ...(
-      state.stats ||
-      {}
-    )
+    ...(state.stats || {})
   };
 
   dailyPnL =
-    n(
-      state.dailyPnL
-    );
+    n(state.dailyPnL);
 
   dailyStartEquity =
     n(
@@ -836,118 +461,78 @@ async function loadCloudState() {
     !!state.dailyPause;
 
   cooldownUntil =
-    n(
-      state.cooldownUntil
-    );
+    n(state.cooldownUntil);
 
   cooldownReason =
     state.cooldownReason ||
     null;
 
   entriesSinceCooldown =
-    n(
-      state.entriesSinceCooldown
-    );
+    n(state.entriesSinceCooldown);
 
   lossStreak =
-    n(
-      state.lossStreak
-    );
+    n(state.lossStreak);
 
   Object.assign(
     lastLossBySymbol,
-    state.lastLossBySymbol ||
-    {}
+    state.lastLossBySymbol || {}
   );
 
   console.log(
-    `V5.1 STATE RESTORED | Cash $${cash.toFixed(
-      2
-    )} | Open ${
-      Object.keys(
-        positions
-      ).length
-    }`
+    `V5.1 STATE RESTORED | Cash $${cash.toFixed(2)} | Open ${Object.keys(positions).length}`
   );
 }
 
 async function saveCloudState() {
-  if (
-    !cloudConnected
-  ) {
+  if (!cloudConnected) {
     return;
   }
 
   try {
     const payload = {
-      version:
-        C.version,
-
-      buildTag:
-        C.buildTag,
-
-      updatedAt:
-        Date.now(),
-
+      version: C.version,
+      updatedAt: Date.now(),
       cash,
-
       positions,
-
       stats,
-
       dailyPnL,
-
       dailyStartEquity,
-
       currentDay,
-
       peakEquity,
-
       manualPause,
-
       dailyPause,
-
       cooldownUntil,
-
       cooldownReason,
-
       entriesSinceCooldown,
-
       lossStreak,
-
       lastLossBySymbol
     };
 
+    const bytes =
+      byteLen(payload);
+
     networkMeter.mongoWriteBytes +=
-      byteLen(
-        payload
-      );
+      bytes;
+
+    networkMeter.mongoStateBytes +=
+      bytes;
 
     networkMeter.stateWrites++;
 
     await db
-      .collection(
-        'state'
-      )
+      .collection('state')
       .updateOne(
         {
-          _id:
-            C.stateKey
+          _id: C.stateKey
         },
-
         {
-          $set:
-            payload
+          $set: payload
         },
-
         {
-          upsert:
-            true
+          upsert: true
         }
       );
-
   } catch (error) {
-
     console.error(
       'State save:',
       error.message
@@ -955,46 +540,33 @@ async function saveCloudState() {
   }
 }
 
-async function cloudJournal(
-  row
-) {
-  if (
-    !cloudConnected
-  ) {
+async function cloudJournal(row) {
+  if (!cloudConnected) {
     return;
   }
 
   try {
     const doc = {
-      time:
-        Date.now(),
-
-      version:
-        C.version,
-
-      buildTag:
-        C.buildTag,
-
+      time: Date.now(),
+      version: C.version,
       ...row
     };
 
+    const bytes =
+      byteLen(doc);
+
     networkMeter.mongoWriteBytes +=
-      byteLen(
-        doc
-      );
+      bytes;
+
+    networkMeter.mongoJournalBytes +=
+      bytes;
 
     networkMeter.journalWrites++;
 
     await db
-      .collection(
-        'journal'
-      )
-      .insertOne(
-        doc
-      );
-
+      .collection('journal')
+      .insertOne(doc);
   } catch (error) {
-
     console.error(
       'Journal:',
       error.message
@@ -1002,43 +574,32 @@ async function cloudJournal(
   }
 }
 
-async function saveTrade(
-  record
-) {
-  if (
-    !cloudConnected
-  ) {
+async function saveTrade(record) {
+  if (!cloudConnected) {
     return;
   }
 
   try {
     const doc = {
-      version:
-        C.version,
-
-      buildTag:
-        C.buildTag,
-
+      version: C.version,
       ...record
     };
 
+    const bytes =
+      byteLen(doc);
+
     networkMeter.mongoWriteBytes +=
-      byteLen(
-        doc
-      );
+      bytes;
+
+    networkMeter.mongoTradeBytes +=
+      bytes;
 
     networkMeter.tradeWrites++;
 
     await db
-      .collection(
-        'trades'
-      )
-      .insertOne(
-        doc
-      );
-
+      .collection('trades')
+      .insertOne(doc);
   } catch (error) {
-
     console.error(
       'Trade save:',
       error.message
@@ -1047,395 +608,114 @@ async function saveTrade(
 }
 
 // ============================================================
-// CANDLE STORAGE
-//
-// V5.1.1:
-// We DO NOT upload candle arrays to MongoDB.
-// Existing old candle data is untouched.
-// New runtime candles remain in RAM.
+// CANDLES / WARMUP
+// Candles remain in RAM. REST is used only for initial warmup.
 // ============================================================
-
-async function loadCachedCandles(
-  symbol
-) {
-  return false;
-}
-
-async function saveSymbolCandles(
-  symbol
-) {
-  return;
-}
-
-// ============================================================
-// CANDLE HELPERS
-// ============================================================
-
-function parseKline(
-  row
-) {
+function parseKline(row) {
   return {
-    open:
-      n(
-        row[1]
-      ),
-
-    high:
-      n(
-        row[2]
-      ),
-
-    low:
-      n(
-        row[3]
-      ),
-
-    close:
-      n(
-        row[4]
-      ),
-
-    volume:
-      n(
-        row[5]
-      ),
-
-    closeTime:
-      n(
-        row[6]
-      ),
-
-    quoteVolume:
-      n(
-        row[7]
-      ),
-
-    trades:
-      n(
-        row[8]
-      ),
-
-    takerBuyBase:
-      n(
-        row[9]
-      ),
-
-    takerBuyQuote:
-      n(
-        row[10]
-      )
+    open: n(row[1]),
+    high: n(row[2]),
+    low: n(row[3]),
+    close: n(row[4]),
+    volume: n(row[5]),
+    closeTime: n(row[6]),
+    quoteVolume: n(row[7]),
+    trades: n(row[8]),
+    takerBuyBase: n(row[9]),
+    takerBuyQuote: n(row[10])
   };
 }
 
-function mergeCandles(
-  symbol,
-  incoming
-) {
-  const map =
-    new Map();
+function mergeCandles(symbol, incoming) {
+  const map = new Map();
 
-  for (
-    const candle
-    of candles[
-      symbol
-    ] || []
-  ) {
-    map.set(
-      candle.closeTime,
-      candle
-    );
+  for (const c of candles[symbol] || []) {
+    map.set(c.closeTime, c);
   }
 
-  for (
-    const candle
-    of incoming ||
-    []
-  ) {
-    map.set(
-      candle.closeTime,
-      candle
-    );
+  for (const c of incoming || []) {
+    map.set(c.closeTime, c);
   }
 
-  candles[
-    symbol
-  ] =
-    [
-      ...map.values()
-    ]
-      .sort(
-        (
-          a,
-          b
-        ) =>
-          a.closeTime -
-          b.closeTime
-      )
-      .slice(
-        -C.maxCandles
-      );
+  candles[symbol] = [...map.values()]
+    .sort((a, b) => a.closeTime - b.closeTime)
+    .slice(-C.maxCandles);
 }
 
-// ============================================================
-// 429-SAFE WARMUP
-// ============================================================
-
-async function fetchWarmup(
-  symbol
-) {
+async function fetchWarmup(symbol) {
   if (
-    (
-      (
-        candles[
-          symbol
-        ]?.length ||
-        0
-      ) >=
-      C.warmupCandles &&
-      warmupLoaded.has(
-        symbol
-      )
-    ) ||
-    warmupLoading.has(
-      symbol
-    )
+    warmupLoaded.has(symbol) ||
+    warmupLoading.has(symbol)
   ) {
     return;
   }
 
-  warmupLoading.add(
-    symbol
-  );
+  warmupLoading.add(symbol);
 
   try {
-    let attempt =
-      0;
+    warmupStats.restRequests++;
 
-    while (
-      attempt <=
-      C.warmupMaxRetries
-    ) {
-      try {
-        warmupStats.restRequests++;
+    const requestDesc =
+      `${REST_BASE}/api/v3/klines?symbol=${symbol}&interval=${C.interval}&limit=${C.maxCandles}`;
 
-        const requestText =
-          `${REST_BASE}/api/v3/klines?symbol=${symbol}&interval=${C.interval}&limit=${C.maxCandles}`;
+    networkMeter.restRequestBytes +=
+      byteLen(requestDesc);
 
-        networkMeter.restRequestBytes +=
-          byteLen(
-            requestText
-          );
-
-        const response =
-          await axios.get(
-            `${REST_BASE}/api/v3/klines`,
-
-            {
-              params: {
-                symbol,
-
-                interval:
-                  C.interval,
-
-                limit:
-                  C.maxCandles
-              },
-
-              timeout:
-                12000
-            }
-          );
-
-        const now =
-          Date.now();
-
-        mergeCandles(
+    const response = await axios.get(
+      `${REST_BASE}/api/v3/klines`,
+      {
+        params: {
           symbol,
-
-          response.data
-            .map(
-              parseKline
-            )
-            .filter(
-              candle =>
-                candle.closeTime <
-                now
-            )
-        );
-
-        if (
-          (
-            candles[
-              symbol
-            ]?.length ||
-            0
-          ) >=
-          C.warmupCandles
-        ) {
-          warmupLoaded.add(
-            symbol
-          );
-
-          warmupStats.restLoaded++;
-
-          console.log(
-            `Warmup ${symbol}: READY | ${
-              candles[
-                symbol
-              ].length
-            } candles`
-          );
-        }
-
-        return;
-
-      } catch (error) {
-
-        const status =
-          error.response?.status;
-
-        // ------------------------------------------
-        // BINANCE RATE LIMIT
-        // ------------------------------------------
-
-        if (
-          status ===
-          429
-        ) {
-          warmupStats.rateLimited++;
-
-          if (
-            attempt >=
-            C.warmupMaxRetries
-          ) {
-            warmupStats.deferred++;
-
-            console.error(
-              `Warmup ${symbol}: 429 DEFERRED`
-            );
-
-            setTimeout(
-              () =>
-                queueWarmup(
-                  symbol
-                ),
-
-              C.warmupMaxBackoffMs
-            );
-
-            return;
-          }
-
-          const retryAfter =
-            Number(
-              error.response
-                ?.headers
-                ?.['retry-after']
-            );
-
-          const exponentialBackoff =
-            Math.min(
-              C.warmupBaseBackoffMs *
-              Math.pow(
-                2,
-                attempt
-              ),
-
-              C.warmupMaxBackoffMs
-            );
-
-          const waitMs =
-            Number.isFinite(
-              retryAfter
-            ) &&
-            retryAfter >
-              0
-              ? Math.max(
-                  retryAfter *
-                  1000,
-
-                  exponentialBackoff
-                )
-              : exponentialBackoff;
-
-          warmupStats.retries++;
-
-          console.log(
-            `Warmup ${symbol}: 429 | Retry ${
-              attempt +
-              1
-            }/${
-              C.warmupMaxRetries
-            } | Wait ${
-              Math.ceil(
-                waitMs /
-                1000
-              )
-            } sec`
-          );
-
-          attempt++;
-
-          await sleep(
-            waitMs
-          );
-
-          continue;
-        }
-
-        // ------------------------------------------
-        // OTHER ERROR
-        // ------------------------------------------
-
-        warmupStats.failed++;
-
-        console.error(
-          `Warmup ${symbol}:`,
-          status ||
-          error.message
-        );
-
-        return;
+          interval: C.interval,
+          limit: C.maxCandles
+        },
+        timeout: 12000
       }
+    );
+
+    const now = Date.now();
+
+    mergeCandles(
+      symbol,
+      response.data
+        .map(parseKline)
+        .filter(c => c.closeTime < now)
+    );
+
+    if (
+      (candles[symbol]?.length || 0) >=
+      C.warmupCandles
+    ) {
+      warmupLoaded.add(symbol);
+      warmupStats.restLoaded++;
     }
+
+  } catch (error) {
+
+    warmupStats.failed++;
+
+    console.error(
+      `Warmup ${symbol}:`,
+      error.response?.status ||
+      error.message
+    );
 
   } finally {
 
-    warmupLoading.delete(
-      symbol
-    );
+    warmupLoading.delete(symbol);
   }
 }
 
-function queueWarmup(
-  symbol
-) {
+function queueWarmup(symbol) {
   if (
-    (
-      (
-        candles[
-          symbol
-        ]?.length ||
-        0
-      ) >=
-      C.warmupCandles &&
-      warmupLoaded.has(
-        symbol
-      )
-    ) ||
-    warmupLoading.has(
-      symbol
-    ) ||
-    warmupQueue.includes(
-      symbol
-    )
+    warmupLoaded.has(symbol) ||
+    warmupLoading.has(symbol) ||
+    warmupQueue.includes(symbol)
   ) {
     return;
   }
 
-  warmupQueue.push(
-    symbol
-  );
+  warmupQueue.push(symbol);
 
   processWarmupQueue();
 }
@@ -1451,51 +731,42 @@ function processWarmupQueue() {
 
     warmupWorkers++;
 
-    (
-      async () => {
-        try {
-          await fetchWarmup(
-            symbol
-          );
+    (async () => {
+      try {
+        await fetchWarmup(symbol);
 
-          await sleep(
-            C.warmupDelayMs
-          );
+        await sleep(
+          C.warmupDelayMs
+        );
 
-        } finally {
+      } finally {
 
-          warmupWorkers--;
+        warmupWorkers--;
 
-          processWarmupQueue();
-        }
+        processWarmupQueue();
       }
-    )();
+    })();
   }
 }
 
 // ============================================================
-// EQUITY / RISK
+// RISK / EQUITY
 // ============================================================
 
 function equity() {
-  let value =
-    cash;
+  let value = cash;
 
   for (
-    const position
-    of Object.values(
-      positions
-    )
+    const p
+    of Object.values(positions)
   ) {
     const price =
-      tickers.get(
-        position.symbol
-      )?.price ||
-      position.lastPrice ||
-      position.entryPrice;
+      tickers.get(p.symbol)?.price ||
+      p.lastPrice ||
+      p.entryPrice;
 
     value +=
-      position.qty *
+      p.qty *
       price;
   }
 
@@ -1503,23 +774,23 @@ function equity() {
 }
 
 function updateDrawdown() {
-  const currentEquity =
+  const e =
     equity();
 
   if (
-    currentEquity >
+    e >
     peakEquity
   ) {
     peakEquity =
-      currentEquity;
+      e;
   }
 
-  const drawdown =
+  const dd =
     peakEquity
       ? (
           (
             peakEquity -
-            currentEquity
+            e
           ) /
           peakEquity
         ) *
@@ -1529,7 +800,7 @@ function updateDrawdown() {
   stats.maxDrawdown =
     Math.max(
       stats.maxDrawdown,
-      drawdown
+      dd
     );
 }
 
@@ -1576,9 +847,7 @@ function checkDailyLoss() {
 
     tg(
       `🛑 <b>LOMY V5.1 DAILY PROTECTION</b>
-PnL: $${dailyPnL.toFixed(
-        2
-      )}`
+PnL: $${dailyPnL.toFixed(2)}`
     );
 
     saveCloudState();
@@ -1641,23 +910,16 @@ function startCooldown(
   tg(
     `⏸ <b>LOMY V5.1 COOLDOWN</b>
 ${reason}
-${Math.ceil(
-      ms /
-      60000
-    )} minutes`
+${Math.ceil(ms / 60000)} minutes`
   );
 
   saveCloudState();
 }
 
-function symbolCooling(
-  symbol
-) {
+function symbolCooling(symbol) {
   const lastLoss =
     n(
-      lastLossBySymbol[
-        symbol
-      ]
+      lastLossBySymbol[symbol]
     );
 
   return (
@@ -1686,20 +948,14 @@ function sma(
 
   return (
     arr
-      .slice(
-        -period
-      )
+      .slice(-period)
       .reduce(
         (
-          sum,
-          item
+          s,
+          x
         ) =>
-          sum +
-          n(
-            item[
-              key
-            ]
-          ),
+          s +
+          n(x[key]),
         0
       ) /
     period
@@ -1726,20 +982,16 @@ function ema(
       )
       .reduce(
         (
-          sum,
-          item
+          s,
+          x
         ) =>
-          sum +
-          n(
-            item[
-              key
-            ]
-          ),
+          s +
+          n(x[key]),
         0
       ) /
     period;
 
-  const multiplier =
+  const m =
     2 /
     (
       period +
@@ -1756,15 +1008,11 @@ function ema(
     value =
       (
         n(
-          arr[
-            i
-          ][
-            key
-          ]
+          arr[i][key]
         ) -
         value
       ) *
-      multiplier +
+      m +
       value;
   }
 
@@ -1783,11 +1031,8 @@ function cmo(
     return null;
   }
 
-  let up =
-    0;
-
-  let down =
-    0;
+  let up = 0;
+  let down = 0;
 
   for (
     let i =
@@ -1797,28 +1042,21 @@ function cmo(
     arr.length;
     i++
   ) {
-    const diff =
-      arr[
-        i
-      ].close -
-      arr[
-        i -
-        1
-      ].close;
+    const d =
+      arr[i].close -
+      arr[i - 1].close;
 
     if (
-      diff >
+      d >
       0
     ) {
       up +=
-        diff;
+        d;
 
     } else {
 
       down +=
-        Math.abs(
-          diff
-        );
+        Math.abs(d);
     }
   }
 
@@ -1856,36 +1094,29 @@ function atr(
     [];
 
   for (
-    let i =
-      1;
-    i <
-    arr.length;
+    let i = 1;
+    i < arr.length;
     i++
   ) {
-    const current =
-      arr[
-        i
-      ];
+    const a =
+      arr[i];
 
-    const previous =
-      arr[
-        i -
-        1
-      ];
+    const b =
+      arr[i - 1];
 
     ranges.push(
       Math.max(
-        current.high -
-        current.low,
+        a.high -
+          a.low,
 
         Math.abs(
-          current.high -
-          previous.close
+          a.high -
+            b.close
         ),
 
         Math.abs(
-          current.low -
-          previous.close
+          a.low -
+            b.close
         )
       )
     );
@@ -1899,20 +1130,18 @@ function atr(
   return (
     recent.reduce(
       (
-        sum,
-        value
+        s,
+        x
       ) =>
-        sum +
-        value,
+        s +
+        x,
       0
     ) /
     recent.length
   );
 }
 
-function structure(
-  arr
-) {
+function structure(arr) {
   if (
     arr.length <
     4
@@ -1921,19 +1150,13 @@ function structure(
   }
 
   const a =
-    arr.at(
-      -1
-    );
+    arr.at(-1);
 
   const b =
-    arr.at(
-      -2
-    );
+    arr.at(-2);
 
   const c =
-    arr.at(
-      -3
-    );
+    arr.at(-3);
 
   if (
     a.high >
@@ -1958,9 +1181,7 @@ function structure(
   return 'NEUTRAL';
 }
 
-function volumeAcceleration(
-  arr
-) {
+function volumeAcceleration(arr) {
   if (
     arr.length <
     7
@@ -1970,16 +1191,14 @@ function volumeAcceleration(
 
   const recent =
     arr
-      .slice(
-        -3
-      )
+      .slice(-3)
       .reduce(
         (
-          sum,
-          candle
+          s,
+          c
         ) =>
-          sum +
-          candle.volume,
+          s +
+          c.volume,
         0
       ) /
     3;
@@ -1992,11 +1211,11 @@ function volumeAcceleration(
       )
       .reduce(
         (
-          sum,
-          candle
+          s,
+          c
         ) =>
-          sum +
-          candle.volume,
+          s +
+          c.volume,
         0
       ) /
     3;
@@ -2008,9 +1227,7 @@ function volumeAcceleration(
     : 0;
 }
 
-function priceAcceleration(
-  arr
-) {
+function priceAcceleration(arr) {
   if (
     arr.length <
     4
@@ -2019,37 +1236,29 @@ function priceAcceleration(
   }
 
   const a =
-    arr.at(
-      -1
-    ).close;
+    arr.at(-1).close;
 
   const b =
-    arr.at(
-      -2
-    ).close;
+    arr.at(-2).close;
 
   const c =
-    arr.at(
-      -3
-    ).close;
+    arr.at(-3).close;
 
   return (
     pct(
       a -
-      b,
+        b,
       b
     ) -
     pct(
       b -
-      c,
+        c,
       c
     )
   );
 }
 
-function takerBuyRatio(
-  candle
-) {
+function takerBuyRatio(candle) {
   return (
     candle.volume >
       0 &&
@@ -2058,44 +1267,33 @@ function takerBuyRatio(
   )
     ? clamp(
         candle.takerBuyBase /
-        candle.volume,
-
+          candle.volume,
         0,
-
         1
       )
     : null;
 }
 
-function orderFlowMomentum(
-  arr
-) {
-  let buy =
-    0;
-
-  let total =
-    0;
-
-  let valid =
-    0;
+function orderFlowMomentum(arr) {
+  let buy = 0;
+  let total = 0;
+  let valid = 0;
 
   for (
-    const candle
-    of arr.slice(
-      -3
-    )
+    const c
+    of arr.slice(-3)
   ) {
     if (
-      candle.volume >
+      c.volume >
         0 &&
-      candle.takerBuyBase >
+      c.takerBuyBase >
         0
     ) {
       buy +=
-        candle.takerBuyBase;
+        c.takerBuyBase;
 
       total +=
-        candle.volume;
+        c.volume;
 
       valid++;
     }
@@ -2108,10 +1306,8 @@ function orderFlowMomentum(
   )
     ? clamp(
         buy /
-        total,
-
+          total,
         0,
-
         1
       )
     : null;
@@ -2127,33 +1323,26 @@ function breakoutAcceptance(
   atrPct
 ) {
   const current =
-    arr.at(
-      -1
-    );
+    arr.at(-1);
 
   const previous =
-    arr.at(
-      -2
-    );
+    arr.at(-2);
 
-  let score =
-    0;
+  let score = 0;
 
-  const reasons =
-    [];
+  const reasons = [];
 
   const range =
     Math.max(
       current.high -
-      current.low,
-
+        current.low,
       Number.EPSILON
     );
 
   const body =
     Math.abs(
       current.close -
-      current.open
+        current.open
     ) /
     range;
 
@@ -2167,8 +1356,7 @@ function breakoutAcceptance(
   const breakoutPct =
     pct(
       current.close -
-      resistance,
-
+        resistance,
       resistance
     );
 
@@ -2176,8 +1364,7 @@ function breakoutAcceptance(
     Math.abs(
       pct(
         previous.close -
-        resistance,
-
+          resistance,
         resistance
       )
     ) <=
@@ -2187,8 +1374,7 @@ function breakoutAcceptance(
     current.close >
     resistance
   ) {
-    score +=
-      25;
+    score += 25;
 
     reasons.push(
       'CLOSE_ABOVE_RES'
@@ -2199,8 +1385,7 @@ function breakoutAcceptance(
     closeLocation >=
     0.72
   ) {
-    score +=
-      15;
+    score += 15;
 
     reasons.push(
       'CLOSE_HIGH'
@@ -2211,8 +1396,7 @@ function breakoutAcceptance(
     body >=
     0.55
   ) {
-    score +=
-      15;
+    score += 15;
 
     reasons.push(
       'STRONG_BODY'
@@ -2225,13 +1409,11 @@ function breakoutAcceptance(
     breakoutPct <=
       Math.max(
         0.55,
-
         atrPct *
-        1.4
+          1.4
       )
   ) {
-    score +=
-      15;
+    score += 15;
 
     reasons.push(
       'CONTROLLED_BREAKOUT'
@@ -2245,11 +1427,10 @@ function breakoutAcceptance(
       (
         1 +
         C.retestTolerancePct /
-        100
+          100
       )
   ) {
-    score +=
-      20;
+    score += 20;
 
     reasons.push(
       'RETEST_ACCEPTED'
@@ -2262,8 +1443,7 @@ function breakoutAcceptance(
     current.close >
       previous.close
   ) {
-    score +=
-      10;
+    score += 10;
 
     reasons.push(
       'SECOND_CLOSE_CONFIRM'
@@ -2279,11 +1459,8 @@ function breakoutAcceptance(
 
   return {
     score,
-
     reasons,
-
     breakoutPct,
-
     accepted:
       score >=
       C.minBreakoutAcceptance
@@ -2291,7 +1468,7 @@ function breakoutAcceptance(
 }
 
 // ============================================================
-// BTC / MARKET REGIME
+// MARKET REGIME
 // ============================================================
 
 function btcContext() {
@@ -2307,19 +1484,14 @@ function btcContext() {
   ) {
     return {
       ready: false,
-
       bullish: false,
-
       score: 0,
-
       freshness: 0
     };
   }
 
   const current =
-    arr.at(
-      -1
-    );
+    arr.at(-1);
 
   const e20 =
     ema(
@@ -2348,8 +1520,7 @@ function btcContext() {
   const emaDistance =
     pct(
       current.close -
-      e20,
-
+        e20,
       e20
     );
 
@@ -2362,45 +1533,32 @@ function btcContext() {
   const ext5 =
     pct(
       current.close -
-      arr.at(
-        -6
-      ).close,
-
-      arr.at(
-        -6
-      ).close
+        arr.at(-6).close,
+      arr.at(-6).close
     );
 
-  let score =
-    0;
-
-  let freshness =
-    100;
+  let score = 0;
+  let freshness = 100;
 
   if (
     current.close >
     e20
   ) {
-    score +=
-      30;
+    score += 30;
   }
 
   if (
     e20 >
     e50
   ) {
-    score +=
-      30;
+    score += 30;
   }
 
   if (
-    structure(
-      arr
-    ) ===
+    structure(arr) ===
     'BULLISH'
   ) {
-    score +=
-      20;
+    score += 20;
   }
 
   if (
@@ -2409,45 +1567,39 @@ function btcContext() {
     momentum <=
       70
   ) {
-    score +=
-      20;
+    score += 20;
   }
 
   if (
     emaDistance >
     1.2
   ) {
-    freshness -=
-      30;
+    freshness -= 30;
   }
 
   if (
     ext5 >
     2.0
   ) {
-    freshness -=
-      30;
+    freshness -= 30;
   }
 
   if (
     momentum >
     72
   ) {
-    freshness -=
-      25;
+    freshness -= 25;
   }
 
   if (
     atrPct >
     C.maxAtrPct
   ) {
-    freshness -=
-      15;
+    freshness -= 15;
   }
 
   return {
-    ready:
-      true,
+    ready: true,
 
     bullish:
       current.close >
@@ -2465,29 +1617,21 @@ function btcContext() {
       ),
 
     emaDistance,
-
     ext5,
-
-    cmo:
-      momentum
+    cmo: momentum
   };
 }
 
 function calculateMarketRegime() {
-  let ready =
-    0;
-
-  let bullish =
-    0;
+  let ready = 0;
+  let bullish = 0;
 
   for (
     const symbol
     of subscribed
   ) {
     const arr =
-      candles[
-        symbol
-      ];
+      candles[symbol];
 
     if (
       !arr ||
@@ -2507,9 +1651,7 @@ function calculateMarketRegime() {
 
     if (
       e20 &&
-      arr.at(
-        -1
-      ).close >
+      arr.at(-1).close >
         e20
     ) {
       bullish++;
@@ -2573,9 +1715,7 @@ function calculateMarketRegime() {
       btc.freshness,
 
     breadth:
-      +breadth.toFixed(
-        2
-      ),
+      +breadth.toFixed(2),
 
     regime,
 
@@ -2587,82 +1727,61 @@ function calculateMarketRegime() {
 }
 
 // ============================================================
-// V5 SCORE ENGINE
+// V5.1 SCORE
 // ============================================================
 
-function buildV5Score({
-  arr,
-  x,
-  e20,
-  e50,
-  momentum,
-  atrPct,
-  volumeRatio,
-  volumeAccel,
-  takerRatio,
-  flowMomentum,
-  emaDistance,
-  ext5,
-  ext10,
-  marketStructure,
-  acceptance,
-  bodyRatio,
-  upperWickRatio,
-  closeLocation
-}) {
-  let trend =
-    0;
+function buildV5Score(ctx) {
+  const {
+    arr,
+    x,
+    e20,
+    e50,
+    momentum,
+    atrPct,
+    volumeRatio,
+    volumeAccel,
+    takerRatio,
+    flowMomentum,
+    emaDistance,
+    ext5,
+    ext10,
+    marketStructure,
+    acceptance,
+    bodyRatio,
+    upperWickRatio,
+    closeLocation
+  } = ctx;
 
-  let freshness =
-    100;
+  let trend = 0;
+  let freshness = 100;
+  let flow = 0;
+  let momentumScore = 0;
+  let volatility = 0;
+  let structureScore = 0;
+  let regimeScore = 0;
 
-  let flow =
-    0;
-
-  let momentumScore =
-    0;
-
-  let volatility =
-    0;
-
-  let structureScore =
-    0;
-
-  let regimeScore =
-    0;
-
-  const reasons =
-    [];
-
-  const warnings =
-    [];
-
-  // ----------------------------------------------------------
-  // TREND
-  // ----------------------------------------------------------
+  const reasons = [];
+  const warnings = [];
 
   if (
     x.close >
     e20
   ) {
-    trend +=
-      35;
+    trend += 35;
   }
 
   if (
     e20 >
     e50
   ) {
-    trend +=
-      35;
+    trend += 35;
   }
 
   if (
     marketStructure ===
     'BULLISH'
   ) {
-    trend +=
-      20;
+    trend += 20;
   }
 
   const oldEma =
@@ -2671,7 +1790,6 @@ function buildV5Score({
         0,
         -3
       ),
-
       20
     );
 
@@ -2679,14 +1797,12 @@ function buildV5Score({
     oldEma &&
     pct(
       e20 -
-      oldEma,
-
+        oldEma,
       oldEma
     ) >
-    0.02
+      0.02
   ) {
-    trend +=
-      10;
+    trend += 10;
   }
 
   trend =
@@ -2696,16 +1812,11 @@ function buildV5Score({
       100
     );
 
-  // ----------------------------------------------------------
-  // FRESHNESS
-  // ----------------------------------------------------------
-
   if (
     emaDistance >
     C.maxEmaDistancePct
   ) {
-    freshness -=
-      55;
+    freshness -= 55;
 
     warnings.push(
       'EMA_CHASE'
@@ -2715,16 +1826,14 @@ function buildV5Score({
     emaDistance >
     1.0
   ) {
-    freshness -=
-      18;
+    freshness -= 18;
   }
 
   if (
     ext5 >
     C.maxExt5Pct
   ) {
-    freshness -=
-      35;
+    freshness -= 35;
 
     warnings.push(
       'EXT5_CHASE'
@@ -2735,8 +1844,7 @@ function buildV5Score({
     ext10 >
     C.maxExt10Pct
   ) {
-    freshness -=
-      30;
+    freshness -= 30;
 
     warnings.push(
       'EXT10_CHASE'
@@ -2747,8 +1855,7 @@ function buildV5Score({
     volumeAccel >
     C.volumeClimaxAcceleration
   ) {
-    freshness -=
-      40;
+    freshness -= 40;
 
     warnings.push(
       'VOLUME_CLIMAX'
@@ -2759,8 +1866,7 @@ function buildV5Score({
     momentum >
     C.cmoCoreMax
   ) {
-    freshness -=
-      30;
+    freshness -= 30;
 
     warnings.push(
       'CMO_OVERHEAT'
@@ -2768,13 +1874,10 @@ function buildV5Score({
   }
 
   if (
-    priceAcceleration(
-      arr
-    ) >
+    priceAcceleration(arr) >
     1.0
   ) {
-    freshness -=
-      20;
+    freshness -= 20;
 
     warnings.push(
       'PRICE_ACCEL_CHASE'
@@ -2788,10 +1891,6 @@ function buildV5Score({
       100
     );
 
-  // ----------------------------------------------------------
-  // FLOW QUALITY
-  // ----------------------------------------------------------
-
   if (
     takerRatio !==
     null
@@ -2800,8 +1899,7 @@ function buildV5Score({
       takerRatio >=
       C.eliteTakerBuyRatio
     ) {
-      flow +=
-        70;
+      flow += 70;
 
       reasons.push(
         'ELITE_TAKER_FLOW'
@@ -2811,8 +1909,7 @@ function buildV5Score({
       takerRatio >=
       C.minTakerBuyRatio
     ) {
-      flow +=
-        42;
+      flow += 42;
     }
 
     if (
@@ -2821,8 +1918,7 @@ function buildV5Score({
       takerRatio <
         0.80
     ) {
-      flow -=
-        15;
+      flow -= 15;
 
       warnings.push(
         'MID_HIGH_FLOW_RISK'
@@ -2838,20 +1934,17 @@ function buildV5Score({
       flowMomentum >=
       0.72
     ) {
-      flow +=
-        30;
+      flow += 30;
 
     } else if (
       flowMomentum >=
       C.minFlowMomentum
     ) {
-      flow +=
-        18;
+      flow += 18;
 
     } else {
 
-      flow -=
-        20;
+      flow -= 20;
     }
   }
 
@@ -2861,10 +1954,6 @@ function buildV5Score({
       0,
       100
     );
-
-  // ----------------------------------------------------------
-  // MOMENTUM
-  // ----------------------------------------------------------
 
   if (
     momentum >=
@@ -2901,18 +1990,13 @@ function buildV5Score({
       20;
   }
 
-  // ----------------------------------------------------------
-  // VOLATILITY QUALITY
-  // ----------------------------------------------------------
-
   if (
     atrPct >=
       C.atrSweetMin &&
     atrPct <=
       C.atrSweetMax
   ) {
-    volatility +=
-      45;
+    volatility += 45;
 
   } else if (
     atrPct >=
@@ -2920,8 +2004,7 @@ function buildV5Score({
     atrPct <=
       C.maxAtrPct
   ) {
-    volatility +=
-      28;
+    volatility += 28;
 
   } else {
 
@@ -2936,15 +2019,13 @@ function buildV5Score({
     volumeRatio <=
       1.80
   ) {
-    volatility +=
-      30;
+    volatility += 30;
 
   } else if (
     volumeRatio <=
     C.maxVolumeRatio
   ) {
-    volatility +=
-      18;
+    volatility += 18;
   }
 
   if (
@@ -2953,15 +2034,13 @@ function buildV5Score({
     volumeAccel <=
       C.volumeAccelSweetMax
   ) {
-    volatility +=
-      25;
+    volatility += 25;
 
   } else if (
     volumeAccel >
     C.volumeClimaxAcceleration
   ) {
-    volatility -=
-      25;
+    volatility -= 25;
   }
 
   volatility =
@@ -2971,10 +2050,6 @@ function buildV5Score({
       100
     );
 
-  // ----------------------------------------------------------
-  // STRUCTURE / BREAKOUT ACCEPTANCE
-  // ----------------------------------------------------------
-
   structureScore =
     acceptance.score *
     0.65;
@@ -2983,24 +2058,21 @@ function buildV5Score({
     bodyRatio >=
     0.55
   ) {
-    structureScore +=
-      15;
+    structureScore += 15;
   }
 
   if (
     upperWickRatio <=
     0.30
   ) {
-    structureScore +=
-      10;
+    structureScore += 10;
   }
 
   if (
     closeLocation >=
     0.72
   ) {
-    structureScore +=
-      10;
+    structureScore += 10;
   }
 
   structureScore =
@@ -3009,10 +2081,6 @@ function buildV5Score({
       0,
       100
     );
-
-  // ----------------------------------------------------------
-  // REGIME
-  // ----------------------------------------------------------
 
   if (
     marketRegime.regime ===
@@ -3037,8 +2105,7 @@ function buildV5Score({
   if (
     marketRegime.overextended
   ) {
-    regimeScore -=
-      30;
+    regimeScore -= 30;
 
     warnings.push(
       'RISK_ON_OVEREXTENDED'
@@ -3066,10 +2133,6 @@ function buildV5Score({
       100
     );
 
-  // ----------------------------------------------------------
-  // FINAL NON-SATURATING EDGE SCORE
-  // ----------------------------------------------------------
-
   const edgeScore =
     Math.round(
       trend *
@@ -3088,8 +2151,6 @@ function buildV5Score({
         0.08
     );
 
-  // Research hypothesis from V4.5.1 sample.
-  // Logged and used as additional context, not treated as proof.
   const shadowEdge =
     momentum >=
       50 &&
@@ -3106,39 +2167,25 @@ function buildV5Score({
     edgeScore,
 
     trendScore:
-      Math.round(
-        trend
-      ),
+      Math.round(trend),
 
     freshnessScore:
-      Math.round(
-        freshness
-      ),
+      Math.round(freshness),
 
     flowScore:
-      Math.round(
-        flow
-      ),
+      Math.round(flow),
 
     momentumScore:
-      Math.round(
-        momentumScore
-      ),
+      Math.round(momentumScore),
 
     volatilityScore:
-      Math.round(
-        volatility
-      ),
+      Math.round(volatility),
 
     structureScore:
-      Math.round(
-        structureScore
-      ),
+      Math.round(structureScore),
 
     regimeScore:
-      Math.round(
-        regimeScore
-      ),
+      Math.round(regimeScore),
 
     shadowEdge,
 
@@ -3147,10 +2194,6 @@ function buildV5Score({
     warnings
   };
 }
-
-// ============================================================
-// MAIN ANALYSIS
-// ============================================================
 
 function analyze(
   arr,
@@ -3165,9 +2208,7 @@ function analyze(
   }
 
   const current =
-    arr.at(
-      -1
-    );
+    arr.at(-1);
 
   const e20 =
     ema(
@@ -3208,8 +2249,8 @@ function analyze(
       atrValue,
       volumeSma
     ].some(
-      value =>
-        value ===
+      v =>
+        v ===
         null
     )
   ) {
@@ -3263,89 +2304,74 @@ function analyze(
       : 0;
 
   const volumeAccel =
-    volumeAcceleration(
-      arr
-    );
+    volumeAcceleration(arr);
 
   const priceAccel =
-    priceAcceleration(
-      arr
-    );
+    priceAcceleration(arr);
 
   const takerRatio =
-    takerBuyRatio(
-      current
-    );
+    takerBuyRatio(current);
 
   const flowMomentum =
-    orderFlowMomentum(
-      arr
-    );
-
-  const emaDistance =
-    pct(
-      current.close -
-      e20,
-
-      e20
-    );
-
-  const atrPct =
+    orderFlowMomentum(arr);
+    const atrPct =
     pct(
       atrValue,
       current.close
     );
 
-  const marketStructure =
-    structure(
-      arr
+  const emaDistance =
+    pct(
+      current.close -
+        e20,
+      e20
     );
 
-  const prior =
-    arr.slice(
-      -21,
-      -1
-    );
+  const ext5Base =
+    arr.at(-6)?.close ||
+    current.close;
 
-  const resistance =
-    Math.max(
-      ...prior.map(
-        candle =>
-          candle.high
-      )
-    );
-
-  const support =
-    Math.min(
-      ...prior.map(
-        candle =>
-          candle.low
-      )
-    );
+  const ext10Base =
+    arr.at(-11)?.close ||
+    current.close;
 
   const ext5 =
     pct(
       current.close -
-      arr.at(
-        -6
-      ).close,
-
-      arr.at(
-        -6
-      ).close
+        ext5Base,
+      ext5Base
     );
 
   const ext10 =
     pct(
       current.close -
-      arr.at(
-        -11
-      ).close,
-
-      arr.at(
-        -11
-      ).close
+        ext10Base,
+      ext10Base
     );
+
+  const marketStructure =
+    structure(arr);
+
+  const prior =
+    arr.slice(
+      0,
+      -1
+    );
+
+  const resistance =
+    prior
+      .slice(-20)
+      .reduce(
+        (
+          max,
+          candle
+        ) =>
+          Math.max(
+            max,
+            candle.high
+          ),
+        0
+      );
 
   const acceptance =
     breakoutAcceptance(
@@ -3354,335 +2380,151 @@ function analyze(
       atrPct
     );
 
-  const v5 =
+  const score =
     buildV5Score({
       arr,
-
-      x:
-        current,
-
+      x: current,
       e20,
-
       e50,
-
       momentum,
-
       atrPct,
-
       volumeRatio,
-
       volumeAccel,
-
       takerRatio,
-
       flowMomentum,
-
       emaDistance,
-
       ext5,
-
       ext10,
-
       marketStructure,
-
       acceptance,
-
       bodyRatio,
-
       upperWickRatio,
-
       closeLocation
     });
 
-  const hardBlocks =
-    [];
+  let threshold =
+    C.minEdgeScoreDefensive;
 
   if (
-    !bullish
+    marketRegime.regime ===
+    'RISK_ON'
   ) {
-    hardBlocks.push(
-      'NOT_BULLISH'
-    );
+    threshold =
+      C.minEdgeScoreRiskOn;
+
+  } else if (
+    marketRegime.regime ===
+    'NEUTRAL'
+  ) {
+    threshold =
+      C.minEdgeScoreNeutral;
   }
 
-  if (
-    !(
+  const hardChecks = {
+    bullish,
+
+    trend:
       current.close >
         e20 &&
       e20 >
-        e50
-    )
-  ) {
-    hardBlocks.push(
-      'TREND_FAIL'
-    );
-  }
+        e50,
 
-  if (
-    marketStructure ===
-    'BEARISH'
-  ) {
-    hardBlocks.push(
-      'BEARISH_STRUCTURE'
-    );
-  }
+    cmo:
+      momentum >=
+        C.cmoSoftMin &&
+      momentum <=
+        C.cmoSoftMax,
 
-  if (
-    momentum <
-      C.cmoSoftMin ||
-    momentum >
-      C.cmoSoftMax
-  ) {
-    hardBlocks.push(
-      'CMO_OUTSIDE'
-    );
-  }
+    atr:
+      atrPct >=
+        C.minAtrPct &&
+      atrPct <=
+        C.maxAtrPct,
 
-  if (
-    atrPct <
-      C.minAtrPct ||
-    atrPct >
-      C.maxAtrPct
-  ) {
-    hardBlocks.push(
-      'ATR_OUTSIDE'
-    );
-  }
+    volume:
+      volumeRatio >=
+        C.minVolumeRatio &&
+      volumeRatio <=
+        C.maxVolumeRatio,
 
-  if (
-    volumeRatio <
-      C.minVolumeRatio ||
-    volumeRatio >
-      C.maxVolumeRatio
-  ) {
-    hardBlocks.push(
-      'VOLUME_OUTSIDE'
-    );
-  }
+    noClimax:
+      volumeAccel <=
+        C.volumeClimaxAcceleration,
 
-  if (
-    volumeAccel >
-    C.volumeClimaxAcceleration
-  ) {
-    hardBlocks.push(
-      'VOLUME_CLIMAX'
-    );
-  }
+    noEmaChase:
+      emaDistance <=
+        C.maxEmaDistancePct,
 
-  if (
-    emaDistance >
-    C.maxEmaDistancePct
-  ) {
-    hardBlocks.push(
-      'EMA_CHASE'
-    );
-  }
+    noExt5Chase:
+      ext5 <=
+        C.maxExt5Pct,
 
-  if (
-    ext5 >
-    C.maxExt5Pct
-  ) {
-    hardBlocks.push(
-      'EXT5_CHASE'
-    );
-  }
+    noExt10Chase:
+      ext10 <=
+        C.maxExt10Pct,
 
-  if (
-    ext10 >
-    C.maxExt10Pct
-  ) {
-    hardBlocks.push(
-      'EXT10_CHASE'
-    );
-  }
+    freshness:
+      score.freshnessScore >=
+        C.minFreshnessScore,
 
-  if (
-    takerRatio !==
-      null &&
-    takerRatio <
-      C.minTakerBuyRatio
-  ) {
-    hardBlocks.push(
-      'FLOW_WEAK'
-    );
-  }
+    flow:
+      score.flowScore >=
+        C.minFlowScore,
 
-  if (
-    flowMomentum !==
-      null &&
-    flowMomentum <
-      C.minFlowMomentum
-  ) {
-    hardBlocks.push(
-      'FLOW_MOMENTUM_WEAK'
-    );
-  }
+    breakout:
+      acceptance.accepted,
 
-  if (
-    v5.freshnessScore <
-    C.minFreshnessScore
-  ) {
-    hardBlocks.push(
-      'STALE_MOMENTUM'
-    );
-  }
-
-  if (
-    v5.flowScore <
-    C.minFlowScore
-  ) {
-    hardBlocks.push(
-      'FLOW_SCORE_LOW'
-    );
-  }
-
-  const threshold =
-    marketRegime.regime ===
-      'RISK_ON'
-      ? C.minEdgeScoreRiskOn
-      : marketRegime.regime ===
-          'NEUTRAL'
-        ? C.minEdgeScoreNeutral
-        : C.minEdgeScoreDefensive;
-
-  if (
-    v5.edgeScore <
-    threshold
-  ) {
-    hardBlocks.push(
-      'EDGE_SCORE_LOW'
-    );
-  }
-
-  if (
-    marketRegime.regime ===
-      'DEFENSIVE' &&
-    !v5.shadowEdge
-  ) {
-    hardBlocks.push(
-      'DEFENSIVE_NO_ELITE_EDGE'
-    );
-  }
-
-  const nearBreakout =
-    acceptance.breakoutPct >=
-    -0.20;
-
-  if (
-    !acceptance.accepted &&
-    !(
-      nearBreakout &&
-      v5.shadowEdge
-    )
-  ) {
-    hardBlocks.push(
-      'NO_BREAKOUT_ACCEPTANCE'
-    );
-  }
+    score:
+      score.edgeScore >=
+        threshold
+  };
 
   const eligible =
-    hardBlocks.length ===
-    0;
-
-  const grade =
-    (
-      v5.edgeScore >=
-        84 &&
-      v5.freshnessScore >=
-        75 &&
-      v5.flowScore >=
-        75
-    )
-      ? 'A'
-      : v5.edgeScore >=
-          72
-        ? 'B'
-        : 'C';
+    Object.values(
+      hardChecks
+    ).every(Boolean);
 
   return {
     symbol,
 
-    eligible,
-
-    grade,
-
-    score:
-      v5.edgeScore,
-
-    edgeScore:
-      v5.edgeScore,
-
-    trendScore:
-      v5.trendScore,
-
-    freshnessScore:
-      v5.freshnessScore,
-
-    flowScore:
-      v5.flowScore,
-
-    momentumScore:
-      v5.momentumScore,
-
-    volatilityScore:
-      v5.volatilityScore,
-
-    structureScore:
-      v5.structureScore,
-
-    regimeScore:
-      v5.regimeScore,
-
-    shadowEdge:
-      v5.shadowEdge,
+    closeTime:
+      current.closeTime,
 
     price:
       current.close,
 
-    bullish,
+    quoteVolume:
+      tickers.get(symbol)
+        ?.quoteVolume ||
+      current.quoteVolume ||
+      0,
 
-    bodyRatio,
+    e20,
+    e50,
 
-    upperWickRatio,
-
-    closeLocation,
-
-    ema20:
-      e20,
-
-    ema50:
-      e50,
-
-    emaDistance,
-
-    cmo:
-      momentum,
-
-    atr:
-      atrValue,
+    momentum,
 
     atrPct,
 
     volumeRatio,
 
-    volumeAcceleration:
-      volumeAccel,
+    volumeAccel,
 
-    priceAcceleration:
-      priceAccel,
+    priceAccel,
 
-    takerBuyRatio:
-      takerRatio,
+    takerRatio,
 
-    orderFlowMomentum:
-      flowMomentum,
+    flowMomentum,
 
-    structure:
-      marketStructure,
+    emaDistance,
+
+    ext5,
+
+    ext10,
+
+    marketStructure,
 
     resistance,
-
-    support,
 
     breakoutPct:
       acceptance.breakoutPct,
@@ -3690,12 +2532,25 @@ function analyze(
     breakoutAcceptance:
       acceptance.score,
 
-    acceptanceReasons:
+    breakoutReasons:
       acceptance.reasons,
 
-    ext5,
+    bodyRatio,
 
-    ext10,
+    upperWickRatio,
+
+    closeLocation,
+
+    threshold,
+
+    eligible,
+
+    hardChecks,
+
+    ...score,
+
+    session:
+      sessionUTC(),
 
     regime:
       marketRegime.regime,
@@ -3703,277 +2558,302 @@ function analyze(
     breadth:
       marketRegime.breadth,
 
-    marketOverextended:
-      marketRegime.overextended,
+    btcBullish:
+      marketRegime.btcBullish,
 
-    btcFreshness:
-      marketRegime.btcFreshness,
-
-    reasons:
-      v5.reasons,
-
-    warnings: [
-      ...v5.warnings,
-      ...hardBlocks
-    ]
+    createdAt:
+      Date.now()
   };
 }
 
 // ============================================================
-// CANDIDATE RANKING
+// ANALYSIS JOURNAL
 // ============================================================
 
-function candidateRank(
-  candidate
+function compactAnalysisRow(
+  result
 ) {
-  let rank =
-    candidate.edgeScore +
-    candidate.freshnessScore *
-      0.18 +
-    candidate.flowScore *
-      0.18 +
-    candidate.structureScore *
-      0.10;
-
-  if (
-    candidate.shadowEdge
-  ) {
-    rank +=
-      10;
-  }
-
-  if (
-    candidate.breakoutAcceptance >=
-    C.eliteBreakoutAcceptance
-  ) {
-    rank +=
-      5;
-  }
-
-  if (
-    candidate.cmo >=
-      52 &&
-    candidate.cmo <=
-      62
-  ) {
-    rank +=
-      4;
-  }
-
-  if (
-    candidate.takerBuyRatio !==
-      null &&
-    candidate.takerBuyRatio >=
-      0.85
-  ) {
-    rank +=
-      5;
-  }
-
-  if (
-    candidate.volumeAcceleration >
-    2.5
-  ) {
-    rank -=
-      5;
-  }
-
-  if (
-    candidate.marketOverextended
-  ) {
-    rank -=
-      8;
-  }
-
-  return rank;
-}
-
-// ============================================================
-// REVALIDATION
-// ============================================================
-
-function revalidateCandidate(
-  candidate,
-  price
-) {
-  const blockers =
-    [];
-
-  if (
-    !candidate ||
-    !price
-  ) {
-    return {
-      valid:
-        false,
-
-      blockers: [
-        'MISSING_DATA'
-      ],
-
-      drift:
-        0
-    };
-  }
-
-  if (
-    Date.now() >
-    candidate.expiresAt
-  ) {
-    blockers.push(
-      'EXPIRED'
-    );
-  }
-
-  const drift =
-    pct(
-      price -
-      candidate.signalPrice,
-
-      candidate.signalPrice
-    );
-
-  if (
-    Math.abs(
-      drift
-    ) >
-    C.maxPriceDriftPct
-  ) {
-    blockers.push(
-      'PRICE_DRIFT'
-    );
-  }
-
-  if (
-    drift >
-    C.liveChasePct
-  ) {
-    blockers.push(
-      'LIVE_CHASE'
-    );
-  }
-
-  if (
-    drift <
-    -0.28
-  ) {
-    blockers.push(
-      'SIGNAL_FAILURE'
-    );
-  }
-
-  if (
-    symbolCooling(
-      candidate.symbol
-    )
-  ) {
-    blockers.push(
-      'SYMBOL_COOLDOWN'
-    );
-  }
-
-  if (
-    candidate.freshnessScore <
-    C.minFreshnessScore
-  ) {
-    blockers.push(
-      'STALE'
-    );
-  }
-
   return {
-    valid:
-      blockers.length ===
-      0,
+    type:
+      'ANALYSIS',
 
-    blockers,
+    symbol:
+      result.symbol,
 
-    drift
+    eligible:
+      result.eligible,
+
+    edgeScore:
+      result.edgeScore,
+
+    threshold:
+      result.threshold,
+
+    cmo:
+      +n(
+        result.momentum
+      ).toFixed(2),
+
+    atrPct:
+      +n(
+        result.atrPct
+      ).toFixed(4),
+
+    volumeRatio:
+      +n(
+        result.volumeRatio
+      ).toFixed(3),
+
+    volumeAccel:
+      +n(
+        result.volumeAccel
+      ).toFixed(3),
+
+    takerBuy:
+      result.takerRatio ===
+      null
+        ? null
+        : +result.takerRatio.toFixed(
+            4
+          ),
+
+    flowMomentum:
+      result.flowMomentum ===
+      null
+        ? null
+        : +result.flowMomentum.toFixed(
+            4
+          ),
+
+    emaDistance:
+      +n(
+        result.emaDistance
+      ).toFixed(4),
+
+    ext5:
+      +n(
+        result.ext5
+      ).toFixed(4),
+
+    breakoutAcceptance:
+      result.breakoutAcceptance,
+
+    freshnessScore:
+      result.freshnessScore,
+
+    flowScore:
+      result.flowScore,
+
+    shadowEdge:
+      result.shadowEdge,
+
+    regime:
+      result.regime,
+
+    session:
+      result.session
   };
+}
+
+function journalAnalysis(
+  result
+) {
+  if (
+    result.eligible ||
+    result.shadowEdge
+  ) {
+    cloudJournal(
+      compactAnalysisRow(
+        result
+      )
+    );
+
+    return;
+  }
+
+  if (
+    Math.random() <
+    C.analysisJournalSampleRate
+  ) {
+    cloudJournal(
+      compactAnalysisRow(
+        result
+      )
+    );
+
+  } else {
+
+    networkMeter
+      .skippedAnalysisLogs++;
+  }
 }
 
 // ============================================================
 // CANDIDATE POOL
 // ============================================================
 
-function addCandidate(
-  symbol,
-  analysis,
-  closeTime
+function candidateRank(
+  x
 ) {
-  const now =
-    Date.now();
+  let score =
+    x.edgeScore;
 
-  const price =
-    tickers.get(
-      symbol
-    )?.price ||
-    analysis.price;
+  score +=
+    x.freshnessScore *
+    0.08;
+
+  score +=
+    x.flowScore *
+    0.10;
+
+  score +=
+    x.breakoutAcceptance *
+    0.06;
+
+  if (
+    x.shadowEdge
+  ) {
+    score +=
+      7;
+  }
+
+  if (
+    x.takerRatio !==
+      null &&
+    x.takerRatio >=
+      C.eliteTakerBuyRatio
+  ) {
+    score +=
+      4;
+  }
+
+  if (
+    x.momentum >=
+      C.cmoCoreMin &&
+    x.momentum <=
+      C.cmoCoreMax
+  ) {
+    score +=
+      4;
+  }
+
+  return score;
+}
+
+function addCandidate(
+  result
+) {
+  if (
+    !result ||
+    !result.eligible
+  ) {
+    return;
+  }
+
+  if (
+    positions[
+      result.symbol
+    ]
+  ) {
+    return;
+  }
+
+  if (
+    symbolCooling(
+      result.symbol
+    )
+  ) {
+    return;
+  }
+
+  const candidate = {
+    ...result,
+
+    rank:
+      candidateRank(
+        result
+      ),
+
+    candidateAt:
+      Date.now(),
+
+    referencePrice:
+      result.price
+  };
 
   candidatePool.set(
-    symbol,
-
-    {
-      ...analysis,
-
-      signalPrice:
-        price,
-
-      closeTime,
-
-      createdAt:
-        now,
-
-      expiresAt:
-        now +
-        C.candidateExpiryMs
-    }
+    result.symbol,
+    candidate
   );
 
   cloudJournal({
     type:
       'CANDIDATE',
 
-    symbol,
+    symbol:
+      result.symbol,
+
+    price:
+      result.price,
 
     edgeScore:
-      analysis.edgeScore,
+      result.edgeScore,
 
-    grade:
-      analysis.grade,
-
-    shadowEdge:
-      analysis.shadowEdge,
-
-    freshnessScore:
-      analysis.freshnessScore,
-
-    flowScore:
-      analysis.flowScore,
+    rank:
+      candidate.rank,
 
     cmo:
-      analysis.cmo,
-
-    takerBuyRatio:
-      analysis.takerBuyRatio,
+      result.momentum,
 
     atrPct:
-      analysis.atrPct,
+      result.atrPct,
 
-    volumeRatio:
-      analysis.volumeRatio,
+    takerBuy:
+      result.takerRatio,
 
-    volumeAcceleration:
-      analysis.volumeAcceleration,
+    flowMomentum:
+      result.flowMomentum,
+
+    freshnessScore:
+      result.freshnessScore,
 
     breakoutAcceptance:
-      analysis.breakoutAcceptance,
+      result.breakoutAcceptance,
+
+    shadowEdge:
+      result.shadowEdge,
 
     regime:
-      analysis.regime
+      result.regime,
+
+    session:
+      result.session
   });
 
   scheduleRanking();
+}
+
+function purgeCandidates() {
+  const now =
+    Date.now();
+
+  for (
+    const [
+      symbol,
+      candidate
+    ]
+    of candidatePool
+  ) {
+    if (
+      now -
+        candidate.candidateAt >
+      C.candidateExpiryMs
+    ) {
+      candidatePool.delete(
+        symbol
+      );
+    }
+  }
 }
 
 function scheduleRanking() {
@@ -3985,82 +2865,461 @@ function scheduleRanking() {
 
   rankTimer =
     setTimeout(
-      () => {
+      async () => {
         rankTimer =
           null;
 
-        rankAndExecute();
-      },
+        await processCandidates();
 
-      1200
+      },
+      1500
     );
 }
 
-function rankAndExecute() {
+// ============================================================
+// POSITION SIZE
+// ============================================================
+
+function positionAllocation() {
+  const open =
+    Object.keys(
+      positions
+    ).length;
+
+  const slots =
+    Math.max(
+      1,
+      C.maxPositions -
+        open
+    );
+
+  const available =
+    Math.max(
+      0,
+      cash
+    );
+
+  const base =
+    available /
+    Math.max(
+      slots,
+      1
+    );
+
+  const cap =
+    equity() /
+    C.maxPositions;
+
+  return Math.min(
+    base,
+    cap
+  );
+}
+
+// ============================================================
+// ENTRY
+// ============================================================
+
+async function openPaperTrade(
+  candidate,
+  livePrice
+) {
+  if (
+    !C.paperTrading
+  ) {
+    return false;
+  }
+
+  if (
+    positions[
+      candidate.symbol
+    ]
+  ) {
+    return false;
+  }
+
+  if (
+    Object.keys(
+      positions
+    ).length >=
+    C.maxPositions
+  ) {
+    return false;
+  }
+
+  const allocation =
+    positionAllocation();
+
+  if (
+    allocation <
+    10
+  ) {
+    return false;
+  }
+
+  const entryPrice =
+    livePrice *
+    (
+      1 +
+      C.slippagePct
+    );
+
+  const stopPct =
+    clamp(
+      (
+        candidate.atrPct /
+        100
+      ) *
+      C.atrStopMultiplier,
+
+      C.minStopPct,
+
+      C.maxStopPct
+    );
+
+  const riskPerUnit =
+    entryPrice *
+    stopPct;
+
+  const stopLoss =
+    entryPrice -
+    riskPerUnit;
+
+  const takeProfit =
+    entryPrice +
+    riskPerUnit *
+      C.rewardRisk;
+
+  const entryFee =
+    allocation *
+    C.feePct;
+
+  const spend =
+    allocation -
+    entryFee;
+
+  if (
+    spend <=
+    0 ||
+    cash <
+      allocation
+  ) {
+    return false;
+  }
+
+  const qty =
+    spend /
+    entryPrice;
+
+  cash -=
+    allocation;
+
+  const id =
+    `${candidate.symbol}-${Date.now()}`;
+
+  positions[
+    candidate.symbol
+  ] = {
+    id,
+
+    symbol:
+      candidate.symbol,
+
+    entryTime:
+      Date.now(),
+
+    entryPrice,
+
+    qty,
+
+    allocation,
+
+    entryFee,
+
+    stopLoss,
+
+    takeProfit,
+
+    initialStop:
+      stopLoss,
+
+    initialRisk:
+      entryPrice -
+      stopLoss,
+
+    lastPrice:
+      entryPrice,
+
+    highestPrice:
+      entryPrice,
+
+    mfePct:
+      0,
+
+    maePct:
+      0,
+
+    breakEven:
+      false,
+
+    trailing:
+      false,
+
+    profitLocked:
+      false,
+
+    entrySnapshot: {
+      edgeScore:
+        candidate.edgeScore,
+
+      rank:
+        candidate.rank,
+
+      cmo:
+        candidate.momentum,
+
+      atrPct:
+        candidate.atrPct,
+
+      volumeRatio:
+        candidate.volumeRatio,
+
+      volumeAccel:
+        candidate.volumeAccel,
+
+      takerBuy:
+        candidate.takerRatio,
+
+      flowMomentum:
+        candidate.flowMomentum,
+
+      emaDistance:
+        candidate.emaDistance,
+
+      ext5:
+        candidate.ext5,
+
+      ext10:
+        candidate.ext10,
+
+      breakoutAcceptance:
+        candidate.breakoutAcceptance,
+
+      freshnessScore:
+        candidate.freshnessScore,
+
+      flowScore:
+        candidate.flowScore,
+
+      shadowEdge:
+        candidate.shadowEdge,
+
+      regime:
+        candidate.regime,
+
+      breadth:
+        candidate.breadth,
+
+      btcBullish:
+        candidate.btcBullish,
+
+      session:
+        candidate.session
+    }
+  };
+
+  entriesSinceCooldown++;
+
+  await cloudJournal({
+    type:
+      'ENTRY',
+
+    id,
+
+    symbol:
+      candidate.symbol,
+
+    entryPrice,
+
+    allocation,
+
+    qty,
+
+    stopLoss,
+
+    takeProfit,
+
+    ...positions[
+      candidate.symbol
+    ].entrySnapshot
+  });
+
+  tg(
+    `🟢 <b>LOMY V5.1 PAPER BUY</b>
+${candidate.symbol}
+Entry: ${entryPrice.toFixed(8)}
+Score: ${candidate.edgeScore}
+Fresh: ${candidate.freshnessScore}
+Flow: ${candidate.flowScore}
+CMO: ${candidate.momentum.toFixed(1)}
+ATR: ${candidate.atrPct.toFixed(3)}%
+Taker: ${
+      candidate.takerRatio ===
+      null
+        ? 'N/A'
+        : (
+            candidate.takerRatio *
+            100
+          ).toFixed(1) +
+          '%'
+    }
+Breakout: ${candidate.breakoutAcceptance}
+Regime: ${candidate.regime}
+SL: ${stopLoss.toFixed(8)}
+TP: ${takeProfit.toFixed(8)}`
+  );
+
+  await saveCloudState();
+
+  return true;
+}
+
+// ============================================================
+// RANK / REVALIDATE / EXECUTE
+// ============================================================
+
+async function processCandidates() {
+  checkDay();
+
+  purgeCandidates();
+
   if (
     manualPause ||
     dailyPause ||
     cooldownActive()
   ) {
-    candidatePool.clear();
-
     return;
   }
 
-  const freeSlots =
-    C.maxPositions -
+  if (
+    !marketRegime.ready
+  ) {
+    return;
+  }
+
+  const openCount =
     Object.keys(
       positions
     ).length;
 
   if (
-    freeSlots <=
-    0
+    openCount >=
+    C.maxPositions
   ) {
-    candidatePool.clear();
-
     return;
   }
 
-  const valid =
-    [];
+  const sorted =
+    [...candidatePool.values()]
+      .sort(
+        (
+          a,
+          b
+        ) =>
+          b.rank -
+          a.rank
+      );
+
+  let opened =
+    0;
 
   for (
     const candidate
-    of candidatePool.values()
+    of sorted
   ) {
-    const price =
-      tickers.get(
-        candidate.symbol
-      )?.price;
+    if (
+      opened >=
+      C.maxEntriesPerCycle
+    ) {
+      break;
+    }
 
     if (
-      !price
+      Object.keys(
+        positions
+      ).length >=
+      C.maxPositions
+    ) {
+      break;
+    }
+
+    const symbol =
+      candidate.symbol;
+
+    if (
+      positions[
+        symbol
+      ] ||
+      symbolCooling(
+        symbol
+      )
+    ) {
+      candidatePool.delete(
+        symbol
+      );
+
+      continue;
+    }
+
+    const ticker =
+      tickers.get(
+        symbol
+      );
+
+    if (
+      !ticker ||
+      !ticker.price
     ) {
       continue;
     }
 
-    const validation =
-      revalidateCandidate(
-        candidate,
-        price
+    const livePrice =
+      ticker.price;
+
+    const drift =
+      Math.abs(
+        pct(
+          livePrice -
+            candidate.referencePrice,
+          candidate.referencePrice
+        )
+      );
+
+    const chase =
+      pct(
+        livePrice -
+          candidate.referencePrice,
+        candidate.referencePrice
       );
 
     if (
-      !validation.valid
+      drift >
+      C.maxPriceDriftPct
     ) {
-      cloudJournal({
+      candidatePool.delete(
+        symbol
+      );
+
+      await cloudJournal({
         type:
-          'REVALIDATION_REJECT',
+          'RANK_REJECT',
 
-        symbol:
-          candidate.symbol,
+        symbol,
 
-        blockers:
-          validation.blockers,
+        reason:
+          'PRICE_DRIFT',
 
-        drift:
-          validation.drift,
+        drift,
 
         edgeScore:
           candidate.edgeScore
@@ -4070,402 +3329,85 @@ function rankAndExecute() {
     }
 
     if (
-      !positions[
-        candidate.symbol
-      ]
+      chase >
+      C.liveChasePct
     ) {
-      valid.push({
-        candidate,
+      candidatePool.delete(
+        symbol
+      );
 
-        price,
+      await cloudJournal({
+        type:
+          'RANK_REJECT',
 
-        rank:
-          candidateRank(
-            candidate
-          )
+        symbol,
+
+        reason:
+          'LIVE_CHASE',
+
+        chase,
+
+        edgeScore:
+          candidate.edgeScore
       });
+
+      continue;
     }
-  }
 
-  candidatePool.clear();
+    const arr =
+      candles[
+        symbol
+      ];
 
-  valid.sort(
-    (
-      a,
-      b
-    ) =>
-      b.rank -
-      a.rank
-  );
-
-  let opened =
-    0;
-
-  for (
-    const opportunity
-    of valid
-  ) {
     if (
-      opened >=
-      Math.min(
-        C.maxEntriesPerCycle,
-        freeSlots
-      )
+      !arr ||
+      arr.length <
+        C.warmupCandles
     ) {
-      break;
+      continue;
     }
 
+    const fresh =
+      analyze(
+        arr,
+        symbol
+      );
+
     if (
-      openTrade(
-        opportunity.candidate,
-        opportunity.price
-      )
+      !fresh ||
+      !fresh.eligible
+    ) {
+      candidatePool.delete(
+        symbol
+      );
+
+      continue;
+    }
+
+    const success =
+      await openPaperTrade(
+        {
+          ...fresh,
+
+          rank:
+            candidateRank(
+              fresh
+            )
+        },
+
+        livePrice
+      );
+
+    candidatePool.delete(
+      symbol
+    );
+
+    if (
+      success
     ) {
       opened++;
     }
   }
-}
-
-// ============================================================
-// PAPER ENTRY
-// ============================================================
-
-function openTrade(
-  candidate,
-  marketPrice
-) {
-  if (
-    manualPause ||
-    dailyPause ||
-    cooldownActive() ||
-    positions[
-      candidate.symbol
-    ] ||
-    symbolCooling(
-      candidate.symbol
-    ) ||
-    Object.keys(
-      positions
-    ).length >=
-      C.maxPositions
-  ) {
-    return false;
-  }
-
-  const validation =
-    revalidateCandidate(
-      candidate,
-      marketPrice
-    );
-
-  if (
-    !validation.valid
-  ) {
-    return false;
-  }
-
-  const entry =
-    marketPrice *
-    (
-      1 +
-      C.slippagePct
-    );
-
-  const stopPct =
-    clamp(
-      (
-        candidate.atr *
-        C.atrStopMultiplier
-      ) /
-      entry,
-
-      C.minStopPct,
-
-      C.maxStopPct
-    );
-
-  const targetPct =
-    stopPct *
-    C.rewardRisk;
-
-  const allocation =
-    Math.min(
-      equity() /
-      C.maxPositions,
-
-      cash
-    );
-
-  if (
-    allocation <
-    50
-  ) {
-    return false;
-  }
-
-  const buyFee =
-    allocation *
-    C.feePct;
-
-  const qty =
-    (
-      allocation -
-      buyFee
-    ) /
-    entry;
-
-  cash -=
-    allocation;
-
-  stats.fees +=
-    buyFee;
-
-  positions[
-    candidate.symbol
-  ] = {
-    symbol:
-      candidate.symbol,
-
-    entryPrice:
-      entry,
-
-    qty,
-
-    invested:
-      allocation,
-
-    initialStopPct:
-      stopPct,
-
-    stopLoss:
-      entry *
-      (
-        1 -
-        stopPct
-      ),
-
-    takeProfit:
-      entry *
-      (
-        1 +
-        targetPct
-      ),
-
-    riskPrice:
-      entry *
-      stopPct,
-
-    lastPrice:
-      marketPrice,
-
-    highestPrice:
-      marketPrice,
-
-    lowestPrice:
-      marketPrice,
-
-    mfePct:
-      0,
-
-    maePct:
-      0,
-
-    breakEvenMoved:
-      false,
-
-    trailingActive:
-      false,
-
-    profitLockActive:
-      false,
-
-    edgeScore:
-      candidate.edgeScore,
-
-    grade:
-      candidate.grade,
-
-    shadowEdge:
-      candidate.shadowEdge,
-
-    trendScore:
-      candidate.trendScore,
-
-    freshnessScore:
-      candidate.freshnessScore,
-
-    flowScore:
-      candidate.flowScore,
-
-    momentumScore:
-      candidate.momentumScore,
-
-    volatilityScore:
-      candidate.volatilityScore,
-
-    structureScore:
-      candidate.structureScore,
-
-    regimeScore:
-      candidate.regimeScore,
-
-    cmo:
-      candidate.cmo,
-
-    volumeRatio:
-      candidate.volumeRatio,
-
-    volumeAcceleration:
-      candidate.volumeAcceleration,
-
-    priceAcceleration:
-      candidate.priceAcceleration,
-
-    takerBuyRatio:
-      candidate.takerBuyRatio,
-
-    orderFlowMomentum:
-      candidate.orderFlowMomentum,
-
-    emaDistance:
-      candidate.emaDistance,
-
-    breakoutPct:
-      candidate.breakoutPct,
-
-    breakoutAcceptance:
-      candidate.breakoutAcceptance,
-
-    atrPct:
-      candidate.atrPct,
-
-    ext5:
-      candidate.ext5,
-
-    ext10:
-      candidate.ext10,
-
-    resistance:
-      candidate.resistance,
-
-    support:
-      candidate.support,
-
-    regime:
-      candidate.regime,
-
-    breadth:
-      candidate.breadth,
-
-    marketOverextended:
-      candidate.marketOverextended,
-
-    session:
-      sessionUTC(),
-
-    signalPrice:
-      candidate.signalPrice,
-
-    signalAgeMs:
-      Date.now() -
-      candidate.createdAt,
-
-    entryDriftPct:
-      validation.drift,
-
-    reasons:
-      candidate.reasons,
-
-    warnings:
-      candidate.warnings,
-
-    entryTime:
-      Date.now()
-  };
-
-  entriesSinceCooldown++;
-
-  cloudJournal({
-    type:
-      'ENTRY',
-
-    symbol:
-      candidate.symbol,
-
-    edgeScore:
-      candidate.edgeScore,
-
-    grade:
-      candidate.grade,
-
-    shadowEdge:
-      candidate.shadowEdge,
-
-    entry,
-
-    stopPct,
-
-    targetPct,
-
-    freshnessScore:
-      candidate.freshnessScore,
-
-    flowScore:
-      candidate.flowScore,
-
-    cmo:
-      candidate.cmo,
-
-    takerBuyRatio:
-      candidate.takerBuyRatio,
-
-    atrPct:
-      candidate.atrPct,
-
-    volumeAcceleration:
-      candidate.volumeAcceleration,
-
-    breakoutAcceptance:
-      candidate.breakoutAcceptance,
-
-    regime:
-      candidate.regime
-  });
-
-  tg(
-    `🟢 <b>LOMY V5.1 BUY</b>
-<b>${candidate.symbol}</b>
-Edge: ${candidate.edgeScore}/100 | ${candidate.grade}
-Fresh: ${candidate.freshnessScore} | Flow: ${candidate.flowScore}
-CMO: ${candidate.cmo.toFixed(
-      1
-    )} | ATR: ${candidate.atrPct.toFixed(
-      2
-    )}%
-Buy Flow: ${
-      candidate.takerBuyRatio ===
-      null
-        ? 'N/A'
-        : (
-            candidate.takerBuyRatio *
-            100
-          ).toFixed(
-            1
-          ) +
-          '%'
-    }
-Acceptance: ${candidate.breakoutAcceptance}
-Shadow Edge: ${
-      candidate.shadowEdge
-        ? 'YES'
-        : 'NO'
-    }
-Entry: ${entry.toFixed(
-      8
-    )}`
-  );
-
-  saveCloudState();
 
   if (
     entriesSinceCooldown >=
@@ -4473,374 +3415,128 @@ Entry: ${entry.toFixed(
   ) {
     startCooldown(
       C.batchCooldownMs,
-      'V5.1_BATCH'
+      'ENTRY_BATCH_LIMIT'
     );
   }
-
-  return true;
 }
 
 // ============================================================
 // POSITION MANAGEMENT
 // ============================================================
 
-function managePosition(
-  symbol,
+function positionR(
+  position,
   price
 ) {
-  const position =
-    positions[
-      symbol
-    ];
-
   if (
-    !position ||
-    position.closing
+    !position.initialRisk
   ) {
-    return;
+    return 0;
   }
 
-  position.lastPrice =
-    price;
-
-  position.highestPrice =
-    Math.max(
-      position.highestPrice,
-      price
-    );
-
-  position.lowestPrice =
-    Math.min(
-      position.lowestPrice,
-      price
-    );
-
-  position.mfePct =
-    Math.max(
-      position.mfePct,
-
-      pct(
-        position.highestPrice -
-        position.entryPrice,
-
-        position.entryPrice
-      )
-    );
-
-  position.maePct =
-    Math.min(
-      position.maePct,
-
-      pct(
-        position.lowestPrice -
-        position.entryPrice,
-
-        position.entryPrice
-      )
-    );
-
-  const move =
+  return (
     price -
-    position.entryPrice;
-
-  const movePct =
-    pct(
-      move,
-      position.entryPrice
-    );
-
-  const r =
-    position.riskPrice
-      ? move /
-        position.riskPrice
-      : 0;
-
-  // ----------------------------------------------------------
-  // PROFIT LOCK
-  // ----------------------------------------------------------
-
-  if (
-    !position.profitLockActive &&
-    position.mfePct >=
-      C.profitLockMfePct
-  ) {
-    position.profitLockActive =
-      true;
-
-    position.stopLoss =
-      Math.max(
-        position.stopLoss,
-
-        position.entryPrice *
-        (
-          1 +
-          C.profitLockBufferPct
-        )
-      );
-
-    stats.profitLocks++;
-
-    cloudJournal({
-      type:
-        'PROFIT_LOCK',
-
-      symbol,
-
-      mfePct:
-        position.mfePct,
-
-      newStop:
-        position.stopLoss
-    });
-  }
-
-  // ----------------------------------------------------------
-  // BREAK EVEN
-  // ----------------------------------------------------------
-
-  if (
-    !position.breakEvenMoved &&
-    r >=
-      C.breakEvenAtR
-  ) {
-    position.breakEvenMoved =
-      true;
-
-    position.stopLoss =
-      Math.max(
-        position.stopLoss,
-
-        position.entryPrice *
-        (
-          1 +
-          C.breakEvenBufferPct
-        )
-      );
-
-    stats.breakEvenMoves++;
-
-    cloudJournal({
-      type:
-        'BREAK_EVEN_MOVE',
-
-      symbol,
-
-      r,
-
-      mfePct:
-        position.mfePct,
-
-      stop:
-        position.stopLoss
-    });
-  }
-
-  // ----------------------------------------------------------
-  // TRAILING
-  // ----------------------------------------------------------
-
-  if (
-    r >=
-    C.trailAtR
-  ) {
-    if (
-      !position.trailingActive
-    ) {
-      position.trailingActive =
-        true;
-
-      stats.trailingActivations++;
-
-      cloudJournal({
-        type:
-          'TRAIL_ACTIVATED',
-
-        symbol,
-
-        r,
-
-        mfePct:
-          position.mfePct
-      });
-    }
-
-    position.stopLoss =
-      Math.max(
-        position.stopLoss,
-
-        position.highestPrice -
-        position.riskPrice *
-        C.trailLockR
-      );
-  }
-
-  // ----------------------------------------------------------
-  // STOP
-  // ----------------------------------------------------------
-
-  if (
-    price <=
-    position.stopLoss
-  ) {
-    let reason =
-      'STOP_LOSS';
-
-    if (
-      position.trailingActive
-    ) {
-      reason =
-        'TRAIL_STOP';
-
-    } else if (
-      position.breakEvenMoved
-    ) {
-      reason =
-        'BREAK_EVEN_STOP';
-
-    } else if (
-      position.profitLockActive
-    ) {
-      reason =
-        'PROFIT_LOCK_STOP';
-    }
-
-    closeTrade(
-      symbol,
-      price,
-      reason
-    );
-
-    return;
-  }
-
-  // ----------------------------------------------------------
-  // TAKE PROFIT
-  // ----------------------------------------------------------
-
-  if (
-    price >=
-    position.takeProfit
-  ) {
-    closeTrade(
-      symbol,
-      price,
-      'TAKE_PROFIT'
-    );
-
-    return;
-  }
-
-  // ----------------------------------------------------------
-  // EARLY FAILURE
-  // ----------------------------------------------------------
-
-  const age =
-    Date.now() -
-    position.entryTime;
-
-  const failedBreakout =
-    position.resistance
-      ? price <
-        position.resistance
-      : false;
-
-  const neverWorked =
-    position.mfePct <
-    C.earlyFailureMfeGuardPct;
-
-  if (
-    age <=
-      C.earlyFailureWindowMs &&
-    movePct <=
-      -(
-        C.earlyFailureLossPct *
-        100
-      ) &&
-    failedBreakout &&
-    neverWorked
-  ) {
-    closeTrade(
-      symbol,
-      price,
-      'EARLY_FAILURE'
-    );
-  }
+    position.entryPrice
+  ) /
+  position.initialRisk;
 }
 
-async function closeTrade(
+async function closePaperTrade(
   symbol,
-  marketPrice,
+  exitPriceRaw,
   reason
 ) {
-  const position =
+  const p =
     positions[
       symbol
     ];
 
   if (
-    !position ||
-    position.closing
+    !p
   ) {
     return;
   }
 
-  position.closing =
-    true;
-
-  const exit =
-    marketPrice *
+  const exitPrice =
+    exitPriceRaw *
     (
       1 -
       C.slippagePct
     );
 
-  const gross =
-    position.qty *
-    exit;
+  const grossValue =
+    p.qty *
+    exitPrice;
 
-  const fee =
-    gross *
+  const exitFee =
+    grossValue *
     C.feePct;
 
-  const net =
-    gross -
-    fee;
-
-  const profit =
-    net -
-    position.invested;
-
-  const profitPct =
-    pct(
-      profit,
-      position.invested
-    );
+  const netValue =
+    grossValue -
+    exitFee;
 
   cash +=
-    net;
+    netValue;
+
+  const totalFees =
+    p.entryFee +
+    exitFee;
+
+  const grossPnL =
+    (
+      exitPrice -
+      p.entryPrice
+    ) *
+    p.qty;
+
+  const netPnL =
+    netValue -
+    p.allocation;
+
+  const pnlPct =
+    p.allocation
+      ? (
+          netPnL /
+          p.allocation
+        ) *
+        100
+      : 0;
 
   stats.totalTrades++;
 
   stats.fees +=
-    fee;
+    totalFees;
 
   stats.netProfit +=
-    profit;
+    netPnL;
+
+  stats.bestTrade =
+    stats.totalTrades ===
+      1
+      ? netPnL
+      : Math.max(
+          stats.bestTrade,
+          netPnL
+        );
+
+  stats.worstTrade =
+    stats.totalTrades ===
+      1
+      ? netPnL
+      : Math.min(
+          stats.worstTrade,
+          netPnL
+        );
 
   if (
-    profit >
+    netPnL >
     0
   ) {
     stats.wins++;
 
     stats.grossProfit +=
-      profit;
-
-    stats.bestTrade =
-      Math.max(
-        stats.bestTrade,
-        profit
-      );
+      netPnL;
 
     lossStreak =
       0;
@@ -4851,30 +3547,15 @@ async function closeTrade(
 
     stats.grossLoss +=
       Math.abs(
-        profit
+        netPnL
       );
 
-    stats.worstTrade =
-      Math.min(
-        stats.worstTrade,
-        profit
-      );
+    lossStreak++;
 
-    if (
-      [
-        'STOP_LOSS',
-        'EARLY_FAILURE'
-      ].includes(
-        reason
-      )
-    ) {
-      lossStreak++;
-
-      lastLossBySymbol[
-        symbol
-      ] =
-        Date.now();
-    }
+    lastLossBySymbol[
+      symbol
+    ] =
+      Date.now();
   }
 
   if (
@@ -4885,40 +3566,69 @@ async function closeTrade(
   }
 
   dailyPnL +=
-    profit;
+    netPnL;
 
   const record = {
-    ...position,
+    id:
+      p.id,
 
-    exitPrice:
-      exit,
+    symbol,
 
-    profit,
+    entryTime:
+      p.entryTime,
 
-    profitPct,
+    exitTime:
+      Date.now(),
 
-    reason,
-
-    holdingMinutes:
+    holdMinutes:
       (
         Date.now() -
-        position.entryTime
+        p.entryTime
       ) /
       60000,
 
-    exitTime:
-      Date.now()
-  };
+    entryPrice:
+      p.entryPrice,
 
-  delete record.closing;
+    exitPrice,
+
+    qty:
+      p.qty,
+
+    allocation:
+      p.allocation,
+
+    grossPnL,
+
+    netPnL,
+
+    pnlPct,
+
+    totalFees,
+
+    reason,
+
+    mfePct:
+      p.mfePct,
+
+    maePct:
+      p.maePct,
+
+    breakEven:
+      p.breakEven,
+
+    trailing:
+      p.trailing,
+
+    profitLocked:
+      p.profitLocked,
+
+    ...p.entrySnapshot
+  };
 
   delete positions[
     symbol
   ];
-
-  updateDrawdown();
-
-  checkDailyLoss();
 
   await saveTrade(
     record
@@ -4931,65 +3641,321 @@ async function closeTrade(
     ...record
   });
 
-  await saveCloudState();
+  updateDrawdown();
 
-  tg(
-    `${
-      profit >=
-      0
-        ? '✅'
-        : '❌'
-    } <b>LOMY V5.1 CLOSE</b>
-<b>${symbol}</b>
-Reason: ${reason}
-PnL: $${profit.toFixed(
-      2
-    )} (${profitPct.toFixed(
-      2
-    )}%)
-MFE: ${position.mfePct.toFixed(
-      2
-    )}% | MAE: ${position.maePct.toFixed(
-      2
-    )}%
-Edge: ${position.edgeScore}`
-  );
+  checkDailyLoss();
 
   if (
     lossStreak >=
     C.lossStreakLimit
   ) {
-    lossStreak =
-      0;
-
     startCooldown(
       C.lossCooldownMs,
-      '3_LOSS_STREAK'
+      `LOSS_STREAK_${lossStreak}`
+    );
+  }
+
+  tg(
+    `${
+      netPnL >=
+      0
+        ? '✅'
+        : '🔴'
+    } <b>LOMY V5.1 PAPER CLOSE</b>
+${symbol}
+Reason: ${reason}
+PnL: $${netPnL.toFixed(2)} (${pnlPct.toFixed(2)}%)
+MFE: ${p.mfePct.toFixed(2)}%
+MAE: ${p.maePct.toFixed(2)}%
+Cash: $${cash.toFixed(2)}`
+  );
+
+  await saveCloudState();
+}
+
+async function managePosition(
+  symbol,
+  price
+) {
+  const p =
+    positions[
+      symbol
+    ];
+
+  if (
+    !p ||
+    !price
+  ) {
+    return;
+  }
+
+  p.lastPrice =
+    price;
+
+  p.highestPrice =
+    Math.max(
+      p.highestPrice ||
+        p.entryPrice,
+      price
+    );
+
+  const movePct =
+    pct(
+      price -
+        p.entryPrice,
+      p.entryPrice
+    );
+
+  p.mfePct =
+    Math.max(
+      p.mfePct || 0,
+      movePct
+    );
+
+  p.maePct =
+    Math.min(
+      p.maePct || 0,
+      movePct
+    );
+
+  const r =
+    positionR(
+      p,
+      price
+    );
+
+  if (
+    !p.profitLocked &&
+    p.mfePct >=
+      C.profitLockMfePct
+  ) {
+    const locked =
+      p.entryPrice *
+      (
+        1 +
+        C.profitLockBufferPct
+      );
+
+    if (
+      locked >
+      p.stopLoss
+    ) {
+      p.stopLoss =
+        locked;
+
+      p.profitLocked =
+        true;
+
+      stats.profitLocks++;
+
+      await cloudJournal({
+        type:
+          'PROFIT_LOCK',
+
+        symbol,
+
+        price,
+
+        newStop:
+          p.stopLoss,
+
+        mfePct:
+          p.mfePct
+      });
+    }
+  }
+
+  if (
+    !p.breakEven &&
+    r >=
+      C.breakEvenAtR
+  ) {
+    const be =
+      p.entryPrice *
+      (
+        1 +
+        C.breakEvenBufferPct
+      );
+
+    if (
+      be >
+      p.stopLoss
+    ) {
+      p.stopLoss =
+        be;
+
+      p.breakEven =
+        true;
+
+      stats.breakEvenMoves++;
+
+      await cloudJournal({
+        type:
+          'BREAK_EVEN',
+
+        symbol,
+
+        price,
+
+        newStop:
+          p.stopLoss,
+
+        r
+      });
+    }
+  }
+
+  if (
+    r >=
+    C.trailAtR
+  ) {
+    const trail =
+      p.entryPrice +
+      p.initialRisk *
+      C.trailLockR;
+
+    if (
+      trail >
+      p.stopLoss
+    ) {
+      p.stopLoss =
+        trail;
+
+      if (
+        !p.trailing
+      ) {
+        p.trailing =
+          true;
+
+        stats.trailingActivations++;
+      }
+
+      await cloudJournal({
+        type:
+          'TRAIL',
+
+        symbol,
+
+        price,
+
+        newStop:
+          p.stopLoss,
+
+        r
+      });
+    }
+  }
+
+  const age =
+    Date.now() -
+    p.entryTime;
+
+  if (
+    age <=
+      C.earlyFailureWindowMs &&
+    movePct <=
+      -C.earlyFailureLossPct *
+        100 &&
+    p.mfePct <
+      C.earlyFailureMfeGuardPct
+  ) {
+    await closePaperTrade(
+      symbol,
+      price,
+      'EARLY_FAILURE'
+    );
+
+    return;
+  }
+
+  if (
+    price <=
+    p.stopLoss
+  ) {
+    let reason =
+      'STOP_LOSS';
+
+    if (
+      p.trailing
+    ) {
+      reason =
+        'TRAIL_STOP';
+
+    } else if (
+      p.breakEven ||
+      p.profitLocked
+    ) {
+      reason =
+        'BREAK_EVEN_STOP';
+    }
+
+    await closePaperTrade(
+      symbol,
+      price,
+      reason
+    );
+
+    return;
+  }
+
+  if (
+    price >=
+    p.takeProfit
+  ) {
+    await closePaperTrade(
+      symbol,
+      price,
+      'TAKE_PROFIT'
     );
   }
 }
 
 // ============================================================
-// CLOSED CANDLE ANALYSIS
+// CLOSED CANDLE PROCESSING
 // ============================================================
 
-function analyzeClosed(
+async function processClosedCandle(
   symbol,
-  closeTime
+  candle
 ) {
-  const arr =
-    candles[
+  if (
+    !subscribed.has(
       symbol
-    ];
+    )
+  ) {
+    return;
+  }
+
+  mergeCandles(
+    symbol,
+    [candle]
+  );
 
   if (
-    !arr ||
-    arr.length <
-      C.warmupCandles ||
+    (
+      candles[
+        symbol
+      ]?.length ||
+      0
+    ) <
+    C.warmupCandles
+  ) {
+    queueWarmup(
+      symbol
+    );
+
+    return;
+  }
+
+  warmupLoaded.add(
+    symbol
+  );
+
+  if (
     lastAnalyzed[
       symbol
     ] ===
-      closeTime
+    candle.closeTime
   ) {
     return;
   }
@@ -4997,296 +3963,122 @@ function analyzeClosed(
   lastAnalyzed[
     symbol
   ] =
-    closeTime;
+    candle.closeTime;
 
-  const analysis =
+  if (
+    symbol ===
+    C.btcSymbol
+  ) {
+    calculateMarketRegime();
+  }
+
+  const result =
     analyze(
-      arr,
+      candles[
+        symbol
+      ],
       symbol
     );
 
   if (
-    !analysis
+    !result
   ) {
     return;
   }
 
-  let decision =
-    'REJECT';
+  journalAnalysis(
+    result
+  );
 
   if (
-    analysis.eligible &&
-    !manualPause &&
-    !dailyPause &&
-    !cooldownActive() &&
-    !positions[
-      symbol
-    ] &&
-    !symbolCooling(
-      symbol
-    )
+    result.eligible
   ) {
     addCandidate(
-      symbol,
-      analysis,
-      closeTime
+      result
     );
-
-    decision =
-      'POOL';
-  }
-
-  latest.push({
-    symbol,
-
-    grade:
-      analysis.grade,
-
-    edgeScore:
-      analysis.edgeScore,
-
-    fresh:
-      analysis.freshnessScore,
-
-    flow:
-      analysis.flowScore,
-
-    cmo:
-      analysis.cmo.toFixed(
-        1
-      ),
-
-    atr:
-      analysis.atrPct.toFixed(
-        2
-      ),
-
-    volume:
-      analysis.volumeRatio.toFixed(
-        2
-      ),
-
-    volAccel:
-      analysis.volumeAcceleration.toFixed(
-        2
-      ),
-
-    buyFlow:
-      analysis.takerBuyRatio ===
-      null
-        ? 'N/A'
-        : (
-            analysis.takerBuyRatio *
-            100
-          ).toFixed(
-            1
-          ),
-
-    accept:
-      analysis.breakoutAcceptance,
-
-    shadow:
-      analysis.shadowEdge
-        ? 'YES'
-        : 'NO',
-
-    decision,
-
-    regime:
-      analysis.regime,
-
-    warnings:
-      analysis.warnings.join(
-        ', '
-      )
-  });
-
-  latest =
-    latest
-      .sort(
-        (
-          a,
-          b
-        ) =>
-          b.edgeScore -
-          a.edgeScore
-      )
-      .slice(
-        0,
-        80
-      );
-
-  // ----------------------------------------------------------
-  // LOW-BANDWIDTH JOURNAL POLICY
-  //
-  // ALWAYS keep:
-  //  - eligible opportunities
-  //  - candidate pool
-  //  - shadow edge
-  //
-  // Routine rejected analysis:
-  //  - only a 1% sample
-  // ----------------------------------------------------------
-
-  const persistAnalysis =
-    decision ===
-      'POOL' ||
-    analysis.eligible ||
-    analysis.shadowEdge ||
-    Math.random() <
-      C.analysisJournalSampleRate;
-
-  if (
-    persistAnalysis
-  ) {
-    cloudJournal({
-      type:
-        'ANALYSIS',
-
-      symbol,
-
-      decision,
-
-      eligible:
-        analysis.eligible,
-
-      grade:
-        analysis.grade,
-
-      edgeScore:
-        analysis.edgeScore,
-
-      trendScore:
-        analysis.trendScore,
-
-      freshnessScore:
-        analysis.freshnessScore,
-
-      flowScore:
-        analysis.flowScore,
-
-      momentumScore:
-        analysis.momentumScore,
-
-      volatilityScore:
-        analysis.volatilityScore,
-
-      structureScore:
-        analysis.structureScore,
-
-      regimeScore:
-        analysis.regimeScore,
-
-      shadowEdge:
-        analysis.shadowEdge,
-
-      cmo:
-        analysis.cmo,
-
-      atrPct:
-        analysis.atrPct,
-
-      volumeRatio:
-        analysis.volumeRatio,
-
-      volumeAcceleration:
-        analysis.volumeAcceleration,
-
-      priceAcceleration:
-        analysis.priceAcceleration,
-
-      takerBuyRatio:
-        analysis.takerBuyRatio,
-
-      orderFlowMomentum:
-        analysis.orderFlowMomentum,
-
-      emaDistance:
-        analysis.emaDistance,
-
-      breakoutPct:
-        analysis.breakoutPct,
-
-      breakoutAcceptance:
-        analysis.breakoutAcceptance,
-
-      ext5:
-        analysis.ext5,
-
-      ext10:
-        analysis.ext10,
-
-      regime:
-        analysis.regime,
-
-      breadth:
-        analysis.breadth,
-
-      warnings:
-        analysis.warnings
-    });
-
-  } else {
-
-    networkMeter.skippedAnalysisLogs++;
   }
 }
 
 // ============================================================
-// MINI TICKER WEBSOCKET
+// WEBSOCKET HELPERS
 // ============================================================
 
-function connectMini() {
+function safeCloseWs(ws) {
+  if (
+    !ws
+  ) {
+    return;
+  }
+
+  try {
+    ws.removeAllListeners();
+  } catch {}
+
+  try {
+    ws.terminate();
+  } catch {}
+}
+
+function miniStreamUrl() {
+  return `${WS_BASE}/ws/!miniTicker@arr`;
+}
+
+function klineStreamUrl(
+  symbols
+) {
+  const streams =
+    [...symbols]
+      .map(
+        symbol =>
+          `${symbol.toLowerCase()}@kline_${C.interval}`
+      )
+      .join('/');
+
+  return `${WS_BASE}/stream?streams=${streams}`;
+}
+
+// ============================================================
+// MINI TICKER
+// ============================================================
+
+function connectMiniTicker() {
   if (
     shuttingDown
   ) {
     return;
   }
 
-  if (
-    miniWs &&
-    [
-      WebSocket.OPEN,
-      WebSocket.CONNECTING
-    ].includes(
-      miniWs.readyState
-    )
-  ) {
-    return;
-  }
+  safeCloseWs(
+    miniWs
+  );
 
   miniWs =
     new WebSocket(
-      `${WS_BASE}/ws/!miniTicker@arr`
+      miniStreamUrl()
     );
 
   miniWs.on(
     'open',
-
     () => {
       miniConnected =
         true;
 
-      lastMiniMessage =
-        Date.now();
-
       console.log(
-        'MINI LIVE'
+        'MiniTicker WebSocket LIVE'
       );
     }
   );
 
   miniWs.on(
     'message',
-
-    raw => {
+    async raw => {
       lastMiniMessage =
         Date.now();
 
-      let data;
+      let rows;
 
       try {
-        data =
+        rows =
           JSON.parse(
             raw.toString()
           );
@@ -5298,18 +4090,18 @@ function connectMini() {
 
       if (
         !Array.isArray(
-          data
+          rows
         )
       ) {
         return;
       }
 
       for (
-        const item
-        of data
+        const row
+        of rows
       ) {
         const symbol =
-          item.s;
+          row.s;
 
         if (
           !symbol ||
@@ -5324,30 +4116,16 @@ function connectMini() {
         }
 
         const price =
-          n(
-            item.c
-          );
+          n(row.c);
 
         const quoteVolume =
-          n(
-            item.q
-          );
-
-        if (
-          price <=
-          0
-        ) {
-          continue;
-        }
+          n(row.q);
 
         tickers.set(
           symbol,
-
           {
             price,
-
             quoteVolume,
-
             updatedAt:
               Date.now()
           }
@@ -5361,187 +4139,100 @@ function connectMini() {
           managePosition(
             symbol,
             price
+          ).catch(
+            error =>
+              console.error(
+                'Manage position:',
+                error.message
+              )
           );
         }
-      }
-
-      if (
-        !subscribed.size &&
-        tickers.size >
-          100
-      ) {
-        setTimeout(
-          rebalanceUniverse,
-          1500
-        );
       }
     }
   );
 
   miniWs.on(
     'close',
-
     () => {
       miniConnected =
         false;
 
-      setTimeout(
-        connectMini,
-        5000
-      );
+      if (
+        !shuttingDown
+      ) {
+        setTimeout(
+          connectMiniTicker,
+          5000
+        );
+      }
     }
   );
 
   miniWs.on(
     'error',
+    error => {
+      miniConnected =
+        false;
 
-    error =>
       console.error(
-        'MINI:',
+        'MiniTicker WS:',
         error.message
-      )
-  );
-}
-
-// ============================================================
-// KLINE CONTROL QUEUE
-// ============================================================
-
-const controlQueue =
-  [];
-
-let controlBusy =
-  false;
-
-function queueControl(
-  message
-) {
-  controlQueue.push(
-    message
-  );
-}
-
-setInterval(
-  async () => {
-    if (
-      controlBusy ||
-      !controlQueue.length ||
-      !klineWs ||
-      klineWs.readyState !==
-        WebSocket.OPEN
-    ) {
-      return;
-    }
-
-    controlBusy =
-      true;
-
-    const message =
-      controlQueue.shift();
-
-    try {
-      const payload =
-        JSON.stringify(
-          message
-        );
-
-      networkMeter.wsControlBytes +=
-        byteLen(
-          payload
-        );
-
-      klineWs.send(
-        payload
       );
-
-    } catch {}
-
-    await sleep(
-      1000
-    );
-
-    controlBusy =
-      false;
-  },
-
-  250
-);
+    }
+  );
+}
 
 // ============================================================
 // KLINE WEBSOCKET
 // ============================================================
 
-function connectKline() {
+function connectKlines() {
   if (
-    shuttingDown
+    shuttingDown ||
+    !subscribed.size
   ) {
     return;
   }
 
-  if (
-    klineWs &&
-    [
-      WebSocket.OPEN,
-      WebSocket.CONNECTING
-    ].includes(
-      klineWs.readyState
-    )
-  ) {
-    return;
-  }
+  safeCloseWs(
+    klineWs
+  );
+
+  const url =
+    klineStreamUrl(
+      subscribed
+    );
+
+  networkMeter.wsControlBytes +=
+    byteLen(url);
 
   klineWs =
     new WebSocket(
-      `${WS_BASE}/ws`
+      url
     );
 
   klineWs.on(
     'open',
-
     () => {
       klineConnected =
         true;
 
-      lastKlineMessage =
-        Date.now();
-
       console.log(
-        'KLINE LIVE'
+        `Kline WebSocket LIVE | ${subscribed.size} symbols`
       );
-
-      if (
-        subscribed.size
-      ) {
-        queueControl({
-          method:
-            'SUBSCRIBE',
-
-          params:
-            [
-              ...subscribed
-            ].map(
-              symbol =>
-                `${symbol.toLowerCase()}@kline_${C.interval}`
-            ),
-
-          id:
-            Date.now()
-        });
-      }
     }
   );
 
   klineWs.on(
     'message',
-
     raw => {
       lastKlineMessage =
         Date.now();
 
-      let event;
+      let packet;
 
       try {
-        event =
+        packet =
           JSON.parse(
             raw.toString()
           );
@@ -5551,143 +4242,99 @@ function connectKline() {
         return;
       }
 
+      const data =
+        packet.data ||
+        packet;
+
+      const k =
+        data.k;
+
       if (
-        Object.prototype
-          .hasOwnProperty
-          .call(
-            event,
-            'result'
-          )
+        !k ||
+        !k.s
       ) {
         return;
       }
 
       if (
-        event.e !==
-          'kline' ||
-        !event.k ||
-        event.k.x !==
-          true
+        !k.x
       ) {
         return;
       }
-
-      const symbol =
-        event.s;
-
-      const kline =
-        event.k;
 
       const candle = {
         open:
-          n(
-            kline.o
-          ),
+          n(k.o),
 
         high:
-          n(
-            kline.h
-          ),
+          n(k.h),
 
         low:
-          n(
-            kline.l
-          ),
+          n(k.l),
 
         close:
-          n(
-            kline.c
-          ),
+          n(k.c),
 
         volume:
-          n(
-            kline.v
-          ),
-
-        quoteVolume:
-          n(
-            kline.q
-          ),
-
-        trades:
-          n(
-            kline.n
-          ),
-
-        takerBuyBase:
-          n(
-            kline.V
-          ),
-
-        takerBuyQuote:
-          n(
-            kline.Q
-          ),
+          n(k.v),
 
         closeTime:
-          n(
-            kline.T
-          )
+          n(k.T),
+
+        quoteVolume:
+          n(k.q),
+
+        trades:
+          n(k.n),
+
+        takerBuyBase:
+          n(k.V),
+
+        takerBuyQuote:
+          n(k.Q)
       };
 
-      mergeCandles(
-        symbol,
-        [
-          candle
-        ]
+      processClosedCandle(
+        k.s,
+        candle
+      ).catch(
+        error =>
+          console.error(
+            'Closed candle:',
+            error.message
+          )
       );
-
-      // IMPORTANT:
-      // A single WS candle must NEVER falsely mark an asset as warmed up.
-      if (
-        (
-          candles[
-            symbol
-          ]?.length ||
-          0
-        ) >=
-        C.warmupCandles
-      ) {
-        warmupLoaded.add(
-          symbol
-        );
-
-        analyzeClosed(
-          symbol,
-          candle.closeTime
-        );
-
-      } else {
-
-        queueWarmup(
-          symbol
-        );
-      }
     }
   );
 
   klineWs.on(
     'close',
-
     () => {
       klineConnected =
         false;
 
-      setTimeout(
-        connectKline,
-        5000
-      );
+      if (
+        !shuttingDown
+      ) {
+        setTimeout(
+          connectKlines,
+          5000
+        );
+      }
     }
   );
 
   klineWs.on(
     'error',
+    error => {
+      klineConnected =
+        false;
 
-    error =>
       console.error(
-        'KLINE:',
+        'Kline WS:',
         error.message
-      )
+      );
+    }
   );
 }
 
@@ -5695,22 +4342,24 @@ function connectKline() {
 // UNIVERSE
 // ============================================================
 
-function topSymbols() {
-  let result =
-    [
-      ...tickers.entries()
-    ]
+function buildUniverse() {
+  const ranked =
+    [...tickers.entries()]
       .filter(
-        ([
-          symbol,
-          ticker
-        ]) =>
+        (
+          [
+            symbol,
+            ticker
+          ]
+        ) =>
           symbol.endsWith(
             'USDT'
           ) &&
           !ignored(
             symbol
           ) &&
+          ticker.price >
+            0 &&
           ticker.quoteVolume >=
             C.minQuoteVolume
       )
@@ -5719,201 +4368,129 @@ function topSymbols() {
           a,
           b
         ) =>
-          b[
-            1
-          ].quoteVolume -
-          a[
-            1
-          ].quoteVolume
+          b[1]
+            .quoteVolume -
+          a[1]
+            .quoteVolume
       )
       .slice(
         0,
         C.universeSize
       )
       .map(
-        item =>
-          item[
-            0
+        (
+          [
+            symbol
           ]
+        ) =>
+          symbol
       );
 
   if (
-    !result.includes(
+    !ranked.includes(
       C.btcSymbol
     )
   ) {
-    result.unshift(
+    ranked.unshift(
       C.btcSymbol
     );
   }
 
-  return result.slice(
-    0,
-    C.universeSize
+  return new Set(
+    ranked.slice(
+      0,
+      C.universeSize
+    )
   );
 }
 
-function rebalanceUniverse() {
-  const wanted =
-    new Set(
-      topSymbols()
-    );
-
+function sameSet(
+  a,
+  b
+) {
   if (
-    !wanted.size
+    a.size !==
+    b.size
+  ) {
+    return false;
+  }
+
+  for (
+    const x
+    of a
+  ) {
+    if (
+      !b.has(x)
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+async function refreshUniverse(
+  force = false
+) {
+  if (
+    tickers.size <
+    50
   ) {
     return;
   }
 
-  const add =
-    [];
+  const next =
+    buildUniverse();
 
-  const remove =
-    [];
-
-  for (
-    const symbol
-    of wanted
+  if (
+    !next.size
   ) {
-    if (
-      !subscribed.has(
-        symbol
-      )
-    ) {
-      add.push(
-        symbol
-      );
-    }
+    return;
   }
+
+  const changed =
+    !sameSet(
+      next,
+      subscribed
+    );
+
+  if (
+    !force &&
+    !changed
+  ) {
+    return;
+  }
+
+  subscribed =
+    next;
+
+  console.log(
+    `Universe refreshed: ${subscribed.size} symbols`
+  );
 
   for (
     const symbol
     of subscribed
   ) {
     if (
-      !wanted.has(
-        symbol
-      )
-    ) {
-      if (
-        positions[
+      (
+        candles[
           symbol
-        ]
-      ) {
-        wanted.add(
-          symbol
-        );
-
-      } else {
-
-        remove.push(
-          symbol
-        );
-      }
-    }
-  }
-
-  if (
-    remove.length
-  ) {
-    queueControl({
-      method:
-        'UNSUBSCRIBE',
-
-      params:
-        remove.map(
-          symbol =>
-            `${symbol.toLowerCase()}@kline_${C.interval}`
-        ),
-
-      id:
-        Date.now()
-    });
-  }
-
-  if (
-    add.length
-  ) {
-    for (
-      const symbol
-      of add
+        ]?.length ||
+        0
+      ) <
+      C.warmupCandles
     ) {
       queueWarmup(
         symbol
       );
     }
-
-    queueControl({
-      method:
-        'SUBSCRIBE',
-
-      params:
-        add.map(
-          symbol =>
-            `${symbol.toLowerCase()}@kline_${C.interval}`
-        ),
-
-      id:
-        Date.now() +
-        1
-    });
   }
 
-  subscribed =
-    wanted;
+  connectKlines();
 
-  console.log(
-    `Universe ${subscribed.size} | Ready ${readyCount()} | REST ${warmupStats.restLoaded} | 429 ${warmupStats.rateLimited} | Retries ${warmupStats.retries} | Deferred ${warmupStats.deferred}`
-  );
+  calculateMarketRegime();
 }
-
-// ============================================================
-// PERIODIC TASKS
-// ============================================================
-
-setInterval(
-  rebalanceUniverse,
-  C.universeRefreshMs
-);
-
-setInterval(
-  () => {
-    checkDay();
-
-    cooldownActive();
-
-    updateDrawdown();
-
-    saveCloudState();
-  },
-
-  C.stateSaveMs
-);
-
-setInterval(
-  calculateMarketRegime,
-  C.regimeRefreshMs
-);
-
-// Network diagnostic every 30 minutes.
-setInterval(
-  () => {
-    const net =
-      networkSnapshot();
-
-    console.log(
-      `NETWORK ESTIMATE | Total ${net.estimatedOutboundMB} MB | Mongo ${net.mongoWriteMB} MB | REST ${net.restRequestMB} MB | TG ${net.telegramMB} MB | WS CTRL ${net.wsControlMB} MB`
-    );
-
-    console.log(
-      `WARMUP STATS | Requests ${warmupStats.restRequests} | Ready ${warmupStats.restLoaded} | 429 ${warmupStats.rateLimited} | Retries ${warmupStats.retries} | Deferred ${warmupStats.deferred} | Failed ${warmupStats.failed}`
-    );
-  },
-
-  30 *
-  60 *
-  1000
-);
 
 // ============================================================
 // WATCHDOG
@@ -5922,52 +4499,707 @@ setInterval(
 setInterval(
   () => {
     if (
-      miniConnected &&
-      Date.now() -
-      lastMiniMessage >
-      90000
+      shuttingDown
     ) {
-      try {
-        miniWs.terminate();
-      } catch {}
+      return;
+    }
+
+    const now =
+      Date.now();
+
+    if (
+      !miniConnected ||
+      (
+        lastMiniMessage &&
+        now -
+          lastMiniMessage >
+          60000
+      )
+    ) {
+      console.log(
+        'MiniTicker watchdog reconnect'
+      );
+
+      connectMiniTicker();
     }
 
     if (
-      klineConnected &&
-      Date.now() -
-      lastKlineMessage >
-      10 *
-      60 *
-      1000
+      subscribed.size &&
+      (
+        !klineConnected ||
+        (
+          lastKlineMessage &&
+          now -
+            lastKlineMessage >
+            12 *
+            60 *
+            1000
+        )
+      )
     ) {
-      try {
-        klineWs.terminate();
-      } catch {}
-    }
+      console.log(
+        'Kline watchdog reconnect'
+      );
 
-    if (
-      !miniConnected
-    ) {
-      connectMini();
-    }
-
-    if (
-      !klineConnected
-    ) {
-      connectKline();
+      connectKlines();
     }
   },
-
-  30000
+  60000
 );
 
 // ============================================================
-// API CONTROLS
+// PERIODIC JOBS
 // ============================================================
+
+setInterval(
+  () => {
+    checkDay();
+
+    updateDrawdown();
+
+    checkDailyLoss();
+
+    purgeCandidates();
+  },
+  15000
+);
+
+setInterval(
+  () => {
+    calculateMarketRegime();
+  },
+  C.regimeRefreshMs
+);
+
+setInterval(
+  () => {
+    refreshUniverse(
+      false
+    ).catch(
+      error =>
+        console.error(
+          'Universe refresh:',
+          error.message
+        )
+    );
+  },
+  C.universeRefreshMs
+);
+
+setInterval(
+  () => {
+    saveCloudState();
+  },
+  C.stateSaveMs
+);
+
+// ============================================================
+// NETWORK REPORT
+// ============================================================
+
+setInterval(
+  () => {
+    const net =
+      networkSnapshot();
+
+    console.log(
+      `NETWORK ESTIMATE | Total ${net.estimatedOutboundMB} MB | Mongo ${net.mongoWriteMB} MB | Telegram ${net.telegramMB} MB | REST ${net.restRequestMB} MB | Journal writes ${net.journalWrites}`
+    );
+
+    const bytes =
+      networkTotalBytes();
+
+    const alertBytes =
+      C.networkAlertMB *
+      1024 *
+      1024;
+
+    if (
+      bytes -
+      networkMeter.lastAlertBytes >=
+      alertBytes
+    ) {
+      networkMeter.lastAlertBytes =
+        bytes;
+
+      tg(
+        `📡 <b>LOMY NETWORK GUARD</b>
+Estimated app outbound: ${networkMB(bytes)} MB
+Mongo: ${networkMB(networkMeter.mongoWriteBytes)} MB
+Telegram: ${networkMB(networkMeter.telegramBytes)} MB
+REST requests: ${networkMB(networkMeter.restRequestBytes)} MB
+Candle cloud writes: ${networkMeter.candleCloudWrites}`
+      );
+    }
+  },
+  C.networkReportMs
+);
+// ============================================================
+// DASHBOARD DATA
+// ============================================================
+
+function positionRows() {
+  return Object.values(
+    positions
+  )
+    .map(
+      p => {
+        const live =
+          tickers.get(
+            p.symbol
+          )?.price ||
+          p.lastPrice ||
+          p.entryPrice;
+
+        const currentValue =
+          p.qty *
+          live;
+
+        const pnl =
+          currentValue -
+          p.allocation;
+
+        const pnlPct =
+          p.allocation
+            ? (
+                pnl /
+                p.allocation
+              ) *
+              100
+            : 0;
+
+        return {
+          symbol:
+            p.symbol,
+
+          entryPrice:
+            p.entryPrice,
+
+          livePrice:
+            live,
+
+          stopLoss:
+            p.stopLoss,
+
+          takeProfit:
+            p.takeProfit,
+
+          allocation:
+            p.allocation,
+
+          pnl,
+
+          pnlPct,
+
+          mfePct:
+            p.mfePct,
+
+          maePct:
+            p.maePct,
+
+          breakEven:
+            p.breakEven,
+
+          trailing:
+            p.trailing,
+
+          profitLocked:
+            p.profitLocked,
+
+          ageMinutes:
+            (
+              Date.now() -
+              p.entryTime
+            ) /
+            60000,
+
+          snapshot:
+            p.entrySnapshot
+        };
+      }
+    )
+    .sort(
+      (
+        a,
+        b
+      ) =>
+        b.pnlPct -
+        a.pnlPct
+    );
+}
+
+function candidateRows() {
+  purgeCandidates();
+
+  return [...candidatePool.values()]
+    .sort(
+      (
+        a,
+        b
+      ) =>
+        b.rank -
+        a.rank
+    )
+    .slice(
+      0,
+      25
+    )
+    .map(
+      x => ({
+        symbol:
+          x.symbol,
+
+        price:
+          x.price,
+
+        edgeScore:
+          x.edgeScore,
+
+        rank:
+          x.rank,
+
+        freshnessScore:
+          x.freshnessScore,
+
+        flowScore:
+          x.flowScore,
+
+        cmo:
+          x.momentum,
+
+        atrPct:
+          x.atrPct,
+
+        takerBuy:
+          x.takerRatio,
+
+        breakoutAcceptance:
+          x.breakoutAcceptance,
+
+        shadowEdge:
+          x.shadowEdge,
+
+        ageSeconds:
+          (
+            Date.now() -
+            x.candidateAt
+          ) /
+          1000
+      })
+    );
+}
+
+async function latestTrades() {
+  if (
+    !cloudConnected
+  ) {
+    return [];
+  }
+
+  try {
+    return await db
+      .collection(
+        'trades'
+      )
+      .find({
+        version:
+          C.version
+      })
+      .sort({
+        exitTime:
+          -1
+      })
+      .limit(
+        C.historyLimitDashboard
+      )
+      .toArray();
+
+  } catch (error) {
+
+    console.error(
+      'Latest trades:',
+      error.message
+    );
+
+    return [];
+  }
+}
+
+async function latestJournal() {
+  if (
+    !cloudConnected
+  ) {
+    return [];
+  }
+
+  try {
+    return await db
+      .collection(
+        'journal'
+      )
+      .find({
+        version:
+          C.version
+      })
+      .sort({
+        time:
+          -1
+      })
+      .limit(
+        C.journalLimitDashboard
+      )
+      .toArray();
+
+  } catch (error) {
+
+    console.error(
+      'Latest journal:',
+      error.message
+    );
+
+    return [];
+  }
+}
+
+function botStatus() {
+  let status =
+    'RUNNING';
+
+  if (
+    manualPause
+  ) {
+    status =
+      'MANUAL_PAUSE';
+
+  } else if (
+    dailyPause
+  ) {
+    status =
+      'DAILY_PROTECTION';
+
+  } else if (
+    cooldownActive()
+  ) {
+    status =
+      'COOLDOWN';
+
+  } else if (
+    !marketRegime.ready
+  ) {
+    status =
+      'WARMING';
+  }
+
+  return status;
+}
+
+function winRate() {
+  return stats.totalTrades
+    ? (
+        stats.wins /
+        stats.totalTrades
+      ) *
+        100
+    : 0;
+}
+
+function profitFactor() {
+  return stats.grossLoss >
+    0
+    ? stats.grossProfit /
+      stats.grossLoss
+    : stats.grossProfit >
+      0
+      ? Infinity
+      : 0;
+}
+
+// ============================================================
+// API
+// ============================================================
+
+app.get(
+  '/health',
+  (
+    req,
+    res
+  ) => {
+    res.json({
+      ok:
+        true,
+
+      name:
+        'LOMY',
+
+      version:
+        C.version,
+
+      paperTrading:
+        C.paperTrading,
+
+      cloudConnected,
+
+      miniConnected,
+
+      klineConnected,
+
+      subscribed:
+        subscribed.size,
+
+      ready:
+        readyCount(),
+
+      timestamp:
+        Date.now()
+    });
+  }
+);
+
+app.get(
+  '/api/data',
+  async (
+    req,
+    res
+  ) => {
+    try {
+      checkDay();
+
+      const e =
+        equity();
+
+      const pf =
+        profitFactor();
+
+      res.json({
+        ok:
+          true,
+
+        version:
+          C.version,
+
+        mode:
+          'PAPER',
+
+        status:
+          botStatus(),
+
+        cash,
+
+        equity:
+          e,
+
+        dailyPnL,
+
+        dailyStartEquity,
+
+        dailyPnLPct:
+          dailyStartEquity
+            ? (
+                dailyPnL /
+                dailyStartEquity
+              ) *
+                100
+            : 0,
+
+        peakEquity,
+
+        stats: {
+          ...stats,
+
+          winRate:
+            winRate(),
+
+          profitFactor:
+            Number.isFinite(
+              pf
+            )
+              ? pf
+              : null
+        },
+
+        marketRegime,
+
+        session:
+          sessionUTC(),
+
+        positions:
+          positionRows(),
+
+        candidates:
+          candidateRows(),
+
+        candidateCount:
+          candidatePool.size,
+
+        universe: {
+          subscribed:
+            subscribed.size,
+
+          ready:
+            readyCount(),
+
+          tickerCount:
+            tickers.size,
+
+          warmupQueue:
+            warmupQueue.length,
+
+          warmupWorkers,
+
+          warmupStats
+        },
+
+        websocket: {
+          miniConnected,
+
+          klineConnected,
+
+          lastMiniMessage,
+
+          lastKlineMessage
+        },
+
+        protection: {
+          manualPause,
+
+          dailyPause,
+
+          cooldown:
+            cooldownActive(),
+
+          cooldownReason,
+
+          cooldownUntil,
+
+          entriesSinceCooldown,
+
+          lossStreak
+        },
+
+        network:
+          networkSnapshot(),
+
+        cloudConnected,
+
+        uptimeSeconds:
+          Math.round(
+            process.uptime()
+          ),
+
+        timestamp:
+          Date.now()
+      });
+
+    } catch (error) {
+
+      console.error(
+        '/api/data:',
+        error.message
+      );
+
+      res.status(
+        500
+      ).json({
+        ok:
+          false,
+
+        error:
+          error.message
+      });
+    }
+  }
+);
+
+app.get(
+  '/api/trades',
+  async (
+    req,
+    res
+  ) => {
+    try {
+      const rows =
+        await latestTrades();
+
+      res.json({
+        ok:
+          true,
+
+        count:
+          rows.length,
+
+        trades:
+          rows
+      });
+
+    } catch (error) {
+
+      res.status(
+        500
+      ).json({
+        ok:
+          false,
+
+        error:
+          error.message
+      });
+    }
+  }
+);
+
+app.get(
+  '/api/journal',
+  async (
+    req,
+    res
+  ) => {
+    try {
+      const rows =
+        await latestJournal();
+
+      res.json({
+        ok:
+          true,
+
+        count:
+          rows.length,
+
+        journal:
+          rows
+      });
+
+    } catch (error) {
+
+      res.status(
+        500
+      ).json({
+        ok:
+          false,
+
+        error:
+          error.message
+      });
+    }
+  }
+);
+
+app.get(
+  '/api/network',
+  (
+    req,
+    res
+  ) => {
+    res.json({
+      ok:
+        true,
+
+      network:
+        networkSnapshot()
+    });
+  }
+);
 
 app.post(
   '/api/pause',
-
   async (
     req,
     res
@@ -5979,16 +5211,21 @@ app.post(
 
     await saveCloudState();
 
+    tg(
+      '⏸ <b>LOMY V5.1 MANUAL PAUSE</b>'
+    );
+
     res.json({
-      success:
-        true
+      ok:
+        true,
+
+      manualPause
     });
   }
 );
 
 app.post(
   '/api/resume',
-
   async (
     req,
     res
@@ -5996,329 +5233,102 @@ app.post(
     manualPause =
       false;
 
-    candidatePool.clear();
-
     await saveCloudState();
 
+    tg(
+      '▶️ <b>LOMY V5.1 RESUMED</b>'
+    );
+
     res.json({
-      success:
-        true
+      ok:
+        true,
+
+      manualPause
     });
   }
 );
 
 app.post(
   '/api/emergency-close',
-
   async (
     req,
     res
   ) => {
-    let closed =
-      0;
+    try {
+      manualPause =
+        true;
 
-    for (
-      const symbol
-      of Object.keys(
-        positions
-      )
-    ) {
-      const price =
-        tickers.get(
-          symbol
-        )?.price ||
-        positions[
-          symbol
-        ].lastPrice;
+      candidatePool.clear();
 
-      if (
-        price
+      const symbols =
+        Object.keys(
+          positions
+        );
+
+      const closed =
+        [];
+
+      for (
+        const symbol
+        of symbols
       ) {
-        await closeTrade(
+        const p =
+          positions[
+            symbol
+          ];
+
+        const price =
+          tickers.get(
+            symbol
+          )?.price ||
+          p.lastPrice ||
+          p.entryPrice;
+
+        await closePaperTrade(
           symbol,
           price,
           'EMERGENCY_CLOSE'
         );
 
-        closed++;
-      }
-    }
-
-    res.json({
-      success:
-        true,
-
-      closed
-    });
-  }
-);
-
-// ============================================================
-// HEALTH
-// ============================================================
-
-app.get(
-  '/health',
-
-  (
-    req,
-    res
-  ) =>
-    res.json({
-      status:
-        cloudConnected &&
-        miniConnected &&
-        klineConnected
-          ? 'OK'
-          : 'DEGRADED',
-
-      version:
-        C.version,
-
-      buildTag:
-        C.buildTag,
-
-      execution:
-        'PAPER',
-
-      cloud:
-        cloudConnected,
-
-      websocket:
-        miniConnected &&
-        klineConnected,
-
-      miniConnected,
-
-      klineConnected,
-
-      ready:
-        readyCount(),
-
-      symbols:
-        subscribed.size,
-
-      candidatePool:
-        candidatePool.size,
-
-      warmup:
-        warmupStats,
-
-      network:
-        networkSnapshot(),
-
-      regime:
-        marketRegime,
-
-      equity:
-        +equity().toFixed(
-          2
-        )
-    })
-);
-
-// ============================================================
-// DATA API
-// ============================================================
-
-app.get(
-  '/api/data',
-
-  async (
-    req,
-    res
-  ) => {
-    const closed =
-      n(
-        stats.totalTrades
-      );
-
-    const winRate =
-      closed
-        ? (
-            stats.wins /
-            closed
-          ) *
-          100
-        : 0;
-
-    const profitFactor =
-      stats.grossLoss
-        ? stats.grossProfit /
-          stats.grossLoss
-        : stats.grossProfit
-          ? 999
-          : 0;
-
-    let recentTrades =
-      [];
-
-    let recentJournal =
-      [];
-
-    if (
-      cloudConnected
-    ) {
-      try {
-        recentTrades =
-          await db
-            .collection(
-              'trades'
-            )
-            .find({
-              version:
-                C.version
-            })
-            .sort({
-              exitTime:
-                -1
-            })
-            .limit(
-              C.historyLimitDashboard
-            )
-            .toArray();
-
-        recentJournal =
-          await db
-            .collection(
-              'journal'
-            )
-            .find({
-              version:
-                C.version
-            })
-            .sort({
-              time:
-                -1
-            })
-            .limit(
-              C.journalLimitDashboard
-            )
-            .toArray();
-
-      } catch (error) {
-
-        console.error(
-          'Dashboard DB:',
-          error.message
+        closed.push(
+          symbol
         );
       }
+
+      await saveCloudState();
+
+      tg(
+        `🚨 <b>LOMY EMERGENCY CLOSE</b>
+Closed: ${closed.length}
+Bot paused.`
+      );
+
+      res.json({
+        ok:
+          true,
+
+        closed,
+
+        manualPause
+      });
+
+    } catch (error) {
+
+      console.error(
+        'Emergency close:',
+        error.message
+      );
+
+      res.status(
+        500
+      ).json({
+        ok:
+          false,
+
+        error:
+          error.message
+      });
     }
-
-    res.json({
-      version:
-        C.version,
-
-      buildTag:
-        C.buildTag,
-
-      cloudConnected,
-
-      miniConnected,
-
-      klineConnected,
-
-      cash:
-        cash.toFixed(
-          2
-        ),
-
-      equity:
-        equity().toFixed(
-          2
-        ),
-
-      open:
-        Object.keys(
-          positions
-        ).length,
-
-      positions:
-        Object.values(
-          positions
-        ),
-
-      symbols:
-        subscribed.size,
-
-      ready:
-        readyCount(),
-
-      restReady:
-        warmupStats.restLoaded,
-
-      candidatePool:
-        candidatePool.size,
-
-      marketRegime,
-
-      warmup:
-        warmupStats,
-
-      network:
-        networkSnapshot(),
-
-      dailyPnL:
-        dailyPnL.toFixed(
-          2
-        ),
-
-      manualPause,
-
-      dailyPause,
-
-      cooldown:
-        cooldownActive(),
-
-      cooldownReason,
-
-      cooldownMinutes:
-        Math.ceil(
-          Math.max(
-            0,
-
-            cooldownUntil -
-            Date.now()
-          ) /
-          60000
-        ),
-
-      entriesSinceCooldown,
-
-      entriesBeforeCooldown:
-        C.entriesBeforeCooldown,
-
-      maxPositions:
-        C.maxPositions,
-
-      maxEntriesPerCycle:
-        C.maxEntriesPerCycle,
-
-      lossStreak,
-
-      stats: {
-        ...stats,
-
-        totalTrades:
-          closed,
-
-        winRate:
-          +winRate.toFixed(
-            2
-          ),
-
-        profitFactor:
-          +profitFactor.toFixed(
-            2
-          )
-      },
-
-      latest,
-
-      recentTrades,
-
-      recentJournal
-    });
   }
 );
 
@@ -6328,28 +5338,22 @@ app.get(
 
 app.get(
   '/',
-
   (
     req,
     res
-  ) =>
+  ) => {
     res.send(`
-<!doctype html>
-
-<html>
-
+<!DOCTYPE html>
+<html lang="en">
 <head>
 
-<meta charset="utf-8">
-
+<meta charset="UTF-8">
 <meta
   name="viewport"
-  content="width=device-width,initial-scale=1"
->
+  content="width=device-width, initial-scale=1.0"
+/>
 
-<title>
-LOMY V5.1.1
-</title>
+<title>LOMY V5.1</title>
 
 <style>
 
@@ -6359,179 +5363,133 @@ LOMY V5.1.1
 
 body {
   margin: 0;
-  background: #0b0e11;
-  color: #eaecef;
-  font-family: Arial;
-  padding: 14px;
-  text-align: center;
+  background: #090d12;
+  color: #e9eef5;
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+.container {
+  width: min(1500px, 96%);
+  margin: auto;
+  padding: 22px 0 60px;
 }
 
 h1 {
-  color: #f3ba2f;
+  margin: 0 0 4px;
+  font-size: 28px;
 }
 
-.banner {
-  background: #f3ba2f;
-  color: #111;
-  padding: 11px;
-  border-radius: 10px;
-  font-weight: bold;
-  max-width: 1500px;
-  margin: auto;
+.subtitle {
+  opacity: .7;
+  margin-bottom: 20px;
 }
 
-.status {
-  margin: 9px;
-  font-weight: bold;
-}
-
-.green {
-  color: #0ecb81;
-}
-
-.red {
-  color: #f6465d;
-}
-
-.yellow {
-  color: #f3ba2f;
-}
-
-.grid {
-  display: grid;
-
-  grid-template-columns:
-    repeat(
-      auto-fit,
-      minmax(
-        125px,
-        1fr
-      )
-    );
-
-  gap: 9px;
-
-  max-width: 1500px;
-
-  margin:
-    16px
-    auto;
-}
-
-.card {
-  background: #1e2329;
-
-  border:
-    1px
-    solid
-    #2b3139;
-
-  padding:
-    12px;
-
-  border-radius:
-    9px;
-}
-
-.label {
-  font-size:
-    10px;
-
-  color:
-    #848e9c;
-}
-
-.value {
-  font-size:
-    19px;
-
-  font-weight:
-    bold;
-
-  margin-top:
-    6px;
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 18px;
 }
 
 button {
-  border:
-    0;
-
-  padding:
-    11px
-    16px;
-
-  margin:
-    4px;
-
-  border-radius:
-    8px;
-
-  font-weight:
-    bold;
-
-  cursor:
-    pointer;
+  border: 0;
+  border-radius: 7px;
+  padding: 10px 16px;
+  font-weight: bold;
+  cursor: pointer;
 }
 
-.pause {
-  background:
-    #f3ba2f;
+button.pause {
+  background: #e9b949;
+  color: #111;
 }
 
-.resume {
-  background:
-    #0ecb81;
+button.resume {
+  background: #36c98f;
+  color: #08110d;
 }
 
-.close {
-  background:
-    #f6465d;
+button.emergency {
+  background: #e55353;
+  color: white;
+}
 
-  color:
-    white;
+.cards {
+  display: grid;
+  grid-template-columns:
+    repeat(
+      auto-fit,
+      minmax(165px, 1fr)
+    );
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.card {
+  background: #111821;
+  border: 1px solid #1e2a38;
+  border-radius: 10px;
+  padding: 14px;
+}
+
+.label {
+  font-size: 12px;
+  opacity: .68;
+  margin-bottom: 6px;
+}
+
+.value {
+  font-size: 21px;
+  font-weight: bold;
+}
+
+.section {
+  background: #111821;
+  border: 1px solid #1e2a38;
+  border-radius: 10px;
+  padding: 14px;
+  margin-top: 14px;
+  overflow-x: auto;
+}
+
+.section h2 {
+  margin: 0 0 12px;
+  font-size: 18px;
 }
 
 table {
-  width:
-    100%;
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 850px;
+}
 
-  max-width:
-    1700px;
-
-  margin:
-    18px
-    auto;
-
-  border-collapse:
-    collapse;
-
-  background:
-    #1e2329;
+th,
+td {
+  text-align: left;
+  padding: 9px;
+  border-bottom: 1px solid #1c2734;
+  font-size: 13px;
 }
 
 th {
-  background:
-    #2b3139;
-
-  color:
-    #848e9c;
+  opacity: .7;
 }
 
-td,
-th {
-  font-size:
-    10px;
+.green {
+  color: #42d99a;
+}
 
-  padding:
-    7px;
+.red {
+  color: #ff6767;
+}
 
-  border-bottom:
-    1px
-    solid
-    #2b3139;
+.yellow {
+  color: #f2c94c;
+}
 
-  white-space:
-    nowrap;
+.small {
+  font-size: 12px;
+  opacity: .75;
 }
 
 </style>
@@ -6540,566 +5498,724 @@ th {
 
 <body>
 
-<h1>
-🤖 LOMY V5.1.1 WARMUP GUARD
-</h1>
+<div class="container">
 
-<div class="banner">
-FRESH MOMENTUM • FLOW QUALITY • ANTI-CHASE • VOLUME CLIMAX • BREAKOUT ACCEPTANCE • BANDWIDTH GUARD • PAPER ONLY
-</div>
+  <h1>
+    LOMY V5.1
+  </h1>
 
-<div
-  id="cloud"
-  class="status"
->
-Cloud...
-</div>
+  <div class="subtitle">
+    Entry Intelligence · Bandwidth Optimized · PAPER ONLY
+  </div>
 
-<div
-  id="ws"
-  class="status"
->
-Market...
-</div>
+  <div class="toolbar">
 
-<div
-  id="regime"
-  class="status"
->
-Regime...
-</div>
+    <button
+      class="pause"
+      onclick="action('/api/pause')"
+    >
+      PAUSE
+    </button>
 
-<div
-  id="cooldown"
-  class="status"
->
-Cooldown...
-</div>
+    <button
+      class="resume"
+      onclick="action('/api/resume')"
+    >
+      RESUME
+    </button>
 
-<div
-  id="warmupStatus"
-  class="status"
->
-Warmup...
-</div>
+    <button
+      class="emergency"
+      onclick="emergencyClose()"
+    >
+      EMERGENCY CLOSE
+    </button>
 
-<div
-  id="networkStatus"
-  class="status"
->
-Network...
-</div>
+  </div>
 
-<div class="grid">
+  <div
+    class="cards"
+    id="cards"
+  ></div>
 
-${[
-  ['cash', 'CASH'],
-  ['equity', 'EQUITY'],
-  ['closed', 'CLOSED'],
-  ['win', 'WIN RATE'],
-  ['profit', 'NET PROFIT'],
-  ['pf', 'PROFIT FACTOR'],
-  ['open', 'OPEN'],
-  ['ready', 'READY'],
-  ['symbols', 'WS SYMBOLS'],
-  ['breadth', 'BREADTH'],
-  ['pool', 'CANDIDATE POOL'],
-  ['daily', 'TODAY PNL'],
-  ['dd', 'MAX DD'],
-  ['batch', 'BATCH'],
-  ['loss', 'LOSS STREAK'],
-  ['early', 'EARLY EXITS'],
-  ['be', 'BREAK EVEN'],
-  ['trail', 'TRAILING'],
-  ['locks', 'PROFIT LOCKS'],
-  ['restreq', 'REST REQUESTS'],
-  ['ratelimit', '429 COUNT'],
-  ['retries', '429 RETRIES'],
-  ['deferred', 'DEFERRED'],
-  ['netmb', 'EST OUT MB'],
-  ['mongomb', 'MONGO OUT MB']
-]
-  .map(
-    ([id, label]) =>
-      \`
-      <div class="card">
-        <div class="label">
-          \${label}
-        </div>
+  <div class="section">
 
-        <div
-          class="value"
-          id="\${id}"
-        >
-          0
-        </div>
-      </div>
-      \`
-  )
-  .join('')}
+    <h2>
+      Market Intelligence
+    </h2>
 
-</div>
+    <div
+      id="market"
+      class="small"
+    >
+      Loading...
+    </div>
 
-<button
-  class="pause"
-  onclick="post('/api/pause')"
->
-⏸ PAUSE
-</button>
+  </div>
 
-<button
-  class="resume"
-  onclick="post('/api/resume')"
->
-▶ RESUME
-</button>
+  <div class="section">
 
-<button
-  class="close"
-  onclick="closeAll()"
->
-🚨 CLOSE ALL
-</button>
+    <h2>
+      Open Paper Positions
+    </h2>
 
-<div
-  style="overflow-x:auto"
->
+    <table>
 
-<table>
+      <thead>
+        <tr>
+          <th>Symbol</th>
+          <th>Entry</th>
+          <th>Live</th>
+          <th>PnL</th>
+          <th>PnL %</th>
+          <th>MFE</th>
+          <th>MAE</th>
+          <th>SL</th>
+          <th>TP</th>
+          <th>Age</th>
+        </tr>
+      </thead>
 
-<thead>
+      <tbody
+        id="positions"
+      ></tbody>
 
-<tr>
+    </table>
 
-<th>
-Symbol
-</th>
+  </div>
 
-<th>
-Grade
-</th>
+  <div class="section">
 
-<th>
-Edge
-</th>
+    <h2>
+      Candidate Ranking
+    </h2>
 
-<th>
-Fresh
-</th>
+    <table>
 
-<th>
-Flow
-</th>
+      <thead>
+        <tr>
+          <th>Symbol</th>
+          <th>Score</th>
+          <th>Rank</th>
+          <th>Fresh</th>
+          <th>Flow</th>
+          <th>CMO</th>
+          <th>ATR %</th>
+          <th>Taker</th>
+          <th>Breakout</th>
+          <th>Age</th>
+        </tr>
+      </thead>
 
-<th>
-Status
-</th>
+      <tbody
+        id="candidates"
+      ></tbody>
 
-<th>
-CMO
-</th>
+    </table>
 
-<th>
-ATR%
-</th>
+  </div>
 
-<th>
-Volume
-</th>
+  <div class="section">
 
-<th>
-VolAccel
-</th>
+    <h2>
+      Bandwidth Guard
+    </h2>
 
-<th>
-BuyFlow
-</th>
+    <div
+      id="network"
+      class="small"
+    >
+      Loading...
+    </div>
 
-<th>
-Acceptance
-</th>
-
-<th>
-Shadow
-</th>
-
-<th>
-Regime
-</th>
-
-<th>
-Warnings
-</th>
-
-</tr>
-
-</thead>
-
-<tbody id="rows">
-
-<tr>
-
-<td colspan="15">
-Loading...
-</td>
-
-</tr>
-
-</tbody>
-
-</table>
+  </div>
 
 </div>
 
 <script>
 
-async function post(
-  url
+function num(
+  x,
+  digits = 2
 ) {
-  await fetch(
-    url,
+  const n =
+    Number(x);
 
-    {
-      method:
-        'POST'
-    }
-  );
-
-  load();
+  return Number.isFinite(n)
+    ? n.toFixed(digits)
+    : '-';
 }
 
-async function closeAll() {
-  if (
-    confirm(
-      'Close all PAPER positions?'
-    )
-  ) {
-    await post(
-      '/api/emergency-close'
+function money(x) {
+  return '$' + num(
+    x,
+    2
+  );
+}
+
+function pnlClass(x) {
+  return Number(x) >= 0
+    ? 'green'
+    : 'red';
+}
+
+async function action(url) {
+  try {
+    await fetch(
+      url,
+      {
+        method:
+          'POST'
+      }
+    );
+
+    await load();
+
+  } catch (error) {
+
+    alert(
+      error.message
     );
   }
+}
+
+async function emergencyClose() {
+  const ok =
+    confirm(
+      'Close ALL paper positions and pause the bot?'
+    );
+
+  if (
+    !ok
+  ) {
+    return;
+  }
+
+  await action(
+    '/api/emergency-close'
+  );
+}
+
+function renderCards(data) {
+  const values = [
+    [
+      'Status',
+      data.status
+    ],
+
+    [
+      'Mode',
+      data.mode
+    ],
+
+    [
+      'Cash',
+      money(
+        data.cash
+      )
+    ],
+
+    [
+      'Equity',
+      money(
+        data.equity
+      )
+    ],
+
+    [
+      'Daily PnL',
+      money(
+        data.dailyPnL
+      )
+    ],
+
+    [
+      'Closed',
+      data.stats.totalTrades
+    ],
+
+    [
+      'Wins',
+      data.stats.wins
+    ],
+
+    [
+      'Losses',
+      data.stats.losses
+    ],
+
+    [
+      'Win Rate',
+      num(
+        data.stats.winRate,
+        2
+      ) + '%'
+    ],
+
+    [
+      'Net Profit',
+      money(
+        data.stats.netProfit
+      )
+    ],
+
+    [
+      'Max DD',
+      num(
+        data.stats.maxDrawdown,
+        2
+      ) + '%'
+    ],
+
+    [
+      'Open',
+      data.positions.length
+    ],
+
+    [
+      'Candidates',
+      data.candidateCount
+    ],
+
+    [
+      'Ready Symbols',
+      data.universe.ready +
+      '/' +
+      data.universe.subscribed
+    ]
+  ];
+
+  document.getElementById(
+    'cards'
+  ).innerHTML =
+    values
+      .map(
+        ([label, value]) =>
+          `
+          <div class="card">
+            <div class="label">
+              ${label}
+            </div>
+
+            <div class="value">
+              ${value}
+            </div>
+          </div>
+          `
+      )
+      .join('');
+}
+
+function renderPositions(rows) {
+  const el =
+    document.getElementById(
+      'positions'
+    );
+
+  if (
+    !rows.length
+  ) {
+    el.innerHTML =
+      '<tr><td colspan="10">No open positions</td></tr>';
+
+    return;
+  }
+
+  el.innerHTML =
+    rows
+      .map(
+        p =>
+          `
+          <tr>
+
+            <td>
+              ${p.symbol}
+            </td>
+
+            <td>
+              ${num(p.entryPrice, 8)}
+            </td>
+
+            <td>
+              ${num(p.livePrice, 8)}
+            </td>
+
+            <td class="${pnlClass(p.pnl)}">
+              ${money(p.pnl)}
+            </td>
+
+            <td class="${pnlClass(p.pnlPct)}">
+              ${num(p.pnlPct, 2)}%
+            </td>
+
+            <td>
+              ${num(p.mfePct, 2)}%
+            </td>
+
+            <td>
+              ${num(p.maePct, 2)}%
+            </td>
+
+            <td>
+              ${num(p.stopLoss, 8)}
+            </td>
+
+            <td>
+              ${num(p.takeProfit, 8)}
+            </td>
+
+            <td>
+              ${num(p.ageMinutes, 1)}m
+            </td>
+
+          </tr>
+          `
+      )
+      .join('');
+}
+
+function renderCandidates(rows) {
+  const el =
+    document.getElementById(
+      'candidates'
+    );
+
+  if (
+    !rows.length
+  ) {
+    el.innerHTML =
+      '<tr><td colspan="10">No active candidates</td></tr>';
+
+    return;
+  }
+
+  el.innerHTML =
+    rows
+      .map(
+        x =>
+          `
+          <tr>
+
+            <td>
+              ${x.symbol}
+            </td>
+
+            <td>
+              ${x.edgeScore}
+            </td>
+
+            <td>
+              ${num(x.rank, 1)}
+            </td>
+
+            <td>
+              ${x.freshnessScore}
+            </td>
+
+            <td>
+              ${x.flowScore}
+            </td>
+
+            <td>
+              ${num(x.cmo, 1)}
+            </td>
+
+            <td>
+              ${num(x.atrPct, 3)}
+            </td>
+
+            <td>
+              ${
+                x.takerBuy === null
+                  ? '-'
+                  : num(
+                      x.takerBuy *
+                      100,
+                      1
+                    ) + '%'
+              }
+            </td>
+
+            <td>
+              ${x.breakoutAcceptance}
+            </td>
+
+            <td>
+              ${num(x.ageSeconds, 0)}s
+            </td>
+
+          </tr>
+          `
+      )
+      .join('');
+}
+
+function renderMarket(data) {
+  const m =
+    data.marketRegime;
+
+  document.getElementById(
+    'market'
+  ).innerHTML =
+    `
+    Regime:
+    <b>${m.regime}</b>
+    &nbsp; | &nbsp;
+
+    Breadth:
+    <b>${num(m.breadth, 1)}%</b>
+    &nbsp; | &nbsp;
+
+    BTC Bullish:
+    <b>${m.btcBullish}</b>
+    &nbsp; | &nbsp;
+
+    BTC Score:
+    <b>${m.btcScore}</b>
+    &nbsp; | &nbsp;
+
+    BTC Freshness:
+    <b>${m.btcFreshness}</b>
+    &nbsp; | &nbsp;
+
+    Session:
+    <b>${data.session}</b>
+    &nbsp; | &nbsp;
+
+    Mini WS:
+    <b>${data.websocket.miniConnected}</b>
+    &nbsp; | &nbsp;
+
+    Kline WS:
+    <b>${data.websocket.klineConnected}</b>
+    `;
+}
+
+function renderNetwork(data) {
+  const n =
+    data.network;
+
+  document.getElementById(
+    'network'
+  ).innerHTML =
+    `
+    Estimated app outbound:
+    <b>${n.estimatedOutboundMB} MB</b>
+    &nbsp; | &nbsp;
+
+    Mongo:
+    <b>${n.mongoWriteMB} MB</b>
+    &nbsp; | &nbsp;
+
+    Telegram:
+    <b>${n.telegramMB} MB</b>
+    &nbsp; | &nbsp;
+
+    REST request estimate:
+    <b>${n.restRequestMB} MB</b>
+    <br><br>
+
+    State writes:
+    <b>${n.stateWrites}</b>
+    &nbsp; | &nbsp;
+
+    Journal writes:
+    <b>${n.journalWrites}</b>
+    &nbsp; | &nbsp;
+
+    Trade writes:
+    <b>${n.tradeWrites}</b>
+    &nbsp; | &nbsp;
+
+    Skipped routine analysis logs:
+    <b>${n.skippedAnalysisLogs}</b>
+    &nbsp; | &nbsp;
+
+    Candle cloud writes:
+    <b>${n.candleCloudWrites}</b>
+
+    <br><br>
+
+    <b>
+      Candle cloud persistence is disabled in V5.1.
+    </b>
+    `;
 }
 
 async function load() {
   try {
     const response =
       await fetch(
-        '/api/data'
+        '/api/data',
+        {
+          cache:
+            'no-store'
+        }
       );
 
-    const d =
+    const data =
       await response.json();
 
-    cash.innerText =
-      '$' +
-      d.cash;
-
-    equity.innerText =
-      '$' +
-      d.equity;
-
-    closed.innerText =
-      d.stats.totalTrades;
-
-    win.innerText =
-      d.stats.winRate +
-      '%';
-
-    profit.innerText =
-      '$' +
-      Number(
-        d.stats.netProfit
-      ).toFixed(
-        2
-      );
-
-    pf.innerText =
-      d.stats.profitFactor;
-
-    open.innerText =
-      d.open +
-      '/' +
-      d.maxPositions;
-
-    ready.innerText =
-      d.ready;
-
-    symbols.innerText =
-      d.symbols;
-
-    breadth.innerText =
-      d.marketRegime.breadth +
-      '%';
-
-    pool.innerText =
-      d.candidatePool;
-
-    daily.innerText =
-      '$' +
-      d.dailyPnL;
-
-    dd.innerText =
-      Number(
-        d.stats.maxDrawdown
-      ).toFixed(
-        2
-      ) +
-      '%';
-
-    batch.innerText =
-      d.entriesSinceCooldown +
-      '/' +
-      d.entriesBeforeCooldown;
-
-    loss.innerText =
-      d.lossStreak +
-      '/3';
-
-    early.innerText =
-      d.stats.earlyFailureExits;
-
-    be.innerText =
-      d.stats.breakEvenMoves;
-
-    trail.innerText =
-      d.stats.trailingActivations;
-
-    locks.innerText =
-      d.stats.profitLocks ||
-      0;
-
-    restreq.innerText =
-      d.warmup.restRequests;
-
-    ratelimit.innerText =
-      d.warmup.rateLimited;
-
-    retries.innerText =
-      d.warmup.retries;
-
-    deferred.innerText =
-      d.warmup.deferred;
-
-    netmb.innerText =
-      d.network.estimatedOutboundMB +
-      ' MB';
-
-    mongomb.innerText =
-      d.network.mongoWriteMB +
-      ' MB';
-
-    cloud.innerText =
-      d.cloudConnected
-        ? '☁️ CLOUD DB CONNECTED'
-        : '🔴 CLOUD DB DISCONNECTED';
-
-    cloud.className =
-      d.cloudConnected
-        ? 'status green'
-        : 'status red';
-
-    ws.innerText =
-      (
-        d.miniConnected &&
-        d.klineConnected
-      )
-        ? '🟢 MARKET WEBSOCKETS LIVE'
-        : '🔴 MARKET CONNECTING';
-
-    ws.className =
-      (
-        d.miniConnected &&
-        d.klineConnected
-      )
-        ? 'status green'
-        : 'status red';
-
-    regime.innerText =
-      'MARKET REGIME: ' +
-      d.marketRegime.regime +
-      ' • BREADTH ' +
-      d.marketRegime.breadth +
-      '% • BTC FRESH ' +
-      d.marketRegime.btcFreshness +
-      ' • OVEREXTENDED ' +
-      (
-        d.marketRegime.overextended
-          ? 'YES'
-          : 'NO'
-      );
-
-    regime.className =
-      d.marketRegime.regime ===
-      'RISK_ON'
-        ? 'status green'
-        : d.marketRegime.regime ===
-          'NEUTRAL'
-          ? 'status yellow'
-          : 'status red';
-
-    cooldown.innerText =
-      d.cooldown
-        ? '🧠 COOLDOWN ' +
-          d.cooldownReason +
-          ' • ' +
-          d.cooldownMinutes +
-          ' MIN'
-        : '✅ SMART COOLDOWN READY';
-
-    cooldown.className =
-      d.cooldown
-        ? 'status yellow'
-        : 'status green';
-
-    warmupStatus.innerText =
-      '🔥 WARMUP: ' +
-      d.ready +
-      '/' +
-      d.symbols +
-      ' READY • REST ' +
-      d.warmup.restRequests +
-      ' • 429 ' +
-      d.warmup.rateLimited +
-      ' • RETRIES ' +
-      d.warmup.retries +
-      ' • DEFERRED ' +
-      d.warmup.deferred;
-
-    warmupStatus.className =
-      d.warmup.rateLimited >
-      0
-        ? 'status yellow'
-        : 'status green';
-
-    networkStatus.innerText =
-      '📡 INTERNAL NETWORK ESTIMATE: ' +
-      d.network.estimatedOutboundMB +
-      ' MB • MONGO ' +
-      d.network.mongoWriteMB +
-      ' MB • REST ' +
-      d.network.restRequestMB +
-      ' MB';
-
-    networkStatus.className =
-      'status green';
-
-    rows.innerHTML =
-      '';
-
     if (
-      !d.latest.length
+      !data.ok
     ) {
-      rows.innerHTML =
-        '<tr><td colspan="15">Warmup ' +
-        d.ready +
-        ' / ' +
-        d.symbols +
-        '</td></tr>';
-
       return;
     }
 
-    d.latest.forEach(
-      x => {
-        rows.innerHTML +=
-          '<tr>' +
-
-          '<td><b>' +
-          x.symbol +
-          '</b></td>' +
-
-          '<td>' +
-          x.grade +
-          '</td>' +
-
-          '<td>' +
-          x.edgeScore +
-          '</td>' +
-
-          '<td>' +
-          x.fresh +
-          '</td>' +
-
-          '<td>' +
-          x.flow +
-          '</td>' +
-
-          '<td>' +
-          x.decision +
-          '</td>' +
-
-          '<td>' +
-          x.cmo +
-          '</td>' +
-
-          '<td>' +
-          x.atr +
-          '</td>' +
-
-          '<td>' +
-          x.volume +
-          'x</td>' +
-
-          '<td>' +
-          x.volAccel +
-          'x</td>' +
-
-          '<td>' +
-          x.buyFlow +
-          (
-            x.buyFlow ===
-            'N/A'
-              ? ''
-              : '%'
-          ) +
-          '</td>' +
-
-          '<td>' +
-          x.accept +
-          '</td>' +
-
-          '<td>' +
-          x.shadow +
-          '</td>' +
-
-          '<td>' +
-          x.regime +
-          '</td>' +
-
-          '<td>' +
-          x.warnings +
-          '</td>' +
-
-          '</tr>';
-      }
+    renderCards(
+      data
     );
 
-  } catch (
-    error
-  ) {
+    renderPositions(
+      data.positions
+    );
+
+    renderCandidates(
+      data.candidates
+    );
+
+    renderMarket(
+      data
+    );
+
+    renderNetwork(
+      data
+    );
+
+  } catch (error) {
+
     console.error(
       error
     );
   }
 }
 
+load();
+
 setInterval(
   load,
-  3000
+  5000
 );
-
-load();
 
 </script>
 
 </body>
-
 </html>
-`)
+    `);
+  }
 );
 
 // ============================================================
-// SHUTDOWN
+// STARTUP
+// ============================================================
+
+async function start() {
+  console.log(
+    '======================================='
+  );
+
+  console.log(
+    'LOMY V5.1 BANDWIDTH OPTIMIZED'
+  );
+
+  console.log(
+    'PAPER ONLY'
+  );
+
+  console.log(
+    '======================================='
+  );
+
+  try {
+    await connectCloud();
+
+    await loadCloudState();
+
+  } catch (error) {
+
+    console.error(
+      'MongoDB startup error:',
+      error.message
+    );
+
+    process.exit(
+      1
+    );
+  }
+
+  connectMiniTicker();
+
+  // Give miniTicker time to build the first universe.
+  await sleep(
+    6000
+  );
+
+  try {
+    await refreshUniverse(
+      true
+    );
+
+  } catch (error) {
+
+    console.error(
+      'Initial universe:',
+      error.message
+    );
+  }
+
+  setTimeout(
+    () => {
+      calculateMarketRegime();
+
+      console.log(
+        `LOMY READY | Universe ${subscribed.size} | Warmup queue ${warmupQueue.length}`
+      );
+
+      tg(
+        `🤖 <b>LOMY V5.1 STARTED</b>
+PAPER ONLY
+Universe: ${subscribed.size}
+Candle cloud writes: OFF
+Analysis sampling: ${(
+          C.analysisJournalSampleRate *
+          100
+        ).toFixed(1)}%
+State save: ${C.stateSaveMs / 1000}s`
+      );
+    },
+    10000
+  );
+}
+
+// ============================================================
+// SERVER
+// ============================================================
+
+const server =
+  app.listen(
+    PORT,
+    () => {
+      console.log(
+        `LOMY dashboard running on port ${PORT}`
+      );
+    }
+  );
+
+start().catch(
+  error => {
+    console.error(
+      'Fatal startup:',
+      error
+    );
+
+    process.exit(
+      1
+    );
+  }
+);
+
+// ============================================================
+// GRACEFUL SHUTDOWN
 // ============================================================
 
 async function shutdown(
@@ -7115,8 +6231,7 @@ async function shutdown(
     true;
 
   console.log(
-    signal,
-    '- saving V5.1.1'
+    `${signal} received. Saving state...`
   );
 
   try {
@@ -7124,15 +6239,27 @@ async function shutdown(
   } catch {}
 
   try {
-    miniWs?.close();
+    safeCloseWs(
+      miniWs
+    );
   } catch {}
 
   try {
-    klineWs?.close();
+    safeCloseWs(
+      klineWs
+    );
   } catch {}
 
   try {
-    await mongoClient?.close();
+    server.close();
+  } catch {}
+
+  try {
+    if (
+      mongoClient
+    ) {
+      await mongoClient.close();
+    }
   } catch {}
 
   process.exit(
@@ -7142,7 +6269,6 @@ async function shutdown(
 
 process.on(
   'SIGTERM',
-
   () =>
     shutdown(
       'SIGTERM'
@@ -7151,7 +6277,6 @@ process.on(
 
 process.on(
   'SIGINT',
-
   () =>
     shutdown(
       'SIGINT'
@@ -7159,110 +6284,21 @@ process.on(
 );
 
 process.on(
-  'unhandledRejection',
-
-  error =>
+  'uncaughtException',
+  error => {
     console.error(
-      'UNHANDLED:',
+      'UNCAUGHT EXCEPTION:',
       error
-    )
+    );
+  }
 );
 
 process.on(
-  'uncaughtException',
-
-  error =>
+  'unhandledRejection',
+  error => {
     console.error(
-      'UNCAUGHT:',
+      'UNHANDLED REJECTION:',
       error
-    )
-);
-
-// ============================================================
-// START
-// ============================================================
-
-app.listen(
-  PORT,
-
-  async () => {
-    console.log(
-      '\n================================================='
     );
-
-    console.log(
-      'LOMY V5.1.1 WARMUP GUARD'
-    );
-
-    console.log(
-      `VERSION: ${C.version} | BUILD: ${C.buildTag}`
-    );
-
-    console.log(
-      'PAPER ONLY | Fresh Momentum | Flow Quality'
-    );
-
-    console.log(
-      'Anti-Chase | Climax Filter | Breakout Acceptance'
-    );
-
-    console.log(
-      'CANDLE CLOUD WRITES: OFF'
-    );
-
-    console.log(
-      'WARMUP 429 GUARD: ON'
-    );
-
-    console.log(
-      `WARMUP: ${C.warmupConcurrency} request worker | ${C.warmupDelayMs}ms spacing | Backoff up to ${C.warmupMaxBackoffMs / 1000}s`
-    );
-
-    console.log(
-      '================================================='
-    );
-
-    try {
-      await connectCloud();
-
-      await loadCloudState();
-
-      connectMini();
-
-      connectKline();
-
-      calculateMarketRegime();
-
-      tg(
-        `🚀 <b>LOMY V5.1.1 WARMUP GUARD</b>
-☁️ Cloud: CONNECTED
-📡 WebSocket: ON
-🔥 Binance 429 Guard: ON
-📉 Candle Cloud Writes: OFF
-🧠 Fresh Entry Engine: ON
-🐳 Flow Quality: ON
-🛡 Anti-Chase: ON
-⚠️ Climax Detection: ON
-📈 Breakout Acceptance: ON
-🧪 Shadow Edge: ON
-💰 PAPER ONLY
-Equity: $${equity().toFixed(
-          2
-        )}`
-      );
-
-    } catch (
-      error
-    ) {
-      console.error(
-        'STARTUP FAILED:',
-        error
-      );
-
-      tg(
-        `🔴 <b>LOMY V5.1.1 STARTUP FAILED</b>
-${error.message}`
-      );
-    }
   }
 );
