@@ -4746,75 +4746,132 @@ async function refreshUniverse() {
 
   try {
 
-    const url =
-      `${REST_BASE}/api/v3/ticker/24hr`;
+    let ranked = [];
 
-    networkMeter.restRequestBytes +=
-      byteLen(url);
+    try {
 
-    const response =
-      await axios.get(
-        url,
-        {
-          timeout:
-            15000
-        }
+      const url =
+        `${REST_BASE}/api/v3/ticker/24hr`;
+
+      networkMeter.restRequestBytes +=
+        byteLen(url);
+
+      const response =
+        await axios.get(
+          url,
+          {
+            timeout: 15000
+          }
+        );
+
+      const rows =
+        Array.isArray(response.data)
+          ? response.data
+          : [];
+
+      ranked =
+        rows
+          .filter(
+            row =>
+              String(
+                row.symbol || ''
+              ).endsWith('USDT')
+          )
+          .filter(
+            row =>
+              !IGNORED.has(
+                row.symbol
+              )
+          )
+          .filter(
+            row =>
+              n(
+                row.quoteVolume
+              ) >=
+              C.minQuoteVolume
+          )
+          .sort(
+            (a, b) =>
+              n(b.quoteVolume) -
+              n(a.quoteVolume)
+          )
+          .slice(
+            0,
+            C.universeSize
+          )
+          .map(
+            row =>
+              row.symbol
+          );
+
+      console.log(
+        `UNIVERSE REST OK | ${ranked.length} symbols`
       );
 
-    const rows =
-      Array.isArray(
-        response.data
-      )
-        ? response.data
-        : [];
+    } catch (error) {
 
-    const ranked =
-      rows
+      const status =
+        error.response?.status;
 
-        .filter(
-          row =>
-            String(
-              row.symbol ||
-              ''
-            ).endsWith(
-              'USDT'
-            )
-        )
+      if (
+        status === 418 ||
+        status === 429
+      ) {
 
-        .filter(
-          row =>
-            !IGNORED.has(
-              row.symbol
-            )
-        )
-
-        .filter(
-          row =>
-            n(
-              row.quoteVolume
-            ) >=
-            C.minQuoteVolume
-        )
-
-        .sort(
-          (a, b) =>
-            n(
-              b.quoteVolume
-            ) -
-            n(
-              a.quoteVolume
-            )
-        )
-
-        .slice(
-          0,
-          C.universeSize
-        )
-
-        .map(
-          row =>
-            row.symbol
+        console.warn(
+          `UNIVERSE REST ${status} | USING MINI WS FALLBACK`
         );
+
+        // Give MINI WebSocket time to receive its first ticker batch.
+        if (
+          tickers.size <
+          20
+        ) {
+
+          await sleep(3000);
+        }
+
+        ranked =
+          [...tickers.entries()]
+            .filter(
+              ([symbol]) =>
+                symbol.endsWith('USDT') &&
+                !IGNORED.has(symbol)
+            )
+            .filter(
+              ([, data]) =>
+                n(
+                  data.quoteVolume
+                ) >=
+                C.minQuoteVolume
+            )
+            .sort(
+              (a, b) =>
+                n(
+                  b[1].quoteVolume
+                ) -
+                n(
+                  a[1].quoteVolume
+                )
+            )
+            .slice(
+              0,
+              C.universeSize
+            )
+            .map(
+              ([symbol]) =>
+                symbol
+            );
+
+        console.log(
+          `UNIVERSE MINI FALLBACK | ${ranked.length} symbols`
+        );
+
+      } else {
+
+        throw error;
+      }
+    }
 
     if (
       !ranked.includes(
@@ -4827,12 +4884,32 @@ async function refreshUniverse() {
       );
     }
 
-    const next =
-      new Set(
-        ranked.slice(
+    ranked =
+      [...new Set(ranked)]
+        .slice(
           0,
           C.universeSize
-        )
+        );
+
+    if (
+      ranked.length === 0
+    ) {
+
+      console.warn(
+        'UNIVERSE EMPTY | retrying in 10s'
+      );
+
+      setTimeout(
+        refreshUniverse,
+        10000
+      );
+
+      return;
+    }
+
+    const next =
+      new Set(
+        ranked
       );
 
     const changed =
@@ -4876,6 +4953,11 @@ async function refreshUniverse() {
       'Universe:',
       error.response?.status ||
       error.message
+    );
+
+    setTimeout(
+      refreshUniverse,
+      30000
     );
   }
 }
