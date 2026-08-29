@@ -832,72 +832,252 @@ async function fetchWarmup(symbol) {
 
   if (
     warmupLoaded.has(symbol) ||
-    warmupLoading.has(symbol)
+    warmupLoading.has(symbol) ||
+    !subscribed.has(symbol)
   ) {
     return;
   }
 
-  warmupLoading.add(
-    symbol
-  );
+  warmupLoading.add(symbol);
+
+  async function fetchViaWsApi() {
+
+    return new Promise((resolve, reject) => {
+
+      const ws =
+        new WebSocket(
+          'wss://ws-api.binance.com/ws-api/v3'
+        );
+
+      const requestId =
+        `warmup-${symbol}-${Date.now()}`;
+
+      const timeout =
+        setTimeout(() => {
+
+          try {
+            ws.terminate();
+          } catch {}
+
+          reject(
+            new Error(
+              'WS_API_WARMUP_TIMEOUT'
+            )
+          );
+
+        }, 15000);
+
+      ws.on('open', () => {
+
+        ws.send(
+          JSON.stringify({
+            id: requestId,
+            method: 'klines',
+            params: {
+              symbol,
+              interval: C.interval,
+              limit: C.maxCandles
+            }
+          })
+        );
+      });
+
+      ws.on('message', raw => {
+
+        try {
+
+          const data =
+            JSON.parse(
+              raw.toString()
+            );
+
+          if (
+            data.id !== requestId
+          ) {
+            return;
+          }
+
+          clearTimeout(timeout);
+
+          try {
+            ws.close();
+          } catch {}
+
+          if (
+            data.status === 200 &&
+            Array.isArray(data.result)
+          ) {
+
+            resolve(data.result);
+
+          } else {
+
+            reject(
+              new Error(
+                `WS_API_STATUS_${data.status || 'UNKNOWN'}`
+              )
+            );
+          }
+
+        } catch (error) {
+
+          clearTimeout(timeout);
+
+          try {
+            ws.close();
+          } catch {}
+
+          reject(error);
+        }
+      });
+
+      ws.on('error', error => {
+
+        clearTimeout(timeout);
+
+        reject(error);
+      });
+
+      ws.on('close', () => {
+        clearTimeout(timeout);
+      });
+
+    });
+  }
 
   try {
 
-    warmupStats.restRequests++;
+    let rows = null;
+    let source = 'REST';
 
-    const requestDesc =
-      `${REST_BASE}/api/v3/klines?symbol=${symbol}&interval=${C.interval}&limit=${C.maxCandles}`;
+    try {
 
-    networkMeter.restRequestBytes +=
-      byteLen(
-        requestDesc
-      );
+      warmupStats.restRequests++;
 
-    const response =
-      await axios.get(
-        `${REST_BASE}/api/v3/klines`,
-        {
-          params: {
-            symbol,
-            interval:
-              C.interval,
-            limit:
-              C.maxCandles
-          },
+      const response =
+        await axios.get(
+          `${REST_BASE}/api/v3/klines`,
+          {
+            params: {
+              symbol,
+              interval: C.interval,
+              limit: C.maxCandles
+            },
 
-          timeout:
-            12000
+            timeout: 12000
+          }
+        );
+
+      rows =
+        response.data;
+
+    } catch (restError) {
+
+      const status =
+        restError.response?.status;
+
+      if (
+        status === 418 ||
+        status === 429
+      ) {
+
+        warmupStats.rateLimited++;
+        warmupStats.last429 =
+          Date.now();
+
+        console.warn(
+          `Warmup REST ${status} | ${symbol} | trying WS API`
+        );
+
+        try {
+
+          rows =
+            await fetchViaWsApi();
+
+          source =
+            'WS_API';
+
+          console.log(
+            `Warmup WS API OK | ${symbol}`
+          );
+
+        } catch (wsError) {
+
+          warmupStats.failed++;
+
+          const retryAfterSec =
+            n(
+              restError.response
+                ?.headers?.[
+                  'retry-after'
+                ]
+            );
+
+          const pauseMs =
+            retryAfterSec > 0
+              ? retryAfterSec * 1000
+              : 15 * 60 * 1000;
+
+          warmupBlockedUntil =
+            Math.max(
+              warmupBlockedUntil,
+              Date.now() +
+              pauseMs
+            );
+
+          console.error(
+            `Warmup blocked | ${symbol} | REST ${status} | WS fallback failed: ${wsError.message}`
+          );
+
+          scheduleWarmupResume(
+            pauseMs
+          );
+
+          return;
         }
+
+      } else {
+
+        throw restError;
+      }
+    }
+
+    if (
+      !Array.isArray(rows)
+    ) {
+
+      throw new Error(
+        'INVALID_WARMUP_DATA'
       );
+    }
 
     const now =
       Date.now();
 
-    mergeCandles(
-      symbol,
-
-      response.data
-        .map(
-          parseKline
-        )
+    const historical =
+      rows
+        .map(parseKline)
         .filter(
           candle =>
             candle.closeTime <
             now
-        )
+        );
+
+    mergeCandles(
+      symbol,
+      historical
     );
 
+    const count =
+      candles[symbol]?.length ||
+      0;
+
     if (
-      (
-        candles[symbol]?.length ||
-        0
-      ) >=
+      count >=
       C.warmupCandles
     ) {
 
-      warmupLoaded.add(
-        symbol
-      );
+      warmupLoaded.add(symbol);
 
       warmupRetryCount.delete(
         symbol
@@ -905,123 +1085,81 @@ async function fetchWarmup(symbol) {
 
       warmupStats.restLoaded++;
 
+      console.log(
+        `WARMUP READY ${symbol} | ${count} candles | ${source}`
+      );
+
     } else {
 
-      throw new Error(
-        'WARMUP_INCOMPLETE'
+      warmupStats.failed++;
+
+      console.warn(
+        `Warmup incomplete ${symbol} | ${count}/${C.warmupCandles}`
       );
+
+      const retries =
+        (
+          warmupRetryCount.get(
+            symbol
+          ) ||
+          0
+        ) + 1;
+
+      warmupRetryCount.set(
+        symbol,
+        retries
+      );
+
+      if (
+        retries <=
+        C.warmupMaxRetries
+      ) {
+
+        warmupStats.retries++;
+
+        setTimeout(
+          () =>
+            queueWarmup(symbol),
+          10000
+        );
+      }
     }
 
   } catch (error) {
 
-    const status =
-      error.response?.status;
+    warmupStats.failed++;
 
-    const retry =
-      n(
+    console.error(
+      `Warmup ${symbol}:`,
+      error.response?.status ||
+      error.message
+    );
+
+    const retries =
+      (
         warmupRetryCount.get(
           symbol
-        )
-      ) +
-      1;
+        ) ||
+        0
+      ) + 1;
 
     warmupRetryCount.set(
       symbol,
-      retry
+      retries
     );
 
-    warmupStats.failed++;
-
     if (
-      status ===
-        429 ||
-      status ===
-        418
-    ) {
-
-      warmupStats.rateLimited++;
-
-      warmupStats.last429 =
-        Date.now();
-
-      const retryAfterSec =
-        n(
-          error.response?.headers?.[
-            'retry-after'
-          ]
-        );
-
-      const backoff =
-        Math.min(
-          C.warmupRetryMaxMs,
-
-          Math.max(
-            C.warmup429MinPauseMs,
-
-            retryAfterSec *
-              1000 ||
-            C.warmupRetryBaseMs *
-              (
-                2 **
-                Math.min(
-                  retry,
-                  5
-                )
-              )
-          )
-        );
-
-      warmupBlockedUntil =
-        Date.now() +
-        backoff;
-
-      console.warn(
-        `Warmup rate limited ${status} | pause ${Math.ceil(
-          backoff /
-          1000
-        )}s`
-      );
-
-    } else {
-
-      console.warn(
-        `Warmup ${symbol}:`,
-        status ||
-        error.message
-      );
-    }
-
-    if (
-      retry <=
-        C.warmupMaxRetries &&
-      subscribed.has(
-        symbol
-      )
+      retries <= 2 &&
+      !shuttingDown
     ) {
 
       warmupStats.retries++;
 
-      const delay =
-        Math.min(
-          C.warmupRetryMaxMs,
-
-          C.warmupRetryBaseMs *
-            (
-              2 **
-              Math.min(
-                retry -
-                1,
-                5
-              )
-            )
-        );
-
       setTimeout(
         () =>
-          queueWarmup(
-            symbol
-          ),
-        delay
+          queueWarmup(symbol),
+        C.warmupRetryBaseMs *
+        retries
       );
     }
 
