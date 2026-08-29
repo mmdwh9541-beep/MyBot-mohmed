@@ -242,10 +242,11 @@ const pct = (diff, base) =>
     ? (diff / base) * 100
     : 0;
 
-const utcDay = () =>
-  new Date()
+function utcDay() {
+  return new Date()
     .toISOString()
     .slice(0, 10);
+}
 
 const byteLen = value => {
   try {
