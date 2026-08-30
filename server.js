@@ -21,8 +21,20 @@ const MONGODB_URI =
 const MONGODB_DB =
   process.env.MONGODB_DB || 'lomy';
 
-const REST_BASE =
+
+// ============================================================
+// EXCHANGES
+// ============================================================
+
+const BINANCE_REST =
   'https://data-api.binance.vision';
+
+const BYBIT_REST =
+  'https://api.bybit.com';
+
+const OKX_REST =
+  'https://www.okx.com';
+
 
 // ============================================================
 // CONFIG
@@ -31,10 +43,11 @@ const REST_BASE =
 const C = Object.freeze({
 
   version:
-    '6.1.0-15M-CYCLE20',
+    '6.1.1-15M-CYCLE20-MULTISOURCE',
 
+  // NEW KEY = NO OLD STATE
   stateKey:
-    'main-v610',
+    'main-v611',
 
   paperTrading:
     true,
@@ -43,7 +56,7 @@ const C = Object.freeze({
     10000,
 
   // ==========================================================
-  // MARKET DISCOVERY
+  // MARKET
   // ==========================================================
 
   universeSize:
@@ -56,13 +69,13 @@ const C = Object.freeze({
     2 * 60 * 1000,
 
   scanConcurrency:
-    6,
+    4,
 
   maxEntriesPerScan:
     2,
 
   // ==========================================================
-  // CYCLE ENGINE
+  // CYCLE
   // ==========================================================
 
   maxEntriesPerCycle:
@@ -113,7 +126,7 @@ const C = Object.freeze({
     0.50,
 
   // ==========================================================
-  // MOMENTUM / RETEST
+  // ENTRY
   // ==========================================================
 
   breakoutLookback:
@@ -138,7 +151,7 @@ const C = Object.freeze({
     0.18,
 
   // ==========================================================
-  // RISK + EXIT
+  // RISK
   // ==========================================================
 
   feePct:
@@ -165,6 +178,10 @@ const C = Object.freeze({
   structureBufferAtr:
     0.20,
 
+  // ==========================================================
+  // PROFIT MANAGEMENT
+  // ==========================================================
+
   breakEvenTriggerPct:
     0.50,
 
@@ -184,7 +201,7 @@ const C = Object.freeze({
     0.55,
 
   // ==========================================================
-  // ACCOUNT PROTECTION
+  // ACCOUNT GUARDS
   // ==========================================================
 
   dailyLossLimitPct:
@@ -197,6 +214,22 @@ const C = Object.freeze({
     45 * 60 * 1000,
 
   // ==========================================================
+  // EXCHANGE FAILOVER
+  // ==========================================================
+
+  binance429PauseMs:
+    5 * 60 * 1000,
+
+  binance418PauseMs:
+    30 * 60 * 1000,
+
+  exchangeFailurePauseMs:
+    60 * 1000,
+
+  requestTimeoutMs:
+    12000,
+
+  // ==========================================================
   // RUNTIME
   // ==========================================================
 
@@ -207,28 +240,25 @@ const C = Object.freeze({
     30000,
 
   universeRefreshMs:
-    15 * 60 * 1000,
-
-  requestTimeoutMs:
-    12000
+    10 * 60 * 1000
 });
 
 
 // ============================================================
-// IGNORED PAIRS
+// STABLECOIN / FIAT PAIRS TO IGNORE
 // ============================================================
 
-const IGNORED =
-  new Set([
-    'USDCUSDT',
-    'FDUSDUSDT',
-    'TUSDUSDT',
-    'USDPUSDT',
-    'BUSDUSDT',
-    'DAIUSDT',
-    'USDEUSDT',
-    'USD1USDT'
-  ]);
+const IGNORED = new Set([
+
+  'USDCUSDT',
+  'FDUSDUSDT',
+  'TUSDUSDT',
+  'USDPUSDT',
+  'BUSDUSDT',
+  'DAIUSDT',
+  'USDEUSDT',
+  'USD1USDT'
+]);
 
 
 // ============================================================
@@ -246,62 +276,75 @@ const sleep =
     );
 
 
-const n =
-  (
-    value,
-    fallback = 0
-  ) => {
+function n(
+  value,
+  fallback = 0
+) {
 
-    const number =
-      Number(
-        value
-      );
-
-    return Number.isFinite(
-      number
-    )
-      ? number
-      : fallback;
-  };
-
-
-const clamp =
-  (
-    value,
-    min,
-    max
-  ) =>
-    Math.max(
-      min,
-      Math.min(
-        max,
-        value
-      )
+  const number =
+    Number(
+      value
     );
 
-
-const pct =
-  (
-    diff,
-    base
-  ) =>
-    base
-      ? (
-          diff /
-          base
-        ) *
-        100
-      : 0;
+  return Number.isFinite(
+    number
+  )
+    ? number
+    : fallback;
+}
 
 
-const utcDay =
-  () =>
-    new Date()
-      .toISOString()
-      .slice(
-        0,
-        10
-      );
+function clamp(
+  value,
+  min,
+  max
+) {
+
+  return Math.max(
+    min,
+    Math.min(
+      max,
+      value
+    )
+  );
+}
+
+
+function pct(
+  diff,
+  base
+) {
+
+  return base
+    ? (
+        diff /
+        base
+      ) *
+      100
+    : 0;
+}
+
+
+function utcDay() {
+
+  return new Date()
+    .toISOString()
+    .slice(
+      0,
+      10
+    );
+}
+
+
+function roundTripCostPct() {
+
+  return (
+    C.feePct +
+    C.slippagePct
+  ) *
+    2 *
+    100;
+}
 
 
 // ============================================================
@@ -311,10 +354,8 @@ const utcDay =
 let cash =
   C.startingBalance;
 
-
 let positions =
   {};
-
 
 let stats = {
 
@@ -349,59 +390,29 @@ let stats = {
     0,
 
   cycleCount:
-    0
+    1
 };
 
 
 let currentDay =
   utcDay();
 
-
 let dailyStartEquity =
   C.startingBalance;
-
 
 let dailyPnL =
   0;
 
-
 let peakEquity =
   C.startingBalance;
-
 
 let manualPause =
   false;
 
-
 let dailyPause =
   false;
 
-
 let drawdownPause =
-  false;
-
-
-// ============================================================
-// MARKET STATE
-// ============================================================
-
-let universe =
-  [];
-
-
-let universeUpdatedAt =
-  0;
-
-
-let scanning =
-  false;
-
-
-let lastScanAt =
-  0;
-
-
-let shuttingDown =
   false;
 
 
@@ -427,7 +438,10 @@ let cycle = {
     0,
 
   lastScanCandidates:
-    0
+    0,
+
+  lastUniverseSource:
+    null
 };
 
 
@@ -436,34 +450,87 @@ const lastLossBySymbol =
 
 
 // ============================================================
-// MONGODB
+// MARKET STATE
+// ============================================================
+
+let universe =
+  [];
+
+let universeUpdatedAt =
+  0;
+
+let scanning =
+  false;
+
+let shuttingDown =
+  false;
+
+
+// ============================================================
+// EXCHANGE HEALTH
+// ============================================================
+
+const exchangeHealth = {
+
+  BINANCE: {
+
+    blockedUntil:
+      0,
+
+    failures:
+      0,
+
+    lastError:
+      null,
+
+    lastSuccess:
+      0
+  },
+
+  BYBIT: {
+
+    blockedUntil:
+      0,
+
+    failures:
+      0,
+
+    lastError:
+      null,
+
+    lastSuccess:
+      0
+  },
+
+  OKX: {
+
+    blockedUntil:
+      0,
+
+    failures:
+      0,
+
+    lastError:
+      null,
+
+    lastSuccess:
+      0
+  }
+};
+
+
+// ============================================================
+// DATABASE
 // ============================================================
 
 let mongoClient =
   null;
 
-
 let db =
   null;
 
-
 let cloudConnected =
   false;
-
-
-// ============================================================
-// COSTS
-// ============================================================
-
-function roundTripCostPct() {
-
-  return (
-    C.feePct +
-    C.slippagePct
-  ) *
-    2 *
-    100;
-}
 
 
 // ============================================================
@@ -471,7 +538,7 @@ function roundTripCostPct() {
 // ============================================================
 
 function equity(
-  markPrices = {}
+  prices = {}
 ) {
 
   let value =
@@ -484,18 +551,20 @@ function equity(
     )
   ) {
 
-    const mark =
+    const price =
       n(
-        markPrices[
+
+        prices[
           position.symbol
         ],
+
         position.lastPrice ||
         position.entryPrice
       );
 
     value +=
       position.qty *
-      mark;
+      price;
   }
 
   return value;
@@ -503,29 +572,30 @@ function equity(
 
 
 // ============================================================
-// DAILY RESET
+// ACCOUNT GUARDS
 // ============================================================
 
 function resetDailyIfNeeded(
-  markPrices = {}
+  prices = {}
 ) {
 
-  const day =
+  const today =
     utcDay();
 
   if (
-    day ===
+    today ===
     currentDay
   ) {
+
     return;
   }
 
   currentDay =
-    day;
+    today;
 
   dailyStartEquity =
     equity(
-      markPrices
+      prices
     );
 
   dailyPnL =
@@ -536,17 +606,13 @@ function resetDailyIfNeeded(
 }
 
 
-// ============================================================
-// ACCOUNT GUARDS
-// ============================================================
-
 function updateAccountGuards(
-  markPrices = {}
+  prices = {}
 ) {
 
   const eq =
     equity(
-      markPrices
+      prices
     );
 
   peakEquity =
@@ -555,7 +621,8 @@ function updateAccountGuards(
       eq
     );
 
-  const dd =
+
+  const ddPct =
     peakEquity >
     0
       ? (
@@ -568,34 +635,31 @@ function updateAccountGuards(
         100
       : 0;
 
+
   stats.maxDrawdown =
     Math.max(
       stats.maxDrawdown,
-      dd
+      ddPct
     );
 
-  const dailyLoss =
-    dailyStartEquity >
-    0
-      ? (
-          -dailyPnL /
-          dailyStartEquity
-        )
-      : 0;
 
   if (
-    dailyLoss >=
-    C.dailyLossLimitPct
+    dailyStartEquity >
+      0 &&
+    -dailyPnL /
+      dailyStartEquity >=
+      C.dailyLossLimitPct
   ) {
 
     dailyPause =
       true;
   }
 
+
   if (
-    dd /
-    100 >=
-    C.maxAccountDrawdownPct
+    ddPct /
+      100 >=
+      C.maxAccountDrawdownPct
   ) {
 
     drawdownPause =
@@ -603,10 +667,6 @@ function updateAccountGuards(
   }
 }
 
-
-// ============================================================
-// ENTRY BLOCK
-// ============================================================
 
 function entryBlocked() {
 
@@ -621,7 +681,7 @@ function entryBlocked() {
 
 
 // ============================================================
-// EMA
+// INDICATORS
 // ============================================================
 
 function ema(
@@ -640,6 +700,7 @@ function ema(
     return null;
   }
 
+
   let result =
     values
       .slice(
@@ -657,12 +718,14 @@ function ema(
       ) /
     period;
 
+
   const multiplier =
     2 /
     (
       period +
       1
     );
+
 
   for (
     let i =
@@ -673,22 +736,18 @@ function ema(
   ) {
 
     result =
-      values[i] *
-        multiplier +
-      result *
-        (
-          1 -
-          multiplier
-        );
+      (
+        values[i] -
+        result
+      ) *
+      multiplier +
+      result;
   }
+
 
   return result;
 }
 
-
-// ============================================================
-// CMO
-// ============================================================
 
 function cmo(
   closes,
@@ -707,11 +766,13 @@ function cmo(
     return null;
   }
 
+
   let up =
     0;
 
   let down =
     0;
+
 
   for (
     let i =
@@ -722,38 +783,44 @@ function cmo(
     i++
   ) {
 
-    const diff =
+    const difference =
       closes[i] -
       closes[
         i - 1
       ];
 
+
     if (
-      diff >
+      difference >
       0
     ) {
 
       up +=
-        diff;
+        difference;
 
     } else {
 
       down +=
         Math.abs(
-          diff
+          difference
         );
     }
   }
+
 
   const total =
     up +
     down;
 
+
   if (
-    !total
+    total ===
+    0
   ) {
+
     return 0;
   }
+
 
   return (
     (
@@ -765,10 +832,6 @@ function cmo(
     100;
 }
 
-
-// ============================================================
-// ATR
-// ============================================================
 
 function atr(
   candles,
@@ -787,15 +850,17 @@ function atr(
     return null;
   }
 
+
   const values =
     [];
+
 
   for (
     let i =
       candles.length -
       period;
     i <
-      candles.length;
+    candles.length;
     i++
   ) {
 
@@ -807,7 +872,9 @@ function atr(
         i - 1
       ];
 
-    const tr =
+
+    values.push(
+
       Math.max(
 
         current.high -
@@ -822,12 +889,10 @@ function atr(
           current.low -
           previous.close
         )
-      );
-
-    values.push(
-      tr
+      )
     );
   }
+
 
   return (
     values.reduce(
@@ -844,23 +909,45 @@ function atr(
 }
 
 
-// ============================================================
-// VOLUME SMA
-// ============================================================
+function candleBodyRatio(
+  candle
+) {
+
+  const range =
+    candle.high -
+    candle.low;
+
+
+  if (
+    range <=
+    0
+  ) {
+
+    return 0;
+  }
+
+
+  return (
+    Math.abs(
+      candle.close -
+      candle.open
+    ) /
+    range
+  );
+}
+
 
 function smaVolume(
   candles,
-  period,
-  excludeLast = true
+  period
 ) {
 
   const base =
-    excludeLast
-      ? candles.slice(
-          0,
-          -1
-        )
-      : candles.slice();
+    candles.slice(
+      0,
+      -1
+    );
+
 
   if (
     base.length <
@@ -870,10 +957,12 @@ function smaVolume(
     return null;
   }
 
+
   const rows =
     base.slice(
       -period
     );
+
 
   return (
     rows.reduce(
@@ -893,141 +982,334 @@ function smaVolume(
 
 
 // ============================================================
-// CANDLE BODY
+// EXCHANGE HEALTH HELPERS
 // ============================================================
 
-function candleBodyRatio(
-  candle
+function exchangeAvailable(
+  name
 ) {
 
-  const range =
-    candle.high -
-    candle.low;
+  return (
+    Date.now() >=
+    exchangeHealth[
+      name
+    ].blockedUntil
+  );
+}
+
+
+function markExchangeSuccess(
+  name
+) {
+
+  const health =
+    exchangeHealth[
+      name
+    ];
+
+  health.failures =
+    0;
+
+  health.lastError =
+    null;
+
+  health.lastSuccess =
+    Date.now();
+}
+
+
+function markExchangeFailure(
+  name,
+  error
+) {
+
+  const health =
+    exchangeHealth[
+      name
+    ];
+
+
+  health.failures++;
+
+
+  health.lastError =
+    error.message ||
+    String(
+      error
+    );
+
+
+  let pause =
+    C.exchangeFailurePauseMs;
+
+
+  const status =
+    error.response?.status;
+
 
   if (
-    range <=
-    0
+    name ===
+      'BINANCE' &&
+    status ===
+      418
   ) {
 
-    return 0;
+    pause =
+      C.binance418PauseMs;
+
+  } else if (
+    name ===
+      'BINANCE' &&
+    status ===
+      429
+  ) {
+
+    pause =
+      C.binance429PauseMs;
   }
 
-  return (
-    Math.abs(
-      candle.close -
-      candle.open
-    ) /
-    range
+
+  health.blockedUntil =
+    Date.now() +
+    pause;
+
+
+  console.warn(
+
+    `${name} paused ` +
+
+    `${Math.ceil(pause / 60000)}m | ` +
+
+    `${
+      status ||
+      error.message
+    }`
   );
 }
 
 
 // ============================================================
-// BINANCE KLINE PARSER
+// BINANCE
 // ============================================================
 
-function parseKline(
-  row
-) {
-
-  return {
-
-    openTime:
-      n(
-        row[0]
-      ),
-
-    open:
-      n(
-        row[1]
-      ),
-
-    high:
-      n(
-        row[2]
-      ),
-
-    low:
-      n(
-        row[3]
-      ),
-
-    close:
-      n(
-        row[4]
-      ),
-
-    volume:
-      n(
-        row[5]
-      ),
-
-    closeTime:
-      n(
-        row[6]
-      ),
-
-    quoteVolume:
-      n(
-        row[7]
-      ),
-
-    trades:
-      n(
-        row[8]
-      ),
-
-    takerBuyBase:
-      n(
-        row[9]
-      ),
-
-    takerBuyQuote:
-      n(
-        row[10]
-      )
-  };
-}
-
-
-// ============================================================
-// HTTP
-// ============================================================
-
-async function getJson(
+async function binanceGet(
   path,
   params = {}
 ) {
 
-  const response =
-    await axios.get(
+  if (
+    !exchangeAvailable(
+      'BINANCE'
+    )
+  ) {
 
-      `${REST_BASE}${path}`,
+    throw new Error(
+      'BINANCE_TEMP_BLOCKED'
+    );
+  }
 
-      {
-        params,
 
-        timeout:
-          C.requestTimeoutMs
-      }
+  try {
+
+    const response =
+      await axios.get(
+
+        `${BINANCE_REST}${path}`,
+
+        {
+          params,
+
+          timeout:
+            C.requestTimeoutMs
+        }
+      );
+
+
+    markExchangeSuccess(
+      'BINANCE'
     );
 
-  return response.data;
+
+    return response.data;
+
+  } catch (
+    error
+  ) {
+
+    markExchangeFailure(
+      'BINANCE',
+      error
+    );
+
+    throw error;
+  }
 }
 
 
 // ============================================================
-// KLINES
+// BYBIT
 // ============================================================
 
-async function fetchClosedKlines(
+async function bybitGet(
+  path,
+  params = {}
+) {
+
+  if (
+    !exchangeAvailable(
+      'BYBIT'
+    )
+  ) {
+
+    throw new Error(
+      'BYBIT_TEMP_BLOCKED'
+    );
+  }
+
+
+  try {
+
+    const response =
+      await axios.get(
+
+        `${BYBIT_REST}${path}`,
+
+        {
+          params,
+
+          timeout:
+            C.requestTimeoutMs
+        }
+      );
+
+
+    if (
+      n(
+        response.data?.retCode
+      ) !==
+      0
+    ) {
+
+      throw new Error(
+
+        `BYBIT_${
+          response.data?.retCode
+        }_${
+          response.data?.retMsg
+        }`
+      );
+    }
+
+
+    markExchangeSuccess(
+      'BYBIT'
+    );
+
+
+    return response.data;
+
+  } catch (
+    error
+  ) {
+
+    markExchangeFailure(
+      'BYBIT',
+      error
+    );
+
+    throw error;
+  }
+}
+
+
+// ============================================================
+// OKX
+// ============================================================
+
+async function okxGet(
+  path,
+  params = {}
+) {
+
+  if (
+    !exchangeAvailable(
+      'OKX'
+    )
+  ) {
+
+    throw new Error(
+      'OKX_TEMP_BLOCKED'
+    );
+  }
+
+
+  try {
+
+    const response =
+      await axios.get(
+
+        `${OKX_REST}${path}`,
+
+        {
+          params,
+
+          timeout:
+            C.requestTimeoutMs
+        }
+      );
+
+
+    if (
+      String(
+        response.data?.code
+      ) !==
+      '0'
+    ) {
+
+      throw new Error(
+
+        `OKX_${
+          response.data?.code
+        }_${
+          response.data?.msg
+        }`
+      );
+    }
+
+
+    markExchangeSuccess(
+      'OKX'
+    );
+
+
+    return response.data;
+
+  } catch (
+    error
+  ) {
+
+    markExchangeFailure(
+      'OKX',
+      error
+    );
+
+    throw error;
+  }
+}
+
+
+// ============================================================
+// BINANCE KLINES
+// ============================================================
+
+async function fetchBinanceKlines(
   symbol,
   interval,
   limit
 ) {
 
   const data =
-    await getJson(
+    await binanceGet(
 
       '/api/v3/klines',
 
@@ -1038,12 +1320,58 @@ async function fetchClosedKlines(
       }
     );
 
+
   const now =
     Date.now();
 
+
   return data
     .map(
-      parseKline
+      row => ({
+
+        openTime:
+          n(
+            row[0]
+          ),
+
+        open:
+          n(
+            row[1]
+          ),
+
+        high:
+          n(
+            row[2]
+          ),
+
+        low:
+          n(
+            row[3]
+          ),
+
+        close:
+          n(
+            row[4]
+          ),
+
+        volume:
+          n(
+            row[5]
+          ),
+
+        closeTime:
+          n(
+            row[6]
+          ),
+
+        quoteVolume:
+          n(
+            row[7]
+          ),
+
+        source:
+          'BINANCE'
+      })
     )
     .filter(
       candle =>
@@ -1054,7 +1382,636 @@ async function fetchClosedKlines(
 
 
 // ============================================================
-// FRESH UNIVERSE
+// BYBIT KLINES
+// ============================================================
+
+function bybitInterval(
+  interval
+) {
+
+  if (
+    interval ===
+    '15m'
+  ) {
+
+    return '15';
+  }
+
+
+  if (
+    interval ===
+    '1h'
+  ) {
+
+    return '60';
+  }
+
+
+  throw new Error(
+    `UNSUPPORTED_BYBIT_INTERVAL_${interval}`
+  );
+}
+
+
+async function fetchBybitKlines(
+  symbol,
+  interval,
+  limit
+) {
+
+  const data =
+    await bybitGet(
+
+      '/v5/market/kline',
+
+      {
+        category:
+          'spot',
+
+        symbol,
+
+        interval:
+          bybitInterval(
+            interval
+          ),
+
+        limit
+      }
+    );
+
+
+  const rows =
+    data.result?.list ||
+    [];
+
+
+  const intervalMs =
+    interval ===
+      '15m'
+      ? 15 * 60 * 1000
+      : 60 * 60 * 1000;
+
+
+  const now =
+    Date.now();
+
+
+  return rows
+    .map(
+      row => {
+
+        const openTime =
+          n(
+            row[0]
+          );
+
+
+        return {
+
+          openTime,
+
+          open:
+            n(
+              row[1]
+            ),
+
+          high:
+            n(
+              row[2]
+            ),
+
+          low:
+            n(
+              row[3]
+            ),
+
+          close:
+            n(
+              row[4]
+            ),
+
+          volume:
+            n(
+              row[5]
+            ),
+
+          quoteVolume:
+            n(
+              row[6]
+            ),
+
+          closeTime:
+            openTime +
+            intervalMs -
+            1,
+
+          source:
+            'BYBIT'
+        };
+      }
+    )
+    .filter(
+      candle =>
+        candle.closeTime <
+        now
+    )
+    .sort(
+      (
+        a,
+        b
+      ) =>
+        a.openTime -
+        b.openTime
+    );
+}
+
+
+// ============================================================
+// OKX KLINES
+// ============================================================
+
+function okxSymbol(
+  symbol
+) {
+
+  if (
+    symbol.endsWith(
+      'USDT'
+    )
+  ) {
+
+    return (
+      symbol.slice(
+        0,
+        -4
+      ) +
+      '-USDT'
+    );
+  }
+
+
+  return symbol;
+}
+
+
+function okxInterval(
+  interval
+) {
+
+  if (
+    interval ===
+    '15m'
+  ) {
+
+    return '15m';
+  }
+
+
+  if (
+    interval ===
+    '1h'
+  ) {
+
+    return '1H';
+  }
+
+
+  throw new Error(
+    `UNSUPPORTED_OKX_INTERVAL_${interval}`
+  );
+}
+
+
+async function fetchOkxKlines(
+  symbol,
+  interval,
+  limit
+) {
+
+  const data =
+    await okxGet(
+
+      '/api/v5/market/candles',
+
+      {
+        instId:
+          okxSymbol(
+            symbol
+          ),
+
+        bar:
+          okxInterval(
+            interval
+          ),
+
+        limit:
+          Math.min(
+            limit,
+            100
+          )
+      }
+    );
+
+
+  const rows =
+    data.data ||
+    [];
+
+
+  const intervalMs =
+    interval ===
+      '15m'
+      ? 15 * 60 * 1000
+      : 60 * 60 * 1000;
+
+
+  const now =
+    Date.now();
+
+
+  return rows
+    .map(
+      row => {
+
+        const openTime =
+          n(
+            row[0]
+          );
+
+
+        return {
+
+          openTime,
+
+          open:
+            n(
+              row[1]
+            ),
+
+          high:
+            n(
+              row[2]
+            ),
+
+          low:
+            n(
+              row[3]
+            ),
+
+          close:
+            n(
+              row[4]
+            ),
+
+          volume:
+            n(
+              row[5]
+            ),
+
+          quoteVolume:
+            n(
+              row[7] ||
+              row[6]
+            ),
+
+          closeTime:
+            openTime +
+            intervalMs -
+            1,
+
+          source:
+            'OKX'
+        };
+      }
+    )
+    .filter(
+      candle =>
+        candle.closeTime <
+        now
+    )
+    .sort(
+      (
+        a,
+        b
+      ) =>
+        a.openTime -
+        b.openTime
+    );
+}
+
+
+// ============================================================
+// MULTI SOURCE KLINES
+// ============================================================
+
+async function fetchClosedKlines(
+  symbol,
+  interval,
+  limit
+) {
+
+  const errors =
+    [];
+
+
+  // 1. BINANCE
+  if (
+    exchangeAvailable(
+      'BINANCE'
+    )
+  ) {
+
+    try {
+
+      const rows =
+        await fetchBinanceKlines(
+
+          symbol,
+
+          interval,
+
+          limit
+        );
+
+
+      if (
+        rows.length >=
+        30
+      ) {
+
+        return {
+
+          source:
+            'BINANCE',
+
+          candles:
+            rows
+        };
+      }
+
+    } catch (
+      error
+    ) {
+
+      errors.push(
+        `BINANCE=${error.message}`
+      );
+    }
+  }
+
+
+  // 2. BYBIT
+  if (
+    exchangeAvailable(
+      'BYBIT'
+    )
+  ) {
+
+    try {
+
+      const rows =
+        await fetchBybitKlines(
+
+          symbol,
+
+          interval,
+
+          limit
+        );
+
+
+      if (
+        rows.length >=
+        30
+      ) {
+
+        return {
+
+          source:
+            'BYBIT',
+
+          candles:
+            rows
+        };
+      }
+
+    } catch (
+      error
+    ) {
+
+      errors.push(
+        `BYBIT=${error.message}`
+      );
+    }
+  }
+
+
+  // 3. OKX
+  if (
+    exchangeAvailable(
+      'OKX'
+    )
+  ) {
+
+    try {
+
+      const rows =
+        await fetchOkxKlines(
+
+          symbol,
+
+          interval,
+
+          limit
+        );
+
+
+      if (
+        rows.length >=
+        30
+      ) {
+
+        return {
+
+          source:
+            'OKX',
+
+          candles:
+            rows
+        };
+      }
+
+    } catch (
+      error
+    ) {
+
+      errors.push(
+        `OKX=${error.message}`
+      );
+    }
+  }
+
+
+  throw new Error(
+
+    `NO_KLINE_SOURCE ${symbol} ${interval} | ` +
+
+    errors.join(
+      ' | '
+    )
+  );
+}
+
+
+// ============================================================
+// UNIVERSE - BINANCE
+// ============================================================
+
+async function universeFromBinance() {
+
+  const rows =
+    await binanceGet(
+      '/api/v3/ticker/24hr'
+    );
+
+
+  return rows
+    .filter(
+      row =>
+        row.symbol.endsWith(
+          'USDT'
+        )
+    )
+    .filter(
+      row =>
+        !IGNORED.has(
+          row.symbol
+        )
+    )
+    .map(
+      row => ({
+
+        symbol:
+          row.symbol,
+
+        quoteVolume:
+          n(
+            row.quoteVolume
+          )
+      })
+    );
+}
+
+
+// ============================================================
+// UNIVERSE - BYBIT
+// ============================================================
+
+async function universeFromBybit() {
+
+  const data =
+    await bybitGet(
+
+      '/v5/market/tickers',
+
+      {
+        category:
+          'spot'
+      }
+    );
+
+
+  return (
+    data.result?.list ||
+    []
+  )
+    .filter(
+      row =>
+        row.symbol?.endsWith(
+          'USDT'
+        )
+    )
+    .filter(
+      row =>
+        !IGNORED.has(
+          row.symbol
+        )
+    )
+    .map(
+      row => ({
+
+        symbol:
+          row.symbol,
+
+        quoteVolume:
+          n(
+            row.turnover24h
+          )
+      })
+    );
+}
+
+
+// ============================================================
+// UNIVERSE - OKX
+// ============================================================
+
+async function universeFromOkx() {
+
+  const data =
+    await okxGet(
+
+      '/api/v5/market/tickers',
+
+      {
+        instType:
+          'SPOT'
+      }
+    );
+
+
+  return (
+    data.data ||
+    []
+  )
+    .filter(
+      row =>
+        row.instId?.endsWith(
+          '-USDT'
+        )
+    )
+    .map(
+      row => {
+
+        const symbol =
+          row.instId.replace(
+            '-',
+            ''
+          );
+
+
+        return {
+
+          symbol,
+
+          quoteVolume:
+            n(
+              row.volCcy24h
+            )
+        };
+      }
+    )
+    .filter(
+      row =>
+        !IGNORED.has(
+          row.symbol
+        )
+    );
+}
+
+
+// ============================================================
+// MULTI SOURCE UNIVERSE
 // ============================================================
 
 async function refreshUniverse(
@@ -1072,30 +2029,85 @@ async function refreshUniverse(
     return universe;
   }
 
-  const rows =
-    await getJson(
-      '/api/v3/ticker/24hr'
+
+  let rows =
+    null;
+
+  let source =
+    null;
+
+
+  if (
+    exchangeAvailable(
+      'BINANCE'
+    )
+  ) {
+
+    try {
+
+      rows =
+        await universeFromBinance();
+
+      source =
+        'BINANCE';
+
+    } catch {}
+  }
+
+
+  if (
+    !rows &&
+    exchangeAvailable(
+      'BYBIT'
+    )
+  ) {
+
+    try {
+
+      rows =
+        await universeFromBybit();
+
+      source =
+        'BYBIT';
+
+    } catch {}
+  }
+
+
+  if (
+    !rows &&
+    exchangeAvailable(
+      'OKX'
+    )
+  ) {
+
+    try {
+
+      rows =
+        await universeFromOkx();
+
+      source =
+        'OKX';
+
+    } catch {}
+  }
+
+
+  if (
+    !rows
+  ) {
+
+    throw new Error(
+      'ALL_UNIVERSE_SOURCES_FAILED'
     );
+  }
+
 
   universe =
     rows
       .filter(
         row =>
-          row.symbol.endsWith(
-            'USDT'
-          )
-      )
-      .filter(
-        row =>
-          !IGNORED.has(
-            row.symbol
-          )
-      )
-      .filter(
-        row =>
-          n(
-            row.quoteVolume
-          ) >=
+          row.quoteVolume >=
           C.minQuoteVolume
       )
       .sort(
@@ -1103,12 +2115,8 @@ async function refreshUniverse(
           a,
           b
         ) =>
-          n(
-            b.quoteVolume
-          ) -
-          n(
-            a.quoteVolume
-          )
+          b.quoteVolume -
+          a.quoteVolume
       )
       .slice(
         0,
@@ -1119,10 +2127,264 @@ async function refreshUniverse(
           row.symbol
       );
 
+
   universeUpdatedAt =
     Date.now();
 
+
+  cycle.lastUniverseSource =
+    source;
+
+
+  console.log(
+
+    `UNIVERSE ${source} | ` +
+
+    `${universe.length} symbols`
+  );
+
+
   return universe;
+}
+
+
+// ============================================================
+// PRICE - BINANCE
+// ============================================================
+
+async function priceFromBinance(
+  symbol
+) {
+
+  const row =
+    await binanceGet(
+
+      '/api/v3/ticker/price',
+
+      {
+        symbol
+      }
+    );
+
+
+  const price =
+    n(
+      row.price
+    );
+
+
+  if (
+    !price
+  ) {
+
+    throw new Error(
+      'BINANCE_INVALID_PRICE'
+    );
+  }
+
+
+  return price;
+}
+
+
+// ============================================================
+// PRICE - BYBIT
+// ============================================================
+
+async function priceFromBybit(
+  symbol
+) {
+
+  const data =
+    await bybitGet(
+
+      '/v5/market/tickers',
+
+      {
+        category:
+          'spot',
+
+        symbol
+      }
+    );
+
+
+  const price =
+    n(
+      data.result?.list?.[
+        0
+      ]?.lastPrice
+    );
+
+
+  if (
+    !price
+  ) {
+
+    throw new Error(
+      'BYBIT_INVALID_PRICE'
+    );
+  }
+
+
+  return price;
+}
+
+
+// ============================================================
+// PRICE - OKX
+// ============================================================
+
+async function priceFromOkx(
+  symbol
+) {
+
+  const data =
+    await okxGet(
+
+      '/api/v5/market/ticker',
+
+      {
+        instId:
+          okxSymbol(
+            symbol
+          )
+      }
+    );
+
+
+  const price =
+    n(
+      data.data?.[
+        0
+      ]?.last
+    );
+
+
+  if (
+    !price
+  ) {
+
+    throw new Error(
+      'OKX_INVALID_PRICE'
+    );
+  }
+
+
+  return price;
+}
+
+
+// ============================================================
+// MULTI SOURCE PRICE
+// ============================================================
+
+async function getCurrentPrice(
+  symbol
+) {
+
+  const errors =
+    [];
+
+
+  if (
+    exchangeAvailable(
+      'BINANCE'
+    )
+  ) {
+
+    try {
+
+      return {
+
+        price:
+          await priceFromBinance(
+            symbol
+          ),
+
+        source:
+          'BINANCE'
+      };
+
+    } catch (
+      error
+    ) {
+
+      errors.push(
+        `BINANCE=${error.message}`
+      );
+    }
+  }
+
+
+  if (
+    exchangeAvailable(
+      'BYBIT'
+    )
+  ) {
+
+    try {
+
+      return {
+
+        price:
+          await priceFromBybit(
+            symbol
+          ),
+
+        source:
+          'BYBIT'
+      };
+
+    } catch (
+      error
+    ) {
+
+      errors.push(
+        `BYBIT=${error.message}`
+      );
+    }
+  }
+
+
+  if (
+    exchangeAvailable(
+      'OKX'
+    )
+  ) {
+
+    try {
+
+      return {
+
+        price:
+          await priceFromOkx(
+            symbol
+          ),
+
+        source:
+          'OKX'
+      };
+
+    } catch (
+      error
+    ) {
+
+      errors.push(
+        `OKX=${error.message}`
+      );
+    }
+  }
+
+
+  throw new Error(
+
+    `NO_PRICE_SOURCE ${symbol} | ` +
+
+    errors.join(
+      ' | '
+    )
+  );
 }
 
 
@@ -1140,6 +2402,7 @@ function analyze1h(
   ) {
 
     return {
+
       ok:
         false,
 
@@ -1148,11 +2411,13 @@ function analyze1h(
     };
   }
 
+
   const closes =
     candles.map(
       candle =>
         candle.close
     );
+
 
   const ema9 =
     ema(
@@ -1160,22 +2425,30 @@ function analyze1h(
       C.emaFast
     );
 
+
   const ema21 =
     ema(
       closes,
       C.emaSlow
     );
 
+
   const current =
     candles.at(
       -1
     );
 
+
   const bullish =
+
     ema9 >
-      ema21 &&
+      ema21
+
+    &&
+
     current.close >=
       ema9;
+
 
   return {
 
@@ -1189,16 +2462,13 @@ function analyze1h(
     close:
       current.close,
 
-    reason:
-      bullish
-        ? '1H_BULLISH'
-        : '1H_NOT_BULLISH'
+    bullish
   };
 }
 
 
 // ============================================================
-// RECENT BREAKOUT
+// RETEST BREAKOUT DETECTOR
 // ============================================================
 
 function detectRecentBreakout(
@@ -1208,12 +2478,15 @@ function detectRecentBreakout(
 
   const recent =
     candles.slice(
+
       -(
         C.retestLookbackBars +
         1
       ),
+
       -1
     );
+
 
   for (
     let i =
@@ -1225,7 +2498,10 @@ function detectRecentBreakout(
   ) {
 
     const candle =
-      recent[i];
+      recent[
+        i
+      ];
+
 
     if (
       candle.close >
@@ -1251,7 +2527,9 @@ function detectRecentBreakout(
     }
   }
 
+
   return {
+
     found:
       false
   };
@@ -1281,15 +2559,18 @@ function analyze15m(
     };
   }
 
+
   const current =
     candles.at(
       -1
     );
 
+
   const previous =
     candles.at(
       -2
     );
+
 
   const closes =
     candles.map(
@@ -1297,11 +2578,13 @@ function analyze15m(
         candle.close
     );
 
+
   const ema9 =
     ema(
       closes,
       C.emaFast
     );
+
 
   const ema21 =
     ema(
@@ -1309,11 +2592,13 @@ function analyze15m(
       C.emaSlow
     );
 
+
   const momentum =
     cmo(
       closes,
       C.cmoLength
     );
+
 
   const atrValue =
     atr(
@@ -1321,21 +2606,15 @@ function analyze15m(
       14
     );
 
-  const atrPct =
-    pct(
-      atrValue,
-      current.close
-    );
 
   const averageVolume =
     smaVolume(
 
       candles,
 
-      C.volumeSmaLength,
-
-      true
+      C.volumeSmaLength
     );
+
 
   const volumeRatio =
     averageVolume >
@@ -1344,38 +2623,38 @@ function analyze15m(
         averageVolume
       : 0;
 
+
   const bodyRatio =
     candleBodyRatio(
       current
     );
 
-  const bullishCandle =
-    current.close >
-    current.open;
-
-  // ----------------------------------------------------------
-  // Resistance is calculated BEFORE the current + previous bar
-  // ----------------------------------------------------------
 
   const prior =
     candles.slice(
+
       -(
         C.breakoutLookback +
         2
       ),
+
       -2
     );
 
+
   const resistance =
     Math.max(
+
       ...prior.map(
         candle =>
           candle.high
       )
     );
 
+
   const swingLow =
     Math.min(
+
       ...candles
         .slice(
           -8
@@ -1386,37 +2665,35 @@ function analyze15m(
         )
     );
 
+
   // ==========================================================
-  // ULTRA FAST HARD CONDITIONS
+  // ULTRA FAST CORE - HARD CONDITIONS
   // ==========================================================
 
   const trendOk =
     ema9 >
     ema21;
 
-  const momentumOk =
+
+  const cmoOk =
     momentum >
     C.cmoBuyMin;
 
+
   const candleOk =
-    bullishCandle &&
+
+    current.close >
+      current.open
+
+    &&
+
     bodyRatio >=
       C.minBodyRatio;
+
 
   // ==========================================================
   // MOMENTUM ENTRY
   // ==========================================================
-
-  const breakoutDistance =
-    current.close -
-    resistance;
-
-  const breakoutDistanceAtr =
-    atrValue >
-    0
-      ? breakoutDistance /
-        atrValue
-      : 999;
 
   const cleanBreakout =
     current.close >
@@ -1427,27 +2704,42 @@ function analyze15m(
         100
       );
 
+
+  const breakoutDistanceAtr =
+    atrValue >
+    0
+      ? (
+          current.close -
+          resistance
+        ) /
+        atrValue
+      : 999;
+
+
   const notExtended =
     breakoutDistanceAtr <=
     C.maxMomentumExtensionAtr;
 
-  const volumeMomentumOk =
+
+  const momentumVolumeOk =
     volumeRatio >=
     C.momentumVolumeMultiplier;
+
 
   const momentumEntry =
 
     trendOk &&
 
-    momentumOk &&
+    cmoOk &&
 
     candleOk &&
 
-    volumeMomentumOk &&
+    momentumVolumeOk &&
 
     cleanBreakout &&
 
     notExtended;
+
 
   // ==========================================================
   // RETEST ENTRY
@@ -1455,9 +2747,12 @@ function analyze15m(
 
   const recentBreakout =
     detectRecentBreakout(
+
       candles,
+
       resistance
     );
+
 
   const touchedRetest =
 
@@ -1494,19 +2789,14 @@ function analyze15m(
   const retestVolumeOk =
 
     volumeRatio >=
-      C.retestMinVolumeRatio
-
-    &&
-
-    current.volume >=
-      previous.volume;
+      C.retestMinVolumeRatio;
 
 
   const retestEntry =
 
     trendOk &&
 
-    momentumOk &&
+    cmoOk &&
 
     candleOk &&
 
@@ -1518,10 +2808,6 @@ function analyze15m(
 
     retestVolumeOk;
 
-
-  // ==========================================================
-  // FINAL ENTRY TYPE
-  // ==========================================================
 
   let entryType =
     'NONE';
@@ -1543,12 +2829,10 @@ function analyze15m(
   }
 
 
-  // ==========================================================
-  // RANKING ONLY
-  // DOES NOT CREATE A TRADE BY ITSELF
-  // ==========================================================
+  // Ranking only.
+  // Ranking NEVER makes an invalid setup valid.
 
-  const ranking =
+  const rankScore =
 
     (
       entryType !==
@@ -1576,7 +2860,7 @@ function analyze15m(
         volumeRatio -
         1
       ) *
-      12,
+      10,
       0,
       20
     )
@@ -1593,8 +2877,7 @@ function analyze15m(
     +
 
     (
-      ema9 >
-      ema21
+      trendOk
         ? 5
         : 0
     );
@@ -1624,7 +2907,11 @@ function analyze15m(
     atr:
       atrValue,
 
-    atrPct,
+    atrPct:
+      pct(
+        atrValue,
+        current.close
+      ),
 
     volumeRatio,
 
@@ -1637,7 +2924,7 @@ function analyze15m(
     breakoutDistanceAtr,
 
     rankScore:
-      +ranking.toFixed(
+      +rankScore.toFixed(
         2
       ),
 
@@ -1645,11 +2932,11 @@ function analyze15m(
 
       trendOk,
 
-      momentumOk,
+      cmoOk,
 
       candleOk,
 
-      volumeMomentumOk,
+      momentumVolumeOk,
 
       cleanBreakout,
 
@@ -1669,7 +2956,7 @@ function analyze15m(
 
 
 // ============================================================
-// FULL FRESH ANALYSIS
+// FRESH SYMBOL ANALYSIS
 // ============================================================
 
 async function analyzeSymbolFresh(
@@ -1685,12 +2972,14 @@ async function analyzeSymbolFresh(
     return null;
   }
 
+
   const lastLoss =
     n(
       lastLossBySymbol[
         symbol
       ]
     );
+
 
   if (
     lastLoss &&
@@ -1702,34 +2991,38 @@ async function analyzeSymbolFresh(
     return null;
   }
 
+
   const [
-    candles15m,
-    candles1h
+    entryResult,
+    contextResult
   ] =
     await Promise.all([
 
       fetchClosedKlines(
+
         symbol,
+
         C.entryInterval,
+
         C.klineLimit15m
       ),
 
       fetchClosedKlines(
+
         symbol,
+
         C.contextInterval,
+
         C.klineLimit1h
       )
     ]);
 
 
-  // ==========================================================
-  // 1H MUST SUPPORT BUY
-  // ==========================================================
-
   const context =
     analyze1h(
-      candles1h
+      contextResult.candles
     );
+
 
   if (
     !context.ok
@@ -1739,14 +3032,11 @@ async function analyzeSymbolFresh(
   }
 
 
-  // ==========================================================
-  // 15M ENTRY
-  // ==========================================================
-
   const signal =
     analyze15m(
-      candles15m
+      entryResult.candles
     );
+
 
   if (
     !signal.eligible
@@ -1760,18 +3050,27 @@ async function analyzeSymbolFresh(
 
     symbol,
 
+    analyzedAt:
+      Date.now(),
+
+    sources: {
+
+      entry:
+        entryResult.source,
+
+      context:
+        contextResult.source
+    },
+
     context,
 
-    signal,
-
-    analyzedAt:
-      Date.now()
+    signal
   };
 }
 
 
 // ============================================================
-// CONCURRENCY MAP
+// LIMITED CONCURRENCY
 // ============================================================
 
 async function mapLimit(
@@ -1787,7 +3086,7 @@ async function mapLimit(
     0;
 
 
-  async function run() {
+  async function runner() {
 
     while (
       true
@@ -1795,6 +3094,7 @@ async function mapLimit(
 
       const i =
         index++;
+
 
       if (
         i >=
@@ -1807,18 +3107,18 @@ async function mapLimit(
 
       try {
 
-        const value =
+        const result =
           await worker(
-            items[i],
-            i
+            items[i]
           );
 
+
         if (
-          value
+          result
         ) {
 
           results.push(
-            value
+            result
           );
         }
 
@@ -1828,11 +3128,16 @@ async function mapLimit(
 
         console.warn(
 
-          `Scan ${items[i]}:`,
+          `SCAN ${items[i]} | ` +
 
           error.message
         );
       }
+
+
+      await sleep(
+        80
+      );
     }
   }
 
@@ -1849,7 +3154,7 @@ async function mapLimit(
           )
       },
 
-      run
+      runner
     )
   );
 
@@ -1927,16 +3232,15 @@ function emergencyStopFrom(
 // ============================================================
 
 function positionSize(
-  entryPrice,
   stopPct
 ) {
 
-  const accountEquity =
+  const eq =
     equity();
 
 
   const riskBudget =
-    accountEquity *
+    eq *
     C.riskPerTradePct;
 
 
@@ -1948,8 +3252,8 @@ function positionSize(
       : 0;
 
 
-  const maximumAllocation =
-    accountEquity *
+  const maxAllocation =
+    eq *
     C.maxAllocationPct;
 
 
@@ -1958,23 +3262,117 @@ function positionSize(
 
       byRisk,
 
-      maximumAllocation,
+      maxAllocation,
 
       cash *
       0.98
     );
 
 
-  if (
-    allocation <
+  return allocation >=
     10
+      ? allocation
+      : null;
+}
+
+
+// ============================================================
+// MONGODB
+// ============================================================
+
+async function connectCloud() {
+
+  if (
+    !MONGODB_URI
   ) {
 
-    return null;
+    console.warn(
+      'MONGODB_URI missing.'
+    );
+
+    return;
   }
 
 
-  return allocation;
+  mongoClient =
+    new MongoClient(
+
+      MONGODB_URI,
+
+      {
+        maxPoolSize:
+          8
+      }
+    );
+
+
+  await mongoClient.connect();
+
+
+  db =
+    mongoClient.db(
+      MONGODB_DB
+    );
+
+
+  await db.command({
+    ping:
+      1
+  });
+
+
+  cloudConnected =
+    true;
+
+
+  await Promise.all([
+
+    db
+      .collection(
+        'trades'
+      )
+      .createIndex({
+
+        version:
+          1,
+
+        exitTime:
+          -1
+      }),
+
+
+    db
+      .collection(
+        'journal'
+      )
+      .createIndex({
+
+        version:
+          1,
+
+        time:
+          -1
+      }),
+
+
+    db
+      .collection(
+        'journal'
+      )
+      .createIndex({
+
+        cycleId:
+          1,
+
+        time:
+          -1
+      })
+  ]);
+
+
+  console.log(
+    'MongoDB CONNECTED'
+  );
 }
 
 
@@ -2054,7 +3452,7 @@ async function saveTrade(
           C.version,
 
         cycleId:
-          cycle.id,
+          row.cycleId,
 
         ...row
       });
@@ -2072,12 +3470,244 @@ async function saveTrade(
 
 
 // ============================================================
+// STATE
+// ============================================================
+
+async function loadState() {
+
+  if (
+    !cloudConnected
+  ) {
+
+    console.log(
+      'No MongoDB state. Fresh account.'
+    );
+
+    return;
+  }
+
+
+  const state =
+    await db
+      .collection(
+        'state'
+      )
+      .findOne({
+
+        _id:
+          C.stateKey
+      });
+
+
+  if (
+    !state
+  ) {
+
+    console.log(
+      'FRESH V6.1.1 PAPER ACCOUNT | $10000 | Cycle 1 | 0/20'
+    );
+
+    return;
+  }
+
+
+  // Extra protection:
+  // never restore another version.
+
+  if (
+    state.version !==
+    C.version
+  ) {
+
+    console.warn(
+      'STATE VERSION MISMATCH - IGNORED'
+    );
+
+    return;
+  }
+
+
+  cash =
+    n(
+      state.cash,
+      C.startingBalance
+    );
+
+
+  positions =
+    state.positions ||
+    {};
+
+
+  stats = {
+
+    ...stats,
+
+    ...(
+      state.stats ||
+      {}
+    )
+  };
+
+
+  currentDay =
+    state.currentDay ||
+    utcDay();
+
+
+  dailyStartEquity =
+    n(
+
+      state.dailyStartEquity,
+
+      C.startingBalance
+    );
+
+
+  dailyPnL =
+    n(
+      state.dailyPnL
+    );
+
+
+  peakEquity =
+    n(
+
+      state.peakEquity,
+
+      C.startingBalance
+    );
+
+
+  manualPause =
+    !!state.manualPause;
+
+
+  dailyPause =
+    !!state.dailyPause;
+
+
+  drawdownPause =
+    !!state.drawdownPause;
+
+
+  cycle = {
+
+    ...cycle,
+
+    ...(
+      state.cycle ||
+      {}
+    )
+  };
+
+
+  Object.assign(
+
+    lastLossBySymbol,
+
+    state.lastLossBySymbol ||
+      {}
+  );
+
+
+  console.log(
+
+    `STATE RESTORED | ` +
+
+    `Cash $${cash.toFixed(2)} | ` +
+
+    `Cycle ${cycle.id} | ` +
+
+    `${cycle.entries}/20 | ` +
+
+    `Open ${Object.keys(positions).length}`
+  );
+}
+
+
+async function saveState() {
+
+  if (
+    !cloudConnected
+  ) {
+
+    return;
+  }
+
+
+  try {
+
+    await db
+      .collection(
+        'state'
+      )
+      .updateOne(
+
+        {
+          _id:
+            C.stateKey
+        },
+
+        {
+          $set: {
+
+            version:
+              C.version,
+
+            updatedAt:
+              Date.now(),
+
+            cash,
+
+            positions,
+
+            stats,
+
+            currentDay,
+
+            dailyStartEquity,
+
+            dailyPnL,
+
+            peakEquity,
+
+            manualPause,
+
+            dailyPause,
+
+            drawdownPause,
+
+            cycle,
+
+            lastLossBySymbol
+          }
+        },
+
+        {
+          upsert:
+            true
+        }
+      );
+
+  } catch (
+    error
+  ) {
+
+    console.error(
+      'State save:',
+      error.message
+    );
+  }
+}
+
+
+// ============================================================
 // TELEGRAM
 // ============================================================
 
 const tgQueue =
   [];
-
 
 let tgBusy =
   false;
@@ -2213,7 +3843,7 @@ async function openPaperTrade(
 
 
   // ==========================================================
-  // FRESH REVALIDATION BEFORE EVERY SINGLE ENTRY
+  // FRESH REVALIDATION - OLD RESEARCH NOT ACCEPTED
   // ==========================================================
 
   const fresh =
@@ -2230,10 +3860,6 @@ async function openPaperTrade(
     return false;
   }
 
-
-  // ==========================================================
-  // OLD RESEARCH IS NOT ACCEPTED
-  // ==========================================================
 
   if (
 
@@ -2255,17 +3881,8 @@ async function openPaperTrade(
       symbol:
         candidate.symbol,
 
-      oldType:
-        candidate.signal.entryType,
-
-      newType:
-        fresh.signal.entryType,
-
-      oldSignalTime:
-        candidate.signal.signalTime,
-
-      newSignalTime:
-        fresh.signal.signalTime
+      reason:
+        'SIGNAL_CHANGED'
     });
 
 
@@ -2273,39 +3890,15 @@ async function openPaperTrade(
   }
 
 
-  // ==========================================================
-  // LIVE PRICE
-  // ==========================================================
-
-  const ticker =
-    await getJson(
-
-      '/api/v3/ticker/price',
-
-      {
-        symbol:
-          candidate.symbol
-      }
+  const priceData =
+    await getCurrentPrice(
+      candidate.symbol
     );
 
 
   const livePrice =
-    n(
-      ticker.price
-    );
+    priceData.price;
 
-
-  if (
-    !livePrice
-  ) {
-
-    return false;
-  }
-
-
-  // ==========================================================
-  // ANTI STALE / PRICE DRIFT
-  // ==========================================================
 
   const drift =
     Math.abs(
@@ -2344,11 +3937,7 @@ async function openPaperTrade(
   }
 
 
-  // ==========================================================
-  // PAPER ENTRY
-  // ==========================================================
-
-  const simulatedEntry =
+  const entryPrice =
     livePrice *
     (
       1 +
@@ -2361,15 +3950,12 @@ async function openPaperTrade(
 
       fresh.signal,
 
-      simulatedEntry
+      entryPrice
     );
 
 
   const allocation =
     positionSize(
-
-      simulatedEntry,
-
       stop.stopPct
     );
 
@@ -2387,14 +3973,14 @@ async function openPaperTrade(
     C.feePct;
 
 
-  const netForAsset =
+  const netAssetValue =
     allocation -
     buyFee;
 
 
   const qty =
-    netForAsset /
-    simulatedEntry;
+    netAssetValue /
+    entryPrice;
 
 
   const tradeId =
@@ -2414,17 +4000,19 @@ async function openPaperTrade(
 
     tradeId,
 
-    symbol:
-      candidate.symbol,
-
     cycleId:
       cycle.id,
+
+    symbol:
+      candidate.symbol,
 
     entryType:
       fresh.signal.entryType,
 
-    entryPrice:
-      simulatedEntry,
+    entryPrice,
+
+    entryTime:
+      Date.now(),
 
     signalPrice:
       fresh.signal.signalPrice,
@@ -2432,8 +4020,8 @@ async function openPaperTrade(
     signalTime:
       fresh.signal.signalTime,
 
-    entryTime:
-      Date.now(),
+    priceSource:
+      priceData.source,
 
     qty,
 
@@ -2459,10 +4047,10 @@ async function openPaperTrade(
       false,
 
     highestPrice:
-      simulatedEntry,
+      entryPrice,
 
     lastPrice:
-      simulatedEntry,
+      entryPrice,
 
     mfePct:
       0,
@@ -2477,10 +4065,6 @@ async function openPaperTrade(
       fresh
   };
 
-
-  // ==========================================================
-  // CYCLE COUNT
-  // ==========================================================
 
   cycle.entries++;
 
@@ -2498,17 +4082,12 @@ async function openPaperTrade(
     entryType:
       fresh.signal.entryType,
 
-    entryPrice:
-      simulatedEntry,
+    entryPrice,
+
+    priceSource:
+      priceData.source,
 
     allocation,
-
-    emergencyStop:
-      stop.stop,
-
-    initialRiskPct:
-      stop.stopPct *
-      100,
 
     snapshot:
       fresh
@@ -2523,17 +4102,15 @@ async function openPaperTrade(
 
     `Type: ${fresh.signal.entryType}\n` +
 
+    `Price source: ${priceData.source}\n` +
+
     `15m CMO: ${fresh.signal.cmo.toFixed(1)}\n` +
 
     `Volume: ${fresh.signal.volumeRatio.toFixed(2)}x\n` +
 
-    `Cycle: ${cycle.entries}/${C.maxEntriesPerCycle}`
+    `Cycle: ${cycle.entries}/20`
   );
 
-
-  // ==========================================================
-  // CYCLE FULL
-  // ==========================================================
 
   if (
     cycle.entries >=
@@ -2560,7 +4137,7 @@ async function openPaperTrade(
 
       `⏳ Cycle ${cycle.id} reached 20 entries.\n` +
 
-      `Waiting for every open trade to close before a new cycle.`
+      `Waiting for all positions to close.`
     );
   }
 
@@ -2576,7 +4153,8 @@ async function openPaperTrade(
 async function closePaperTrade(
   symbol,
   rawExitPrice,
-  reason
+  reason,
+  source
 ) {
 
   const position =
@@ -2684,6 +4262,9 @@ async function closePaperTrade(
 
     exitPrice,
 
+    exitSource:
+      source,
+
     sellFee,
 
     totalFees:
@@ -2723,7 +4304,25 @@ async function closePaperTrade(
     type:
       'EXIT',
 
-    ...record
+    tradeId:
+      position.tradeId,
+
+    symbol,
+
+    reason,
+
+    profit,
+
+    profitPct,
+
+    exitSource:
+      source,
+
+    mfePct:
+      position.mfePct,
+
+    maePct:
+      position.maePct
   });
 
 
@@ -2733,11 +4332,9 @@ async function closePaperTrade(
 
     `${reason}\n` +
 
-    `PnL: $${profit.toFixed(2)} (${profitPct.toFixed(2)}%)\n` +
+    `Source: ${source}\n` +
 
-    `MFE: ${position.mfePct.toFixed(2)}% | ` +
-
-    `MAE: ${position.maePct.toFixed(2)}%`
+    `PnL: $${profit.toFixed(2)} (${profitPct.toFixed(2)}%)`
   );
 
 
@@ -2754,10 +4351,14 @@ async function closePaperTrade(
 
 async function managePositions() {
 
-  if (
-    !Object.keys(
+  const symbols =
+    Object.keys(
       positions
-    ).length
+    );
+
+
+  if (
+    !symbols.length
   ) {
 
     await maybeStartNewCycle();
@@ -2766,65 +4367,41 @@ async function managePositions() {
   }
 
 
-  try {
-
-    const rows =
-      await getJson(
-        '/api/v3/ticker/price'
-      );
+  const prices =
+    {};
 
 
-    const prices =
-      {};
+  for (
+    const symbol
+    of symbols
+  ) {
 
+    try {
 
-    for (
-      const row
-      of rows
-    ) {
+      const priceData =
+        await getCurrentPrice(
+          symbol
+        );
+
 
       prices[
-        row.symbol
+        symbol
       ] =
-        n(
-          row.price
-        );
-    }
+        priceData.price;
 
 
-    resetDailyIfNeeded(
-      prices
-    );
-
-
-    for (
-      const [
-        symbol,
-        position
-      ]
-      of Object.entries(
-        positions
-      )
-    ) {
-
-      const price =
-        n(
-          prices[
-            symbol
-          ]
-        );
-
-
-      if (
-        !price
-      ) {
-
-        continue;
-      }
+      const position =
+        positions[
+          symbol
+        ];
 
 
       position.lastPrice =
-        price;
+        priceData.price;
+
+
+      position.lastPriceSource =
+        priceData.source;
 
 
       position.highestPrice =
@@ -2832,14 +4409,14 @@ async function managePositions() {
 
           position.highestPrice,
 
-          price
+          priceData.price
         );
 
 
       const movePct =
         pct(
 
-          price -
+          priceData.price -
             position.entryPrice,
 
           position.entryPrice
@@ -2865,7 +4442,7 @@ async function managePositions() {
 
 
       // ======================================================
-      // CAPITAL PROTECTION AT +0.5%
+      // +0.5% CAPITAL PROTECTION
       // ======================================================
 
       if (
@@ -2919,7 +4496,7 @@ async function managePositions() {
 
 
       // ======================================================
-      // DYNAMIC TRAIL FROM +0.7%
+      // +0.7% TRAILING
       // ======================================================
 
       if (
@@ -2953,10 +4530,6 @@ async function managePositions() {
       }
 
 
-      // ======================================================
-      // TRAILING UPDATE
-      // ======================================================
-
       if (
         position.trailingActive
       ) {
@@ -2973,7 +4546,7 @@ async function managePositions() {
           );
 
 
-        const trailStop =
+        const trailingStop =
 
           position.highestPrice *
 
@@ -2990,16 +4563,12 @@ async function managePositions() {
             position.protectionStop ||
               0,
 
-            trailStop
+            trailingStop
           );
       }
 
 
-      // ======================================================
-      // ACTIVE STOP
-      // ======================================================
-
-      let stop =
+      let activeStop =
         position.emergencyStop;
 
 
@@ -3011,10 +4580,10 @@ async function managePositions() {
         position.protectionStop
       ) {
 
-        stop =
+        activeStop =
           Math.max(
 
-            stop,
+            activeStop,
 
             position.protectionStop
           );
@@ -3029,40 +4598,51 @@ async function managePositions() {
       }
 
 
-      // ======================================================
-      // EXIT
-      // ======================================================
-
       if (
-        price <=
-        stop
+        priceData.price <=
+        activeStop
       ) {
 
         await closePaperTrade(
 
           symbol,
 
-          price,
+          priceData.price,
 
-          exitReason
+          exitReason,
+
+          priceData.source
         );
       }
+
+
+    } catch (
+      error
+    ) {
+
+      console.error(
+
+        `POSITION ${symbol}:`,
+
+        error.message
+      );
     }
 
 
-    updateAccountGuards(
-      prices
-    );
-
-  } catch (
-    error
-  ) {
-
-    console.error(
-      'Position manager:',
-      error.message
+    await sleep(
+      80
     );
   }
+
+
+  resetDailyIfNeeded(
+    prices
+  );
+
+
+  updateAccountGuards(
+    prices
+  );
 }
 
 
@@ -3075,10 +4655,14 @@ async function startNewCycle(
     'PREVIOUS_CYCLE_COMPLETE'
 ) {
 
+  const previousId =
+    cycle.id;
+
+
   cycle = {
 
     id:
-      cycle.id +
+      previousId +
       1,
 
     state:
@@ -3094,16 +4678,17 @@ async function startNewCycle(
       0,
 
     lastScanCandidates:
-      0
+      0,
+
+    lastUniverseSource:
+      null
   };
 
 
   stats.cycleCount++;
 
 
-  // ==========================================================
-  // DELETE OLD RESEARCH
-  // ==========================================================
+  // Explicitly destroy old research.
 
   universe =
     [];
@@ -3124,17 +4709,13 @@ async function startNewCycle(
 
   tg(
 
-    `🔄 <b>New LOMY cycle ${cycle.id}</b>\n` +
+    `🔄 <b>Cycle ${cycle.id}</b>\n` +
 
-    `Fresh market research started.\n` +
+    `Fresh research started.\n` +
 
-    `Old candidates discarded.`
+    `All previous candidates discarded.`
   );
 
-
-  // ==========================================================
-  // IMMEDIATE FRESH SCAN
-  // ==========================================================
 
   setTimeout(
     runFreshScan,
@@ -3142,10 +4723,6 @@ async function startNewCycle(
   );
 }
 
-
-// ============================================================
-// AUTO NEW CYCLE
-// ============================================================
 
 async function maybeStartNewCycle() {
 
@@ -3169,7 +4746,7 @@ async function maybeStartNewCycle() {
 
 
 // ============================================================
-// FRESH MARKET SCAN
+// FRESH SCAN
 // ============================================================
 
 async function runFreshScan() {
@@ -3200,29 +4777,25 @@ async function runFreshScan() {
     true;
 
 
-  lastScanAt =
-    Date.now();
-
-
   cycle.lastFreshScanAt =
-    lastScanAt;
+    Date.now();
 
 
   try {
 
-    // ========================================================
-    // ABSOLUTELY FRESH MARKET UNIVERSE
-    // ========================================================
+    console.log(
+      `FRESH SCAN | Cycle ${cycle.id} | ${cycle.entries}/20`
+    );
+
+
+    // New research every scan.
+    // No persistent candidate pool.
 
     const symbols =
       await refreshUniverse(
         true
       );
 
-
-    // ========================================================
-    // THERE IS NO PERSISTENT CANDIDATE POOL
-    // ========================================================
 
     const candidates =
       await mapLimit(
@@ -3235,18 +4808,12 @@ async function runFreshScan() {
       );
 
 
-    // ========================================================
-    // CHOOSE STRONGEST VALID OPPORTUNITIES
-    // Ranking cannot make a bad setup valid.
-    // ========================================================
-
     candidates.sort(
 
       (
         a,
         b
       ) =>
-
         b.signal.rankScore -
         a.signal.rankScore
     );
@@ -3255,10 +4822,6 @@ async function runFreshScan() {
     cycle.lastScanCandidates =
       candidates.length;
 
-
-    // ========================================================
-    // JOURNAL THE FRESH SEARCH
-    // ========================================================
 
     await cloudJournal({
 
@@ -3270,6 +4833,9 @@ async function runFreshScan() {
 
       qualified:
         candidates.length,
+
+      universeSource:
+        cycle.lastUniverseSource,
 
       top:
         candidates
@@ -3296,15 +4862,24 @@ async function runFreshScan() {
                 candidate.signal.volumeRatio,
 
               bodyRatio:
-                candidate.signal.bodyRatio
+                candidate.signal.bodyRatio,
+
+              sources:
+                candidate.sources
             })
           )
     });
 
 
-    // ========================================================
-    // OPEN ONLY THE BEST CURRENT OPPORTUNITIES
-    // ========================================================
+    console.log(
+
+      `SCAN DONE | ` +
+
+      `${symbols.length} checked | ` +
+
+      `${candidates.length} qualified`
+    );
+
 
     let opened =
       0;
@@ -3352,30 +4927,27 @@ async function runFreshScan() {
       }
 
 
-      // ======================================================
-      // THIS FUNCTION REANALYZES AGAIN BEFORE ENTRY
-      // ======================================================
-
-      const openedTrade =
+      const result =
         await openPaperTrade(
           candidate
         );
 
 
       if (
-        openedTrade
+        result
       ) {
 
         opened++;
       }
     }
 
+
   } catch (
     error
   ) {
 
     console.error(
-      'Fresh scan:',
+      'FRESH SCAN:',
       error.message
     );
 
@@ -3388,359 +4960,35 @@ async function runFreshScan() {
 
 
 // ============================================================
-// MONGODB CONNECT
-// ============================================================
-
-async function connectCloud() {
-
-  if (
-    !MONGODB_URI
-  ) {
-
-    console.warn(
-      'MONGODB_URI missing. Running without persistence.'
-    );
-
-    return;
-  }
-
-
-  mongoClient =
-    new MongoClient(
-
-      MONGODB_URI,
-
-      {
-        maxPoolSize:
-          8
-      }
-    );
-
-
-  await mongoClient.connect();
-
-
-  db =
-    mongoClient.db(
-      MONGODB_DB
-    );
-
-
-  await db.command({
-    ping:
-      1
-  });
-
-
-  cloudConnected =
-    true;
-
-
-  await Promise.all([
-
-    db
-      .collection(
-        'trades'
-      )
-      .createIndex({
-
-        version:
-          1,
-
-        exitTime:
-          -1
-      }),
-
-
-    db
-      .collection(
-        'journal'
-      )
-      .createIndex({
-
-        version:
-          1,
-
-        time:
-          -1
-      }),
-
-
-    db
-      .collection(
-        'journal'
-      )
-      .createIndex({
-
-        cycleId:
-          1,
-
-        time:
-          -1
-      })
-  ]);
-
-
-  console.log(
-    'MongoDB CONNECTED'
-  );
-}
-
-
-// ============================================================
-// LOAD STATE
-// ============================================================
-
-async function loadState() {
-
-  if (
-    !cloudConnected
-  ) {
-
-    return;
-  }
-
-
-  const state =
-    await db
-      .collection(
-        'state'
-      )
-      .findOne({
-
-        _id:
-          C.stateKey
-      });
-
-
-  if (
-    !state
-  ) {
-
-    console.log(
-      'Fresh V6.1 PAPER state.'
-    );
-
-    return;
-  }
-
-
-  cash =
-    n(
-      state.cash,
-      C.startingBalance
-    );
-
-
-  positions =
-    state.positions ||
-    {};
-
-
-  stats = {
-
-    ...stats,
-
-    ...(
-      state.stats ||
-      {}
-    )
-  };
-
-
-  currentDay =
-    state.currentDay ||
-    utcDay();
-
-
-  dailyStartEquity =
-    n(
-
-      state.dailyStartEquity,
-
-      C.startingBalance
-    );
-
-
-  dailyPnL =
-    n(
-      state.dailyPnL
-    );
-
-
-  peakEquity =
-    n(
-
-      state.peakEquity,
-
-      C.startingBalance
-    );
-
-
-  manualPause =
-    !!state.manualPause;
-
-
-  dailyPause =
-    !!state.dailyPause;
-
-
-  drawdownPause =
-    !!state.drawdownPause;
-
-
-  cycle = {
-
-    ...cycle,
-
-    ...(
-      state.cycle ||
-      {}
-    )
-  };
-
-
-  Object.assign(
-
-    lastLossBySymbol,
-
-    state.lastLossBySymbol ||
-      {}
-  );
-
-
-  console.log(
-
-    `STATE RESTORED | ` +
-
-    `Cash $${cash.toFixed(2)} | ` +
-
-    `Cycle ${cycle.id} | ` +
-
-    `${cycle.entries}/20 | ` +
-
-    `Open ${Object.keys(positions).length}`
-  );
-}
-
-
-// ============================================================
-// SAVE STATE
-// ============================================================
-
-async function saveState() {
-
-  if (
-    !cloudConnected
-  ) {
-
-    return;
-  }
-
-
-  try {
-
-    await db
-      .collection(
-        'state'
-      )
-      .updateOne(
-
-        {
-          _id:
-            C.stateKey
-        },
-
-        {
-          $set: {
-
-            version:
-              C.version,
-
-            updatedAt:
-              Date.now(),
-
-            cash,
-
-            positions,
-
-            stats,
-
-            currentDay,
-
-            dailyStartEquity,
-
-            dailyPnL,
-
-            peakEquity,
-
-            manualPause,
-
-            dailyPause,
-
-            drawdownPause,
-
-            cycle,
-
-            lastLossBySymbol
-          }
-        },
-
-        {
-          upsert:
-            true
-        }
-      );
-
-  } catch (
-    error
-  ) {
-
-    console.error(
-      'State save:',
-      error.message
-    );
-  }
-}
-
-
-// ============================================================
-// DASHBOARD DATA
+// DASHBOARD
 // ============================================================
 
 function dashboardData() {
 
-  const accountEquity =
+  const eq =
     equity();
 
 
-  const profitFactor =
-
-    stats.grossLoss >
-    0
-
-      ? stats.grossProfit /
-        stats.grossLoss
-
-      : stats.grossProfit >
-        0
-
-        ? 999
-
-        : 0;
-
-
   const winRate =
-
-    stats.totalTrades
-
+    stats.totalTrades >
+    0
       ? (
           stats.wins /
           stats.totalTrades
         ) *
         100
-
       : 0;
+
+
+  const profitFactor =
+    stats.grossLoss >
+    0
+      ? stats.grossProfit /
+        stats.grossLoss
+      : stats.grossProfit >
+        0
+        ? 999
+        : 0;
 
 
   return {
@@ -3757,13 +5005,18 @@ function dashboardData() {
       ),
 
     equity:
-      +accountEquity.toFixed(
+      +eq.toFixed(
         2
       ),
 
     positions,
 
     stats,
+
+    dailyPnL:
+      +dailyPnL.toFixed(
+        2
+      ),
 
     winRate:
       +winRate.toFixed(
@@ -3775,26 +5028,59 @@ function dashboardData() {
         2
       ),
 
-    dailyPnL:
-      +dailyPnL.toFixed(
-        2
-      ),
-
     cycle,
 
-    limits: {
+    exchanges: {
 
-      maxEntriesPerCycle:
-        C.maxEntriesPerCycle,
+      BINANCE: {
 
-      maxPositions:
-        C.maxPositions,
+        available:
+          exchangeAvailable(
+            'BINANCE'
+          ),
 
-      entryTimeframe:
-        C.entryInterval,
+        blockedForSeconds:
+          Math.max(
 
-      contextTimeframe:
-        C.contextInterval
+            0,
+
+            Math.ceil(
+
+              (
+                exchangeHealth.BINANCE.blockedUntil -
+                Date.now()
+              ) /
+              1000
+            )
+          ),
+
+        lastError:
+          exchangeHealth.BINANCE.lastError
+      },
+
+
+      BYBIT: {
+
+        available:
+          exchangeAvailable(
+            'BYBIT'
+          ),
+
+        lastError:
+          exchangeHealth.BYBIT.lastError
+      },
+
+
+      OKX: {
+
+        available:
+          exchangeAvailable(
+            'OKX'
+          ),
+
+        lastError:
+          exchangeHealth.OKX.lastError
+      }
     },
 
     guards: {
@@ -3806,14 +5092,19 @@ function dashboardData() {
       drawdownPause
     },
 
-    scan: {
+    config: {
 
-      scanning,
+      entryTimeframe:
+        '15m',
 
-      lastScanAt,
+      contextTimeframe:
+        '1h',
 
-      universe:
-        universe.length
+      maxEntriesPerCycle:
+        20,
+
+      maxPositions:
+        C.maxPositions
     }
   };
 }
@@ -3839,10 +5130,6 @@ app.get(
 );
 
 
-// ============================================================
-// PAUSE
-// ============================================================
-
 app.post(
 
   '/api/pause',
@@ -3855,24 +5142,15 @@ app.post(
     manualPause =
       true;
 
-
     await saveState();
 
-
     res.json({
-
       ok:
-        true,
-
-      manualPause
+        true
     });
   }
 );
 
-
-// ============================================================
-// RESUME
-// ============================================================
 
 app.post(
 
@@ -3886,24 +5164,15 @@ app.post(
     manualPause =
       false;
 
-
     await saveState();
 
-
     res.json({
-
       ok:
-        true,
-
-      manualPause
+        true
     });
   }
 );
 
-
-// ============================================================
-// MANUAL FRESH SCAN
-// ============================================================
 
 app.post(
 
@@ -3914,24 +5183,18 @@ app.post(
     res
   ) => {
 
-    runFreshScan();
-
+    setTimeout(
+      runFreshScan,
+      0
+    );
 
     res.json({
-
       ok:
-        true,
-
-      started:
         true
     });
   }
 );
 
-
-// ============================================================
-// EMERGENCY CLOSE
-// ============================================================
 
 app.post(
 
@@ -3944,30 +5207,6 @@ app.post(
 
     try {
 
-      const rows =
-        await getJson(
-          '/api/v3/ticker/price'
-        );
-
-
-      const prices =
-        {};
-
-
-      for (
-        const row
-        of rows
-      ) {
-
-        prices[
-          row.symbol
-        ] =
-          n(
-            row.price
-          );
-      }
-
-
       for (
         const symbol
         of Object.keys(
@@ -3975,25 +5214,22 @@ app.post(
         )
       ) {
 
-        const price =
-          prices[
+        const priceData =
+          await getCurrentPrice(
             symbol
-          ];
-
-
-        if (
-          price
-        ) {
-
-          await closePaperTrade(
-
-            symbol,
-
-            price,
-
-            'MANUAL_EMERGENCY_CLOSE'
           );
-        }
+
+
+        await closePaperTrade(
+
+          symbol,
+
+          priceData.price,
+
+          'MANUAL_EMERGENCY_CLOSE',
+
+          priceData.source
+        );
       }
 
 
@@ -4024,7 +5260,7 @@ app.post(
 
 
 // ============================================================
-// DASHBOARD
+// SIMPLE DASHBOARD
 // ============================================================
 
 app.get(
@@ -4036,11 +5272,9 @@ app.get(
     res
   ) => {
 
-    res
-      .type(
-        'html'
-      )
-      .send(`
+    res.type(
+      'html'
+    ).send(`
 
 <!doctype html>
 
@@ -4051,12 +5285,12 @@ app.get(
 <meta charset="utf-8">
 
 <meta
-  name="viewport"
-  content="width=device-width,initial-scale=1"
+name="viewport"
+content="width=device-width,initial-scale=1"
 >
 
 <title>
-LOMY V6.1
+LOMY V6.1.1
 </title>
 
 <style>
@@ -4065,47 +5299,47 @@ body {
   font-family: Arial;
   background: #111;
   color: #eee;
-  margin: 20px;
+  margin: 18px;
+}
+
+h2 {
+  margin-bottom: 4px;
 }
 
 .grid {
   display: grid;
   grid-template-columns:
-    repeat(
-      auto-fit,
-      minmax(
-        170px,
-        1fr
-      )
-    );
+    repeat(auto-fit,minmax(160px,1fr));
   gap: 10px;
+  margin-top: 15px;
 }
 
 .card {
-  background: #1c1c1c;
+  background: #1d1d1d;
   padding: 14px;
   border-radius: 10px;
 }
 
-.v {
-  font-size: 24px;
-  font-weight: 700;
+.label {
+  color: #aaa;
+  font-size: 12px;
 }
 
-.muted {
-  color: #aaa;
+.value {
+  font-size: 23px;
+  font-weight: bold;
+  margin-top: 4px;
 }
 
 button {
   padding: 10px 14px;
-  margin: 4px;
+  margin: 5px;
   border: 0;
   border-radius: 8px;
   cursor: pointer;
 }
 
 pre {
-  white-space: pre-wrap;
   background: #181818;
   padding: 12px;
   border-radius: 10px;
@@ -4119,41 +5353,37 @@ pre {
 <body>
 
 <h2>
-LOMY V6.1 — 15M + Cycle20
+LOMY V6.1.1
 </h2>
 
-<div class="muted">
+<div>
+15M + 1H • Cycle20 • Binance / Bybit / OKX
+</div>
+
+<div>
 PAPER ONLY
 </div>
 
 <div
-  class="grid"
-  id="cards"
+id="cards"
+class="grid"
 ></div>
 
 <p>
 
-<button
-  onclick="post('/api/scan-now')"
->
+<button onclick="post('/api/scan-now')">
 Fresh Scan
 </button>
 
-<button
-  onclick="post('/api/pause')"
->
+<button onclick="post('/api/pause')">
 Pause
 </button>
 
-<button
-  onclick="post('/api/resume')"
->
+<button onclick="post('/api/resume')">
 Resume
 </button>
 
-<button
-  onclick="post('/api/emergency-close')"
->
+<button onclick="post('/api/emergency-close')">
 Close All
 </button>
 
@@ -4187,74 +5417,70 @@ async function load() {
       '/api/data'
     );
 
-  const data =
+  const d =
     await response.json();
 
 
-  const values = [
+  const items = [
 
     [
       'Equity',
-      '$' +
-      data.equity
+      '$' + d.equity
     ],
 
     [
       'Cash',
-      '$' +
-      data.cash
+      '$' + d.cash
     ],
 
     [
       'Cycle',
-      data.cycle.id
+      d.cycle.id
     ],
 
     [
-      'Cycle Entries',
-      data.cycle.entries +
-      '/20'
+      'Entries',
+      d.cycle.entries + '/20'
     ],
 
     [
       'Cycle State',
-      data.cycle.state
+      d.cycle.state
     ],
 
     [
       'Open',
-      Object.keys(
-        data.positions
-      ).length
+      Object.keys(d.positions).length
     ],
 
     [
       'Closed',
-      data.stats.totalTrades
+      d.stats.totalTrades
     ],
 
     [
       'Win Rate',
-      data.winRate +
-      '%'
+      d.winRate + '%'
     ],
 
     [
       'Net P/L',
-      '$' +
-      data.stats.netProfit.toFixed(
-        2
-      )
+      '$' + d.stats.netProfit.toFixed(2)
     ],
 
     [
       'PF',
-      data.profitFactor
+      d.profitFactor
     ],
 
     [
-      'Fresh Candidates',
-      data.cycle.lastScanCandidates
+      'Candidates',
+      d.cycle.lastScanCandidates
+    ],
+
+    [
+      'Universe Source',
+      d.cycle.lastUniverseSource || '-'
     ]
   ];
 
@@ -4265,25 +5491,23 @@ async function load() {
     )
     .innerHTML =
 
-      values
+      items
         .map(
           item =>
 
             '<div class="card">' +
 
-            '<div class="muted">' +
+            '<div class="label">' +
             item[0] +
             '</div>' +
 
-            '<div class="v">' +
+            '<div class="value">' +
             item[1] +
             '</div>' +
 
             '</div>'
         )
-        .join(
-          ''
-        );
+        .join('');
 
 
   document
@@ -4293,7 +5517,16 @@ async function load() {
     .textContent =
 
       JSON.stringify(
-        data.positions,
+        {
+          exchanges:
+            d.exchanges,
+
+          guards:
+            d.guards,
+
+          positions:
+            d.positions
+        },
         null,
         2
       );
@@ -4301,7 +5534,6 @@ async function load() {
 
 
 load();
-
 
 setInterval(
   load,
@@ -4325,72 +5557,25 @@ setInterval(
 
 async function main() {
 
-  console.log(
-    ''
-  );
+  console.log('');
+  console.log('==============================================');
+  console.log(`LOMY ${C.version}`);
+  console.log('PAPER ONLY');
+  console.log('15M ENTRY + 1H CONTEXT');
+  console.log('ULTRA FAST CORE');
+  console.log('MOMENTUM ENTRY + RETEST ENTRY');
+  console.log('20 ENTRIES MAX PER CYCLE');
+  console.log('FRESH RESEARCH - NO OLD CANDIDATES');
+  console.log('BINANCE -> BYBIT -> OKX FAILOVER');
+  console.log('CAPITAL PROTECTION + DYNAMIC TRAIL');
+  console.log('==============================================');
 
-  console.log(
-    '========================================'
-  );
-
-  console.log(
-    `LOMY ${C.version}`
-  );
-
-  console.log(
-    '15M ENTRY ENGINE'
-  );
-
-  console.log(
-    '1H MARKET CONTEXT'
-  );
-
-  console.log(
-    'MOMENTUM + RETEST'
-  );
-
-  console.log(
-    '20 TRADES PER CYCLE MAX'
-  );
-
-  console.log(
-    'FRESH RESEARCH EVERY SCAN'
-  );
-
-  console.log(
-    'NO OLD CANDIDATE STORAGE'
-  );
-
-  console.log(
-    'CAPITAL PROTECTION + DYNAMIC TRAIL'
-  );
-
-  console.log(
-    'PAPER TRADING ONLY'
-  );
-
-  console.log(
-    '========================================'
-  );
-
-
-  // ==========================================================
-  // DATABASE
-  // ==========================================================
 
   await connectCloud();
 
 
-  // ==========================================================
-  // RESTORE THIS VERSION STATE ONLY
-  // ==========================================================
-
   await loadState();
 
-
-  // ==========================================================
-  // SERVER
-  // ==========================================================
 
   app.listen(
 
@@ -4399,15 +5584,52 @@ async function main() {
     () => {
 
       console.log(
-        `Dashboard listening on port ${PORT}`
+        `SERVER LISTENING ${PORT}`
       );
     }
   );
 
 
-  // ==========================================================
-  // FIX RECOVERED EMPTY CYCLE
-  // ==========================================================
+  await cloudJournal({
+
+    type:
+      'BOOT',
+
+    startingState: {
+
+      cash,
+
+      openPositions:
+        Object.keys(
+          positions
+        ).length,
+
+      cycle:
+        cycle.id,
+
+      cycleEntries:
+        cycle.entries
+    },
+
+    architecture: {
+
+      entryTimeframe:
+        '15m',
+
+      contextTimeframe:
+        '1h',
+
+      cycleLimit:
+        20,
+
+      dataFailover: [
+        'BINANCE',
+        'BYBIT',
+        'OKX'
+      ]
+    }
+  });
+
 
   if (
 
@@ -4424,68 +5646,17 @@ async function main() {
   ) {
 
     await startNewCycle(
-      'RECOVERED_EMPTY_WAITING_CYCLE'
+      'RECOVERED_EMPTY_CYCLE'
+    );
+
+  } else {
+
+    setTimeout(
+      runFreshScan,
+      1500
     );
   }
 
-
-  // ==========================================================
-  // BOOT JOURNAL
-  // ==========================================================
-
-  await cloudJournal({
-
-    type:
-      'BOOT',
-
-    config: {
-
-      entryInterval:
-        C.entryInterval,
-
-      contextInterval:
-        C.contextInterval,
-
-      maxEntriesPerCycle:
-        C.maxEntriesPerCycle,
-
-      maxPositions:
-        C.maxPositions,
-
-      emaFast:
-        C.emaFast,
-
-      emaSlow:
-        C.emaSlow,
-
-      cmoBuyMin:
-        C.cmoBuyMin,
-
-      volumeMultiplier:
-        C.momentumVolumeMultiplier,
-
-      minBodyRatio:
-        C.minBodyRatio,
-
-      breakEvenTriggerPct:
-        C.breakEvenTriggerPct,
-
-      trailingStartPct:
-        C.trailingStartPct
-    }
-  });
-
-
-  // ==========================================================
-  // INITIAL FRESH SCAN
-  // ==========================================================
-
-  runFreshScan();
-
-
-  // ==========================================================
-  // CONTINUOUS FRESH SCANS
-  // ==========================================================
 
   setInterval(
 
@@ -4495,10 +5666,6 @@ async function main() {
   );
 
 
-  // ==========================================================
-  // POSITION MANAGEMENT
-  // ==========================================================
-
   setInterval(
 
     managePositions,
@@ -4506,10 +5673,6 @@ async function main() {
     C.pricePollMs
   );
 
-
-  // ==========================================================
-  // CLOUD SAVE
-  // ==========================================================
 
   setInterval(
 
@@ -4541,7 +5704,7 @@ async function shutdown(
 
 
   console.log(
-    `Shutdown ${signal}`
+    `SHUTDOWN ${signal}`
   );
 
 
@@ -4566,11 +5729,7 @@ async function shutdown(
 }
 
 
-// ============================================================
-// PROCESS HANDLERS
-// ============================================================
-
-process.on(
+process.once(
 
   'SIGTERM',
 
@@ -4581,7 +5740,7 @@ process.on(
 );
 
 
-process.on(
+process.once(
 
   'SIGINT',
 
@@ -4599,7 +5758,9 @@ process.on(
   error => {
 
     console.error(
-      'uncaughtException',
+
+      'UNCAUGHT EXCEPTION:',
+
       error
     );
   }
@@ -4613,7 +5774,9 @@ process.on(
   error => {
 
     console.error(
-      'unhandledRejection',
+
+      'UNHANDLED REJECTION:',
+
       error
     );
   }
