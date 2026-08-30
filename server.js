@@ -3,33 +3,27 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const WebSocket = require('ws');
+const crypto = require('crypto');
 const { MongoClient } = require('mongodb');
 
 const app = express();
 app.use(express.json());
 
-const PORT =
-  Number(
-    process.env.PORT ||
-    5000
-  );
+const PORT = Number(
+  process.env.PORT || 5000
+);
 
 const TELEGRAM_TOKEN =
-  process.env.TELEGRAM_TOKEN ||
-  '';
+  process.env.TELEGRAM_TOKEN || '';
 
 const CHAT_ID =
-  process.env.TELEGRAM_CHAT_ID ||
-  '';
+  process.env.TELEGRAM_CHAT_ID || '';
 
 const MONGODB_URI =
-  process.env.MONGODB_URI ||
-  '';
+  process.env.MONGODB_URI || '';
 
 const MONGODB_DB =
-  process.env.MONGODB_DB ||
-  'lomy';
-
+  process.env.MONGODB_DB || 'lomy';
 
 const REST_BASE =
   'https://data-api.binance.vision';
@@ -38,13 +32,17 @@ const WS_BASE =
   'wss://data-stream.binance.vision';
 
 
+// ============================================================
+// LOMY V6 CONFIG
+// ============================================================
+
 const C = Object.freeze({
 
   version:
-    '5.1.2-LIVE-DATA-GUARD',
+    '6.0.0-EARLY-CONFIRM-TRAIL',
 
   stateKey:
-    'main-v512',
+    'main-v600',
 
   paperTrading:
     true,
@@ -54,30 +52,36 @@ const C = Object.freeze({
 
 
   // ==========================================================
-  // MARKET
+  // MULTI TIMEFRAME MARKET ENGINE
   // ==========================================================
 
-  interval:
+  timeframes:
+    [
+      '5m',
+      '15m',
+      '1h'
+    ],
+
+  entryTf:
     '5m',
 
+  structureTf:
+    '15m',
+
+  trendTf:
+    '1h',
+
   warmupCandles:
-    60,
+    80,
 
   maxCandles:
-    120,
+    140,
 
-  /*
-   * External OHLC is allowed to warm EMA / ATR / CMO /
-   * structure.
-   *
-   * Trading however requires at least 10 genuine Binance
-   * candles so Volume + Flow are calculated from Binance only.
-   */
   liveBinanceCandlesRequired:
     10,
 
   flowBinanceCandlesRequired:
-    3,
+    4,
 
   universeSize:
     220,
@@ -91,6 +95,7 @@ const C = Object.freeze({
 
   // ==========================================================
   // ENTRY CAPACITY
+  // لا يوجد Target إجباري للصفقات
   // ==========================================================
 
   maxPositions:
@@ -99,30 +104,59 @@ const C = Object.freeze({
   maxEntriesPerCycle:
     2,
 
+  maxDailyEntries:
+    30,
+
   candidateExpiryMs:
-    2 * 60 * 1000,
+    70 * 1000,
 
   maxPriceDriftPct:
-    0.22,
+    0.18,
 
-  liveChasePct:
-    0.16,
+
+  // ==========================================================
+  // EARLY ENTRY + ANTI CHASE
+  // ==========================================================
+
+  preBreakoutDistanceAtr:
+    0.35,
+
+  maxControlledBreakoutAtr:
+    0.85,
+
+  retestTolerancePct:
+    0.20,
+
+  maxEmaDistancePct:
+    0.95,
+
+  maxExt5Pct:
+    1.30,
+
+  maxExt10Pct:
+    2.20,
+
+  hardChaseEmaPct:
+    1.45,
+
+  hardChaseExt5Pct:
+    2.10,
 
 
   // ==========================================================
   // MOMENTUM
   // ==========================================================
 
-  cmoCoreMin:
+  cmoMin:
+    46,
+
+  cmoIdealMin:
     50,
 
-  cmoCoreMax:
-    65,
+  cmoIdealMax:
+    64,
 
-  cmoSoftMin:
-    48,
-
-  cmoSoftMax:
+  cmoHot:
     68,
 
 
@@ -131,30 +165,13 @@ const C = Object.freeze({
   // ==========================================================
 
   minTakerBuyRatio:
-    0.60,
+    0.58,
 
   eliteTakerBuyRatio:
     0.80,
 
   minFlowMomentum:
-    0.50,
-
-
-  // ==========================================================
-  // ATR
-  // ==========================================================
-
-  minAtrPct:
-    0.18,
-
-  maxAtrPct:
-    0.65,
-
-  atrSweetMin:
-    0.22,
-
-  atrSweetMax:
-    0.55,
+    0.54,
 
 
   // ==========================================================
@@ -162,68 +179,59 @@ const C = Object.freeze({
   // ==========================================================
 
   minVolumeRatio:
-    1.05,
+    0.95,
 
-  maxVolumeRatio:
-    2.80,
+  maxHealthyVolumeRatio:
+    2.45,
 
-  volumeAccelSweetMin:
-    0.75,
+  volumeClimaxRatio:
+    2.90,
 
-  volumeAccelSweetMax:
-    2.50,
+  volumeAccelMin:
+    0.80,
 
-  volumeClimaxAcceleration:
-    3.00,
-
-
-  // ==========================================================
-  // ANTI CHASE
-  // ==========================================================
-
-  maxEmaDistancePct:
-    1.35,
-
-  maxExt5Pct:
-    1.80,
-
-  maxExt10Pct:
-    3.00,
+  volumeAccelClimax:
+    2.35,
 
 
   // ==========================================================
-  // BREAKOUT
+  // ATR / VOLATILITY
   // ==========================================================
 
-  minBreakoutAcceptance:
-    55,
+  minAtrPct:
+    0.16,
 
-  retestTolerancePct:
-    0.18,
+  atrSweetMin:
+    0.22,
+
+  atrSweetMax:
+    0.50,
+
+  maxAtrPct:
+    0.80,
 
 
   // ==========================================================
-  // SCORE
+  // QUALITY
+  //
+  // Score أصبح Ranking وليس وحده بوابة دخول.
   // ==========================================================
 
-  minEdgeScoreRiskOn:
-    70,
+  baseMinQuality:
+    64,
 
-  minEdgeScoreNeutral:
+  neutralMinQuality:
+    66,
+
+  defensiveMinQuality:
     73,
 
-  minEdgeScoreDefensive:
-    88,
-
-  minFreshnessScore:
-    58,
-
-  minFlowScore:
-    55,
+  asiaQualityPenalty:
+    3,
 
 
   // ==========================================================
-  // PAPER EXECUTION
+  // PAPER COSTS
   // ==========================================================
 
   feePct:
@@ -232,114 +240,140 @@ const C = Object.freeze({
   slippagePct:
     0.0005,
 
-  minStopPct:
-    0.0055,
 
-  maxStopPct:
-    0.0105,
+  // ==========================================================
+  // RISK BASED POSITION SIZING
+  // ==========================================================
 
-  atrStopMultiplier:
-    1.20,
+  riskPerTradePct:
+    0.0045,
 
-  rewardRisk:
-    1.90,
+  maxPositionAllocationPct:
+    0.22,
 
 
   // ==========================================================
-  // TRADE MANAGEMENT
+  // EMERGENCY STOP
+  //
+  // ليس Fixed Stop تقليدي.
+  // مبني على ATR + Structure.
   // ==========================================================
 
-  profitLockMfePct:
-    0.35,
+  minEmergencyStopPct:
+    0.0065,
 
-  profitLockBufferPct:
-    0.0022,
+  maxEmergencyStopPct:
+    0.018,
 
-  breakEvenAtR:
+  atrEmergencyMultiplier:
+    1.65,
+
+  structureStopBufferAtr:
+    0.20,
+
+
+  // ==========================================================
+  // CAPITAL PROTECTION
+  // ==========================================================
+
+  breakEvenTriggerPct:
+    0.50,
+
+  extraBreakEvenBufferPct:
+    0.0002,
+
+
+  // ==========================================================
+  // DYNAMIC TRAILING
+  // ==========================================================
+
+  trailingStartPct:
+    0.70,
+
+  trailAtrMultiplier:
+    0.90,
+
+  trailGapMinPct:
+    0.22,
+
+  trailGapMaxPct:
     0.55,
 
-  breakEvenBufferPct:
-    0.0025,
 
-  trailAtR:
-    0.95,
-
-  trailLockR:
-    0.30,
+  // ==========================================================
+  // EARLY FAILURE
+  // ==========================================================
 
   earlyFailureWindowMs:
-    10 * 60 * 1000,
+    12 * 60 * 1000,
 
   earlyFailureLossPct:
-    0.0035,
+    0.0040,
 
-  earlyFailureMfeGuardPct:
-    0.25,
+  earlyFailureMaxMfePct:
+    0.18,
 
 
   // ==========================================================
-  // PROTECTION
+  // ACCOUNT PROTECTION
+  //
+  // مفيش توقف ساعة بعد 3 خسائر.
+  // مفيش Batch cooldown.
   // ==========================================================
 
   dailyLossLimitPct:
     0.035,
 
-  entriesBeforeCooldown:
-    12,
-
-  batchCooldownMs:
-    20 * 60 * 1000,
-
-  lossStreakLimit:
-    3,
-
-  lossCooldownMs:
-    60 * 60 * 1000,
+  maxAccountDrawdownPct:
+    0.07,
 
   symbolLossCooldownMs:
-    90 * 60 * 1000,
+    45 * 60 * 1000,
+
+
+  // ==========================================================
+  // ADAPTIVE PROTECTION
+  // ==========================================================
+
+  lossRiskStep1:
+    2,
+
+  lossRiskStep2:
+    4,
+
+  lossRiskMultiplier1:
+    0.75,
+
+  lossRiskMultiplier2:
+    0.55,
+
+  lossQualityPenalty1:
+    4,
+
+  lossQualityPenalty2:
+    8,
 
 
   // ==========================================================
   // REGIME
   // ==========================================================
 
-  asiaRiskOnPenalty:
-    12,
-
-  overextendedRiskOnBreadth:
-    78,
-
   btcSymbol:
     'BTCUSDT',
 
+  overextendedBreadth:
+    82,
+
 
   // ==========================================================
-  // WARMUP
+  // SYSTEM
   // ==========================================================
 
   warmupConcurrency:
-    2,
+    3,
 
   warmupDelayMs:
-    1200,
-
-  warmupRetryBaseMs:
-    5000,
-
-  warmupRetryMaxMs:
-    120000,
-
-  warmupMaxRetries:
-    6,
-
-  warmup429MinPauseMs:
-    30000,
-
-
-  // ==========================================================
-  // WEBSOCKET
-  // ==========================================================
+    500,
 
   wsReconnectBaseMs:
     5000,
@@ -348,12 +382,7 @@ const C = Object.freeze({
     60000,
 
   controlChunkSize:
-    40,
-
-
-  // ==========================================================
-  // SYSTEM
-  // ==========================================================
+    80,
 
   stateSaveMs:
     60000,
@@ -362,18 +391,24 @@ const C = Object.freeze({
     60000,
 
   rankRefreshMs:
-    5000,
+    3000,
 
   analysisJournalSampleRate:
-    0.01,
-
-  networkReportMs:
-    30 * 60 * 1000,
-
-  networkAlertMB:
-    250
-
+    0.02
 });
+
+
+const BUILD_HASH =
+  crypto
+    .createHash('sha256')
+    .update(
+      JSON.stringify(C)
+    )
+    .digest('hex')
+    .slice(
+      0,
+      12
+    );
 
 
 const IGNORED =
@@ -387,299 +422,6 @@ const IGNORED =
     'USDEUSDT',
     'USD1USDT'
   ]);
-
-
-// ============================================================
-// ACCOUNT STATE
-// ============================================================
-
-let cash =
-  C.startingBalance;
-
-let positions =
-  {};
-
-
-let stats = {
-
-  totalTrades:
-    0,
-
-  wins:
-    0,
-
-  losses:
-    0,
-
-  grossProfit:
-    0,
-
-  grossLoss:
-    0,
-
-  netProfit:
-    0,
-
-  fees:
-    0,
-
-  bestTrade:
-    0,
-
-  worstTrade:
-    0,
-
-  maxDrawdown:
-    0,
-
-  earlyFailureExits:
-    0,
-
-  breakEvenMoves:
-    0,
-
-  trailingActivations:
-    0,
-
-  profitLocks:
-    0
-};
-
-
-let dailyPnL =
-  0;
-
-let dailyStartEquity =
-  C.startingBalance;
-
-let currentDay =
-  utcDay();
-
-let peakEquity =
-  C.startingBalance;
-
-
-let manualPause =
-  false;
-
-let dailyPause =
-  false;
-
-
-let cooldownUntil =
-  0;
-
-let cooldownReason =
-  null;
-
-let entriesSinceCooldown =
-  0;
-
-let lossStreak =
-  0;
-
-
-const lastLossBySymbol =
-  {};
-
-
-// ============================================================
-// MARKET STATE
-// ============================================================
-
-const tickers =
-  new Map();
-
-const candles =
-  {};
-
-const lastAnalyzed =
-  {};
-
-const candidatePool =
-  new Map();
-
-
-let subscribed =
-  new Set();
-
-let latest =
-  [];
-
-
-// ============================================================
-// DATABASE
-// ============================================================
-
-let mongoClient =
-  null;
-
-let db =
-  null;
-
-let cloudConnected =
-  false;
-
-
-// ============================================================
-// WEBSOCKET STATE
-// ============================================================
-
-let miniWs =
-  null;
-
-let klineWs =
-  null;
-
-
-let miniConnected =
-  false;
-
-let klineConnected =
-  false;
-
-
-let miniReconnectAttempts =
-  0;
-
-let klineReconnectAttempts =
-  0;
-
-
-let shuttingDown =
-  false;
-
-
-// ============================================================
-// WARMUP STATE
-// ============================================================
-
-const warmupLoaded =
-  new Set();
-
-const warmupLoading =
-  new Set();
-
-const warmupRetryCount =
-  new Map();
-
-
-let warmupQueue =
-  [];
-
-let warmupWorkers =
-  0;
-
-let warmupBlockedUntil =
-  0;
-
-let warmupResumeTimer =
-  null;
-
-
-/*
- * Shared Binance REST protection.
- *
- * A 418/429 pauses Binance REST instead of repeatedly
- * hitting a blocked endpoint.
- */
-let binanceRestBlockedUntil =
-  0;
-
-
-const warmupStats = {
-
-  restLoaded:
-    0,
-
-  externalLoaded:
-    0,
-
-  restRequests:
-    0,
-
-  failed:
-    0,
-
-  rateLimited:
-    0,
-
-  retries:
-    0,
-
-  last429:
-    0
-};
-
-
-// ============================================================
-// MARKET REGIME
-// ============================================================
-
-let marketRegime = {
-
-  ready:
-    false,
-
-  btcBullish:
-    false,
-
-  btcScore:
-    0,
-
-  btcFreshness:
-    0,
-
-  breadth:
-    0,
-
-  regime:
-    'WARMING',
-
-  overextended:
-    false,
-
-  updatedAt:
-    0
-};
-
-
-// ============================================================
-// NETWORK METER
-// ============================================================
-
-const networkMeter = {
-
-  startedAt:
-    Date.now(),
-
-  telegramBytes:
-    0,
-
-  mongoWriteBytes:
-    0,
-
-  restRequestBytes:
-    0,
-
-  wsControlBytes:
-    0,
-
-  journalWrites:
-    0,
-
-  tradeWrites:
-    0,
-
-  stateWrites:
-    0,
-
-  skippedAnalysisLogs:
-    0,
-
-  lastAlertMB:
-    0
-};
 
 
 // ============================================================
@@ -738,48 +480,14 @@ const pct =
       : 0;
 
 
-function utcDay() {
-
-  return new Date()
-    .toISOString()
-    .slice(
-      0,
-      10
-    );
-}
-
-
-const byteLen =
-  value => {
-
-    try {
-
-      return Buffer.byteLength(
-        typeof value ===
-          'string'
-          ? value
-          : JSON.stringify(
-              value
-            ),
-        'utf8'
+const utcDay =
+  () =>
+    new Date()
+      .toISOString()
+      .slice(
+        0,
+        10
       );
-
-    } catch {
-
-      return 0;
-    }
-  };
-
-
-const networkMB =
-  bytes =>
-    +(
-      bytes /
-      1024 /
-      1024
-    ).toFixed(
-      2
-    );
 
 
 function sessionUTC() {
@@ -789,26 +497,34 @@ function sessionUTC() {
       .getUTCHours();
 
   if (
-    h < 7
+    h <
+    7
   ) {
+
     return 'ASIA';
   }
 
   if (
-    h < 13
+    h <
+    13
   ) {
+
     return 'LONDON';
   }
 
   if (
-    h < 16
+    h <
+    16
   ) {
+
     return 'LONDON_NY';
   }
 
   if (
-    h < 21
+    h <
+    21
   ) {
+
     return 'NEW_YORK';
   }
 
@@ -816,171 +532,253 @@ function sessionUTC() {
 }
 
 
-function networkSnapshot() {
+function makeTradeId(
+  symbol
+) {
 
-  return {
-
-    estimatedOutboundMB:
-      networkMB(
-        networkMeter.telegramBytes +
-        networkMeter.mongoWriteBytes +
-        networkMeter.restRequestBytes +
-        networkMeter.wsControlBytes
-      ),
-
-    telegramMB:
-      networkMB(
-        networkMeter.telegramBytes
-      ),
-
-    mongoWriteMB:
-      networkMB(
-        networkMeter.mongoWriteBytes
-      ),
-
-    restRequestMB:
-      networkMB(
-        networkMeter.restRequestBytes
-      ),
-
-    wsControlMB:
-      networkMB(
-        networkMeter.wsControlBytes
-      ),
-
-    journalWrites:
-      networkMeter.journalWrites,
-
-    tradeWrites:
-      networkMeter.tradeWrites,
-
-    stateWrites:
-      networkMeter.stateWrites,
-
-    skippedAnalysisLogs:
-      networkMeter.skippedAnalysisLogs,
-
-    uptimeHours:
-      +(
-        (
-          Date.now() -
-          networkMeter.startedAt
-        ) /
-        3600000
-      ).toFixed(
-        2
-      )
-  };
+  return (
+    `${symbol}-${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(
+        2,
+        8
+      )}`
+  );
 }
 
 
 // ============================================================
-// DATA SOURCE HELPERS
+// ACCOUNT STATE
 // ============================================================
 
-function isBinanceCandle(
-  candle
-) {
+let cash =
+  C.startingBalance;
 
-  return (
-    candle?.source ===
-      'BINANCE_LIVE' ||
-    candle?.source ===
-      'BINANCE_REST'
+
+let positions =
+  {};
+
+
+let stats = {
+
+  totalTrades:
+    0,
+
+  wins:
+    0,
+
+  losses:
+    0,
+
+  grossProfit:
+    0,
+
+  grossLoss:
+    0,
+
+  netProfit:
+    0,
+
+  fees:
+    0,
+
+  bestTrade:
+    0,
+
+  worstTrade:
+    0,
+
+  maxDrawdown:
+    0,
+
+  earlyFailureExits:
+    0,
+
+  breakEvenMoves:
+    0,
+
+  trailingActivations:
+    0
+};
+
+
+let dailyPnL =
+  0;
+
+
+let dailyStartEquity =
+  C.startingBalance;
+
+
+let dailyEntries =
+  0;
+
+
+let currentDay =
+  utcDay();
+
+
+let peakEquity =
+  C.startingBalance;
+
+
+let manualPause =
+  false;
+
+
+let dailyPause =
+  false;
+
+
+let drawdownPause =
+  false;
+
+
+let lossStreak =
+  0;
+
+
+const lastLossBySymbol =
+  {};
+
+
+// ============================================================
+// MARKET STATE
+// ============================================================
+
+const tickers =
+  new Map();
+
+
+const candles =
+  Object.fromEntries(
+
+    C.timeframes.map(
+      tf =>
+        [
+          tf,
+          {}
+        ]
+    )
   );
-}
 
 
-function isLiveBinanceCandle(
-  candle
-) {
+const warmupLoaded =
+  Object.fromEntries(
 
-  return (
-    candle?.source ===
-    'BINANCE_LIVE'
+    C.timeframes.map(
+      tf =>
+        [
+          tf,
+          new Set()
+        ]
+    )
   );
-}
 
 
-function getBinanceCandles(
-  arr
-) {
-
-  return (
-    arr ||
-    []
-  ).filter(
-    isBinanceCandle
-  );
-}
+const warmupLoading =
+  new Set();
 
 
-function liveBinanceCount(
-  symbol
-) {
-
-  const arr =
-    candles[
-      symbol
-    ] ||
-    [];
-
-  return arr.filter(
-    isLiveBinanceCandle
-  ).length;
-}
+let warmupQueue =
+  [];
 
 
-function totalBinanceCount(
-  symbol
-) {
-
-  const arr =
-    candles[
-      symbol
-    ] ||
-    [];
-
-  return arr.filter(
-    isBinanceCandle
-  ).length;
-}
+let warmupWorkers =
+  0;
 
 
-function symbolLiveReady(
-  symbol
-) {
-
-  return (
-    totalBinanceCount(
-      symbol
-    ) >=
-    C.liveBinanceCandlesRequired
-  );
-}
+const subscribed =
+  new Set();
 
 
-function liveReadyCount() {
+const candidatePool =
+  new Map();
 
-  let count =
-    0;
 
-  for (
-    const symbol
-    of subscribed
-  ) {
+const lastAnalyzed =
+  {};
 
-    if (
-      symbolLiveReady(
-        symbol
-      )
-    ) {
-      count++;
-    }
-  }
 
-  return count;
-}
+let latest =
+  [];
+
+
+let marketRegime = {
+
+  ready:
+    false,
+
+  regime:
+    'WARMING',
+
+  breadth:
+    0,
+
+  btcBullish:
+    false,
+
+  btcScore:
+    0,
+
+  overextended:
+    false,
+
+  updatedAt:
+    0
+};
+
+
+let binanceRestBlockedUntil =
+  0;
+
+
+// ============================================================
+// WEBSOCKET STATE
+// ============================================================
+
+let miniWs =
+  null;
+
+
+let klineWs =
+  null;
+
+
+let miniConnected =
+  false;
+
+
+let klineConnected =
+  false;
+
+
+let miniReconnectAttempts =
+  0;
+
+
+let klineReconnectAttempts =
+  0;
+
+
+let shuttingDown =
+  false;
+
+
+// ============================================================
+// DATABASE
+// ============================================================
+
+let mongoClient =
+  null;
+
+
+let db =
+  null;
+
+
+let cloudConnected =
+  false;
 
 
 // ============================================================
@@ -989,6 +787,7 @@ function liveReadyCount() {
 
 const tgQueue =
   [];
+
 
 let tgBusy =
   false;
@@ -1011,50 +810,50 @@ function tg(
 
 
 setInterval(
+
   async () => {
 
     if (
       tgBusy ||
       !tgQueue.length
     ) {
+
       return;
     }
+
 
     tgBusy =
       true;
 
+
     const text =
       tgQueue.shift();
 
+
     try {
-
-      const payload = {
-
-        chat_id:
-          CHAT_ID,
-
-        text,
-
-        parse_mode:
-          'HTML'
-      };
-
-      networkMeter.telegramBytes +=
-        byteLen(
-          payload
-        );
 
       await axios.post(
 
         `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,
 
-        payload,
+        {
+
+          chat_id:
+            CHAT_ID,
+
+          text,
+
+          parse_mode:
+            'HTML'
+        },
 
         {
+
           timeout:
             10000
         }
       );
+
 
     } catch (
       error
@@ -1069,6 +868,7 @@ setInterval(
           text
         );
 
+
         await sleep(
           5000
         );
@@ -1081,6 +881,7 @@ setInterval(
         );
       }
 
+
     } finally {
 
       tgBusy =
@@ -1088,6 +889,7 @@ setInterval(
     }
 
   },
+
   1200
 );
 
@@ -1110,8 +912,11 @@ async function connectCloud() {
 
   mongoClient =
     new MongoClient(
+
       MONGODB_URI,
+
       {
+
         maxPoolSize:
           8
       }
@@ -1146,6 +951,7 @@ async function connectCloud() {
       .createIndex({
         version:
           1,
+
         exitTime:
           -1
       }),
@@ -1157,6 +963,7 @@ async function connectCloud() {
       .createIndex({
         version:
           1,
+
         time:
           -1
       }),
@@ -1166,10 +973,11 @@ async function connectCloud() {
         'journal'
       )
       .createIndex({
-        symbol:
+        tradeId:
           1,
+
         time:
-          -1
+          1
       })
 
   ]);
@@ -1181,6 +989,204 @@ async function connectCloud() {
 }
 
 
+// ============================================================
+// JOURNAL
+// ============================================================
+
+async function cloudJournal(
+  row,
+  force = false
+) {
+
+  if (
+    !cloudConnected
+  ) {
+
+    return;
+  }
+
+
+  if (
+    !force &&
+    row.type ===
+      'ANALYSIS' &&
+    Math.random() >
+      C.analysisJournalSampleRate
+  ) {
+
+    return;
+  }
+
+
+  try {
+
+    await db
+      .collection(
+        'journal'
+      )
+      .insertOne({
+
+        time:
+          Date.now(),
+
+        version:
+          C.version,
+
+        buildHash:
+          BUILD_HASH,
+
+        ...row
+      });
+
+
+  } catch (
+    error
+  ) {
+
+    console.error(
+      'Journal:',
+      error.message
+    );
+  }
+}
+
+
+// ============================================================
+// SAVE TRADE
+// ============================================================
+
+async function saveTrade(
+  record
+) {
+
+  if (
+    !cloudConnected
+  ) {
+
+    return;
+  }
+
+
+  try {
+
+    await db
+      .collection(
+        'trades'
+      )
+      .insertOne({
+
+        version:
+          C.version,
+
+        buildHash:
+          BUILD_HASH,
+
+        ...record
+      });
+
+
+  } catch (
+    error
+  ) {
+
+    console.error(
+      'Trade save:',
+      error.message
+    );
+  }
+}
+
+
+// ============================================================
+// SAVE CLOUD STATE
+// ============================================================
+
+async function saveCloudState() {
+
+  if (
+    !cloudConnected
+  ) {
+
+    return;
+  }
+
+
+  try {
+
+    await db
+      .collection(
+        'state'
+      )
+      .updateOne(
+
+        {
+          _id:
+            C.stateKey
+        },
+
+        {
+          $set: {
+
+            version:
+              C.version,
+
+            buildHash:
+              BUILD_HASH,
+
+            updatedAt:
+              Date.now(),
+
+            cash,
+
+            positions,
+
+            stats,
+
+            dailyPnL,
+
+            dailyStartEquity,
+
+            dailyEntries,
+
+            currentDay,
+
+            peakEquity,
+
+            manualPause,
+
+            dailyPause,
+
+            drawdownPause,
+
+            lossStreak,
+
+            lastLossBySymbol
+          }
+        },
+
+        {
+          upsert:
+            true
+        }
+      );
+
+
+  } catch (
+    error
+  ) {
+
+    console.error(
+      'State save:',
+      error.message
+    );
+  }
+}
+
+
+// ============================================================
+// LOAD STATE
+// ============================================================
+
 async function loadCloudState() {
 
   const state =
@@ -1189,6 +1195,7 @@ async function loadCloudState() {
         'state'
       )
       .findOne({
+
         _id:
           C.stateKey
       });
@@ -1199,7 +1206,7 @@ async function loadCloudState() {
   ) {
 
     console.log(
-      'Fresh V5.1.2 PAPER account.'
+      'Fresh V6 PAPER account'
     );
 
     return;
@@ -1240,6 +1247,12 @@ async function loadCloudState() {
     );
 
 
+  dailyEntries =
+    n(
+      state.dailyEntries
+    );
+
+
   currentDay =
     state.currentDay ||
     utcDay();
@@ -1260,21 +1273,8 @@ async function loadCloudState() {
     !!state.dailyPause;
 
 
-  cooldownUntil =
-    n(
-      state.cooldownUntil
-    );
-
-
-  cooldownReason =
-    state.cooldownReason ||
-    null;
-
-
-  entriesSinceCooldown =
-    n(
-      state.entriesSinceCooldown
-    );
+  drawdownPause =
+    !!state.drawdownPause;
 
 
   lossStreak =
@@ -1284,13 +1284,16 @@ async function loadCloudState() {
 
 
   Object.assign(
+
     lastLossBySymbol,
+
     state.lastLossBySymbol ||
     {}
   );
 
 
   console.log(
+
     `STATE RESTORED | Cash $${cash.toFixed(
       2
     )} | Open ${
@@ -1302,212 +1305,149 @@ async function loadCloudState() {
 }
 
 
-async function saveCloudState() {
+// ============================================================
+// DATA SOURCE HELPERS
+// ============================================================
 
-  if (
-    !cloudConnected
-  ) {
-    return;
-  }
+function isBinanceCandle(
+  candle
+) {
 
-
-  try {
-
-    const payload = {
-
-      version:
-        C.version,
-
-      updatedAt:
-        Date.now(),
-
-      cash,
-      positions,
-      stats,
-
-      dailyPnL,
-      dailyStartEquity,
-      currentDay,
-      peakEquity,
-
-      manualPause,
-      dailyPause,
-
-      cooldownUntil,
-      cooldownReason,
-
-      entriesSinceCooldown,
-      lossStreak,
-
-      lastLossBySymbol
-    };
-
-
-    networkMeter.mongoWriteBytes +=
-      byteLen(
-        payload
-      );
-
-
-    networkMeter.stateWrites++;
-
-
-    await db
-      .collection(
-        'state'
-      )
-      .updateOne(
-
-        {
-          _id:
-            C.stateKey
-        },
-
-        {
-          $set:
-            payload
-        },
-
-        {
-          upsert:
-            true
-        }
-      );
-
-  } catch (
-    error
-  ) {
-
-    console.error(
-      'State save:',
-      error.message
-    );
-  }
+  return (
+    candle?.source ===
+      'BINANCE_LIVE' ||
+    candle?.source ===
+      'BINANCE_REST'
+  );
 }
 
 
-async function cloudJournal(
-  row,
-  force = false
+function tfArr(
+  tf,
+  symbol
 ) {
 
-  if (
-    !cloudConnected
-  ) {
-    return;
-  }
-
-
-  if (
-    !force &&
-    row.type ===
-      'ANALYSIS' &&
-    Math.random() >
-      C.analysisJournalSampleRate
-  ) {
-
-    networkMeter.skippedAnalysisLogs++;
-
-    return;
-  }
-
-
-  try {
-
-    const doc = {
-
-      time:
-        Date.now(),
-
-      version:
-        C.version,
-
-      ...row
-    };
-
-
-    networkMeter.mongoWriteBytes +=
-      byteLen(
-        doc
-      );
-
-
-    networkMeter.journalWrites++;
-
-
-    await db
-      .collection(
-        'journal'
-      )
-      .insertOne(
-        doc
-      );
-
-  } catch (
-    error
-  ) {
-
-    console.error(
-      'Journal:',
-      error.message
-    );
-  }
+  return (
+    candles[
+      tf
+    ]?.[
+      symbol
+    ] ||
+    []
+  );
 }
 
 
-async function saveTrade(
-  record
+function totalBinanceCount(
+  symbol
 ) {
 
-  if (
-    !cloudConnected
-  ) {
-    return;
-  }
+  return tfArr(
+    C.entryTf,
+    symbol
+  )
+    .filter(
+      isBinanceCandle
+    )
+    .length;
+}
 
 
-  try {
+function symbolLiveReady(
+  symbol
+) {
 
-    const doc = {
-
-      version:
-        C.version,
-
-      ...record
-    };
-
-
-    networkMeter.mongoWriteBytes +=
-      byteLen(
-        doc
-      );
-
-
-    networkMeter.tradeWrites++;
-
-
-    await db
-      .collection(
-        'trades'
-      )
-      .insertOne(
-        doc
-      );
-
-  } catch (
-    error
-  ) {
-
-    console.error(
-      'Trade save:',
-      error.message
-    );
-  }
+  return (
+    totalBinanceCount(
+      symbol
+    ) >=
+    C.liveBinanceCandlesRequired
+  );
 }
 
 
 // ============================================================
-// CANDLE PARSING
+// MERGE CANDLES
+// ============================================================
+
+function mergeCandles(
+  tf,
+  symbol,
+  incoming
+) {
+
+  const map =
+    new Map(
+
+      tfArr(
+        tf,
+        symbol
+      )
+        .map(
+          candle =>
+            [
+              candle.closeTime,
+              candle
+            ]
+        )
+    );
+
+
+  for (
+    const candle
+    of incoming ||
+    []
+  ) {
+
+    const old =
+      map.get(
+        candle.closeTime
+      );
+
+
+    if (
+      old &&
+      isBinanceCandle(
+        old
+      ) &&
+      !isBinanceCandle(
+        candle
+      )
+    ) {
+
+      continue;
+    }
+
+
+    map.set(
+      candle.closeTime,
+      candle
+    );
+  }
+
+
+  candles[
+    tf
+  ][
+    symbol
+  ] =
+    [...map.values()]
+      .sort(
+        (
+          a,
+          b
+        ) =>
+          a.closeTime -
+          b.closeTime
+      )
+      .slice(
+        -C.maxCandles
+      );
+}
+
+
+// ============================================================
+// BINANCE KLINE PARSER
 // ============================================================
 
 function parseBinanceKline(
@@ -1573,120 +1513,19 @@ function parseBinanceKline(
 }
 
 
-function mergeCandles(
-  symbol,
-  incoming
-) {
-
-  const map =
-    new Map();
-
-
-  for (
-    const candle
-    of candles[
-      symbol
-    ] ||
-    []
-  ) {
-
-    map.set(
-      candle.closeTime,
-      candle
-    );
-  }
-
-
-  for (
-    const candle
-    of incoming ||
-    []
-  ) {
-
-    const existing =
-      map.get(
-        candle.closeTime
-      );
-
-
-    /*
-     * Never let an external candle replace a genuine
-     * Binance candle for the same timestamp.
-     */
-    if (
-      existing &&
-      isBinanceCandle(
-        existing
-      ) &&
-      !isBinanceCandle(
-        candle
-      )
-    ) {
-      continue;
-    }
-
-
-    map.set(
-      candle.closeTime,
-      candle
-    );
-  }
-
-
-  candles[
-    symbol
-  ] =
-    [...map.values()]
-      .sort(
-        (
-          a,
-          b
-        ) =>
-          a.closeTime -
-          b.closeTime
-      )
-      .slice(
-        -C.maxCandles
-      );
-}
-
-
 // ============================================================
-// WARMUP HELPERS
+// INTERVAL HELPERS
 // ============================================================
-
-function scheduleWarmupResume(
-  ms
-) {
-
-  clearTimeout(
-    warmupResumeTimer
-  );
-
-
-  warmupResumeTimer =
-    setTimeout(
-
-      () =>
-        processWarmupQueue(),
-
-      Math.max(
-        1000,
-        ms
-      )
-    );
-}
-
 
 function intervalMilliseconds(
-  interval
+  tf
 ) {
 
   const match =
     String(
-      interval
+      tf
     ).match(
-      /^(\d+)([mhd])$/i
+      /^(\d+)(m|h)$/i
     );
 
 
@@ -1708,26 +1547,9 @@ function intervalMilliseconds(
     );
 
 
-  const unit =
+  if (
     match[2]
-      .toLowerCase();
-
-
-  if (
-    unit ===
-    'm'
-  ) {
-
-    return (
-      value *
-      60 *
-      1000
-    );
-  }
-
-
-  if (
-    unit ===
+      .toLowerCase() ===
     'h'
   ) {
 
@@ -1740,44 +1562,30 @@ function intervalMilliseconds(
   }
 
 
-  if (
-    unit ===
-    'd'
-  ) {
-
-    return (
-      value *
-      24 *
-      60 *
-      60 *
-      1000
-    );
-  }
-
-
   return (
-    5 *
+    value *
     60 *
     1000
   );
 }
 
 
-function bybitIntervalValue(
-  interval
+function bybitInterval(
+  tf
 ) {
 
   const match =
     String(
-      interval
+      tf
     ).match(
-      /^(\d+)([mhd])$/i
+      /^(\d+)(m|h)$/i
     );
 
 
   if (
     !match
   ) {
+
     return '5';
   }
 
@@ -1788,452 +1596,410 @@ function bybitIntervalValue(
     );
 
 
-  const unit =
+  return (
     match[2]
-      .toLowerCase();
-
-
-  if (
-    unit ===
-    'm'
-  ) {
-
-    return String(
-      value
-    );
-  }
-
-
-  if (
-    unit ===
+      .toLowerCase() ===
     'h'
-  ) {
-
-    return String(
-      value *
-      60
-    );
-  }
-
-
-  if (
-    unit ===
-      'd' &&
-    value ===
-      1
-  ) {
-
-    return 'D';
-  }
-
-
-  return '5';
+  )
+    ? String(
+        value *
+        60
+      )
+    : String(
+        value
+      );
 }
 
 
 // ============================================================
-// BYBIT HISTORICAL OHLC FALLBACK
+// EXTERNAL OHLC WARMUP
 // ============================================================
 
-async function fetchWarmupViaBybit(
-  symbol
+async function fetchExternal(
+  symbol,
+  tf
 ) {
 
   const intervalMs =
     intervalMilliseconds(
-      C.interval
+      tf
     );
 
 
-  const response =
-    await axios.get(
+  try {
 
-      'https://api.bybit.com/v5/market/kline',
+    const response =
+      await axios.get(
 
-      {
-        params: {
+        'https://api.bybit.com/v5/market/kline',
 
-          category:
-            'spot',
+        {
 
-          symbol,
+          params: {
 
-          interval:
-            bybitIntervalValue(
-              C.interval
-            ),
+            category:
+              'spot',
 
-          limit:
-            Math.min(
-              C.maxCandles,
-              200
-            )
-        },
+            symbol,
 
-        timeout:
-          12000
-      }
-    );
+            interval:
+              bybitInterval(
+                tf
+              ),
+
+            limit:
+              Math.min(
+                C.maxCandles,
+                200
+              )
+          },
+
+          timeout:
+            12000
+        }
+      );
 
 
-  if (
-    n(
-      response.data?.retCode,
-      -1
-    ) !== 0 ||
-    !Array.isArray(
+    if (
+      n(
+        response.data?.retCode,
+        -1
+      ) !==
+        0 ||
+      !Array.isArray(
+        response.data
+          ?.result
+          ?.list
+      )
+    ) {
+
+      throw new Error(
+        'BYBIT_INVALID'
+      );
+    }
+
+
+    const now =
+      Date.now();
+
+
+    const rows =
       response.data
-        ?.result
-        ?.list
-    )
-  ) {
+        .result
+        .list
 
-    throw new Error(
-      `BYBIT_${
-        response.data?.retCode ??
-        'INVALID'
-      }`
-    );
-  }
+        .map(
+          row => {
 
-
-  const now =
-    Date.now();
-
-
-  const rows =
-    response.data
-      .result
-      .list
-
-      .map(
-        row => {
-
-          const openTime =
-            n(
-              row[0]
-            );
-
-
-          return {
-
-            open:
+            const openTime =
               n(
-                row[1]
-              ),
+                row[0]
+              );
 
-            high:
-              n(
-                row[2]
-              ),
 
-            low:
-              n(
-                row[3]
-              ),
+            return {
 
-            close:
-              n(
-                row[4]
-              ),
+              open:
+                n(
+                  row[1]
+                ),
 
-            /*
-             * External volume is stored for reference only.
-             * Entry calculations never use it.
-             */
-            volume:
-              n(
-                row[5]
-              ),
+              high:
+                n(
+                  row[2]
+                ),
 
-            closeTime:
-              openTime +
-              intervalMs -
-              1,
+              low:
+                n(
+                  row[3]
+                ),
 
-            quoteVolume:
-              n(
-                row[6]
-              ),
+              close:
+                n(
+                  row[4]
+                ),
 
-            trades:
-              0,
+              volume:
+                n(
+                  row[5]
+                ),
 
-            takerBuyBase:
-              0,
+              quoteVolume:
+                n(
+                  row[6]
+                ),
 
-            takerBuyQuote:
-              0,
+              closeTime:
+                openTime +
+                intervalMs -
+                1,
 
-            source:
-              'BYBIT_OHLC'
-          };
-        }
-      )
+              trades:
+                0,
 
-      .filter(
-        candle =>
-          candle.closeTime <
-            now &&
-          candle.open >
-            0 &&
-          candle.high >
-            0 &&
-          candle.low >
-            0 &&
-          candle.close >
-            0
-      )
+              takerBuyBase:
+                0,
 
-      .sort(
-        (
-          a,
-          b
-        ) =>
-          a.closeTime -
-          b.closeTime
+              takerBuyQuote:
+                0,
+
+              source:
+                'BYBIT_OHLC'
+            };
+          }
+        )
+
+        .filter(
+          candle =>
+            candle.closeTime <
+              now &&
+            candle.close >
+              0
+        )
+
+        .sort(
+          (
+            a,
+            b
+          ) =>
+            a.closeTime -
+            b.closeTime
+        );
+
+
+    if (
+      rows.length <
+      C.warmupCandles
+    ) {
+
+      throw new Error(
+        'BYBIT_INCOMPLETE'
       );
+    }
 
 
-  if (
-    rows.length <
-    C.warmupCandles
+    return rows;
+
+
+  } catch (
+    bybitError
   ) {
 
-    throw new Error(
-      `BYBIT_INCOMPLETE_${rows.length}`
-    );
-  }
-
-
-  return rows;
-}
-
-
-// ============================================================
-// OKX HISTORICAL OHLC FALLBACK
-// ============================================================
-
-async function fetchWarmupViaOkx(
-  symbol
-) {
-
-  const intervalMs =
-    intervalMilliseconds(
-      C.interval
-    );
-
-
-  const instId =
-    symbol.endsWith(
-      'USDT'
-    )
-      ? `${
-          symbol.slice(
-            0,
-            -4
-          )
-        }-USDT`
-      : symbol;
-
-
-  const response =
-    await axios.get(
-
-      'https://www.okx.com/api/v5/market/candles',
-
-      {
-        params: {
-
-          instId,
-
-          bar:
-            C.interval,
-
-          limit:
-            Math.min(
-              C.maxCandles,
-              100
+    const instId =
+      symbol.endsWith(
+        'USDT'
+      )
+        ? `${
+            symbol.slice(
+              0,
+              -4
             )
-        },
-
-        timeout:
-          12000
-      }
-    );
+          }-USDT`
+        : symbol;
 
 
-  if (
-    String(
-      response.data?.code
-    ) !==
-      '0' ||
-    !Array.isArray(
-      response.data?.data
-    )
-  ) {
-
-    throw new Error(
-      `OKX_${
-        response.data?.code ??
-        'INVALID'
-      }`
-    );
-  }
+    const okxBar =
+      tf.endsWith(
+        'h'
+      )
+        ? tf.toUpperCase()
+        : tf;
 
 
-  const now =
-    Date.now();
+    const response =
+      await axios.get(
 
+        'https://www.okx.com/api/v5/market/candles',
 
-  const rows =
-    response.data
-      .data
+        {
 
-      .map(
-        row => {
+          params: {
 
-          const openTime =
-            n(
-              row[0]
-            );
+            instId,
 
+            bar:
+              okxBar,
 
-          return {
+            limit:
+              Math.min(
+                C.maxCandles,
+                100
+              )
+          },
 
-            open:
-              n(
-                row[1]
-              ),
-
-            high:
-              n(
-                row[2]
-              ),
-
-            low:
-              n(
-                row[3]
-              ),
-
-            close:
-              n(
-                row[4]
-              ),
-
-            volume:
-              n(
-                row[5]
-              ),
-
-            closeTime:
-              openTime +
-              intervalMs -
-              1,
-
-            quoteVolume:
-              n(
-                row[7] ||
-                row[6]
-              ),
-
-            trades:
-              0,
-
-            takerBuyBase:
-              0,
-
-            takerBuyQuote:
-              0,
-
-            source:
-              'OKX_OHLC'
-          };
+          timeout:
+            12000
         }
-      )
-
-      .filter(
-        candle =>
-          candle.closeTime <
-            now &&
-          candle.open >
-            0 &&
-          candle.high >
-            0 &&
-          candle.low >
-            0 &&
-          candle.close >
-            0
-      )
-
-      .sort(
-        (
-          a,
-          b
-        ) =>
-          a.closeTime -
-          b.closeTime
       );
 
 
-  if (
-    rows.length <
-    C.warmupCandles
-  ) {
+    if (
+      String(
+        response.data?.code
+      ) !==
+        '0' ||
+      !Array.isArray(
+        response.data?.data
+      )
+    ) {
 
-    throw new Error(
-      `OKX_INCOMPLETE_${rows.length}`
-    );
+      throw bybitError;
+    }
+
+
+    const now =
+      Date.now();
+
+
+    const rows =
+      response.data
+        .data
+
+        .map(
+          row => {
+
+            const openTime =
+              n(
+                row[0]
+              );
+
+
+            return {
+
+              open:
+                n(
+                  row[1]
+                ),
+
+              high:
+                n(
+                  row[2]
+                ),
+
+              low:
+                n(
+                  row[3]
+                ),
+
+              close:
+                n(
+                  row[4]
+                ),
+
+              volume:
+                n(
+                  row[5]
+                ),
+
+              quoteVolume:
+                n(
+                  row[7] ||
+                  row[6]
+                ),
+
+              closeTime:
+                openTime +
+                intervalMs -
+                1,
+
+              trades:
+                0,
+
+              takerBuyBase:
+                0,
+
+              takerBuyQuote:
+                0,
+
+              source:
+                'OKX_OHLC'
+            };
+          }
+        )
+
+        .filter(
+          candle =>
+            candle.closeTime <
+              now &&
+            candle.close >
+              0
+        )
+
+        .sort(
+          (
+            a,
+            b
+          ) =>
+            a.closeTime -
+            b.closeTime
+        );
+
+
+    if (
+      rows.length <
+      C.warmupCandles
+    ) {
+
+      throw new Error(
+        'OKX_INCOMPLETE'
+      );
+    }
+
+
+    return rows;
   }
-
-
-  return rows;
 }
 
 
 // ============================================================
-// MAIN HISTORICAL WARMUP
+// WARMUP
 // ============================================================
 
 async function fetchWarmup(
-  symbol
+  symbol,
+  tf
 ) {
 
+  const key =
+    `${tf}:${symbol}`;
+
+
   if (
-    warmupLoaded.has(
-      symbol
-    ) ||
     warmupLoading.has(
+      key
+    ) ||
+    warmupLoaded[
+      tf
+    ].has(
       symbol
     ) ||
     !subscribed.has(
       symbol
     )
   ) {
+
     return;
   }
 
 
   warmupLoading.add(
-    symbol
+    key
   );
 
 
   try {
 
-    let historical =
+    let rows =
       null;
+
 
     let source =
-      null;
-
-    let binanceFailure =
-      null;
+      '';
 
 
-    // ========================================================
-    // 1. BINANCE REST
-    // ========================================================
+    // --------------------------------------------------------
+    // 1. BINANCE
+    // --------------------------------------------------------
 
     if (
       Date.now() >=
@@ -2242,21 +2008,19 @@ async function fetchWarmup(
 
       try {
 
-        warmupStats.restRequests++;
-
-
         const response =
           await axios.get(
 
             `${REST_BASE}/api/v3/klines`,
 
             {
+
               params: {
 
                 symbol,
 
                 interval:
-                  C.interval,
+                  tf,
 
                 limit:
                   C.maxCandles
@@ -2275,16 +2039,12 @@ async function fetchWarmup(
         ) {
 
           throw new Error(
-            'BINANCE_INVALID_KLINES'
+            'BINANCE_INVALID'
           );
         }
 
 
-        const now =
-          Date.now();
-
-
-        historical =
+        rows =
           response.data
 
             .map(
@@ -2298,7 +2058,7 @@ async function fetchWarmup(
             .filter(
               candle =>
                 candle.closeTime <
-                now
+                Date.now()
             );
 
 
@@ -2310,297 +2070,78 @@ async function fetchWarmup(
         error
       ) {
 
-        binanceFailure =
-          error;
-
-
-        const status =
-          error.response
-            ?.status;
-
-
         if (
-          status ===
-            418 ||
-          status ===
+          [
+            418,
             429
+          ].includes(
+            error.response?.status
+          )
         ) {
-
-          warmupStats.rateLimited++;
-
-          warmupStats.last429 =
-            Date.now();
-
-
-          const retryAfterSec =
-            n(
-              error.response
-                ?.headers?.[
-                  'retry-after'
-                ]
-            );
-
-
-          const defaultPauseMs =
-            status ===
-              418
-              ? (
-                  30 *
-                  60 *
-                  1000
-                )
-              : (
-                  5 *
-                  60 *
-                  1000
-                );
-
-
-          const pauseMs =
-            Math.max(
-
-              retryAfterSec >
-                0
-                ? (
-                    retryAfterSec *
-                    1000
-                  )
-                : 0,
-
-              defaultPauseMs
-            );
-
 
           binanceRestBlockedUntil =
-            Math.max(
-
-              binanceRestBlockedUntil,
-
-              Date.now() +
-              pauseMs
-            );
-
-
-          console.warn(
-            `Warmup Binance ${status} | ${symbol} | external OHLC fallback enabled | REST pause ${Math.ceil(
-              pauseMs /
-              60000
-            )}m`
-          );
-
-
-        } else {
-
-          console.warn(
-            `Warmup Binance ${symbol} failed | ${
-              status ||
-              error.message
-            } | trying external OHLC`
-          );
-        }
-      }
-
-
-    } else {
-
-      console.log(
-        `Warmup Binance REST paused | ${symbol} | using external OHLC`
-      );
-    }
-
-
-    // ========================================================
-    // 2. BYBIT OHLC
-    // ========================================================
-
-    if (
-      !historical
-    ) {
-
-      try {
-
-        historical =
-          await fetchWarmupViaBybit(
-            symbol
-          );
-
-
-        source =
-          'BYBIT_OHLC';
-
-
-        warmupStats.externalLoaded++;
-
-
-        console.log(
-          `Warmup BYBIT OHLC OK | ${symbol} | ${historical.length}`
-        );
-
-
-      } catch (
-        bybitError
-      ) {
-
-        console.warn(
-          `Warmup BYBIT failed | ${symbol} | ${bybitError.message}`
-        );
-
-
-        // ====================================================
-        // 3. OKX OHLC
-        // ====================================================
-
-        try {
-
-          historical =
-            await fetchWarmupViaOkx(
-              symbol
-            );
-
-
-          source =
-            'OKX_OHLC';
-
-
-          warmupStats.externalLoaded++;
-
-
-          console.log(
-            `Warmup OKX OHLC OK | ${symbol} | ${historical.length}`
-          );
-
-
-        } catch (
-          okxError
-        ) {
-
-          const binanceText =
-            binanceFailure
-              ? (
-                  binanceFailure
-                    .response
-                    ?.status ||
-                  binanceFailure
-                    .message
-                )
-              : (
-                  Date.now() <
-                    binanceRestBlockedUntil
-                    ? 'PAUSED'
-                    : 'UNKNOWN'
-                );
-
-
-          throw new Error(
-            `ALL_WARMUP_SOURCES_FAILED | Binance=${binanceText} | Bybit=${bybitError.message} | OKX=${okxError.message}`
-          );
+            Date.now() +
+            (
+              error.response.status ===
+                418
+                ? 30
+                : 5
+            ) *
+            60 *
+            1000;
         }
       }
     }
 
 
+    // --------------------------------------------------------
+    // 2. BYBIT / OKX
+    // --------------------------------------------------------
+
     if (
-      !Array.isArray(
-        historical
-      )
+      !rows
     ) {
 
-      throw new Error(
-        'INVALID_WARMUP_DATA'
-      );
+      rows =
+        await fetchExternal(
+          symbol,
+          tf
+        );
+
+
+      source =
+        rows[
+          0
+        ]?.source ||
+        'EXTERNAL';
     }
 
 
     mergeCandles(
+      tf,
       symbol,
-      historical
+      rows
     );
 
 
-    const count =
-      candles[
-        symbol
-      ]?.length ||
-      0;
-
-
     if (
-      count >=
+      tfArr(
+        tf,
+        symbol
+      ).length >=
       C.warmupCandles
     ) {
 
-      warmupLoaded.add(
+      warmupLoaded[
+        tf
+      ].add(
         symbol
       );
-
-
-      warmupRetryCount.delete(
-        symbol
-      );
-
-
-      warmupStats.restLoaded++;
 
 
       console.log(
-        `WARMUP READY ${symbol} | ${count} candles | ${source} | BINANCE DATA ${totalBinanceCount(
-          symbol
-        )}/${C.liveBinanceCandlesRequired}`
+        `WARMUP ${tf} READY ${symbol} | ${source}`
       );
-
-
-    } else {
-
-      warmupStats.failed++;
-
-
-      console.warn(
-        `Warmup incomplete ${symbol} | ${count}/${C.warmupCandles} | ${source || 'NONE'}`
-      );
-
-
-      const retries =
-        (
-          warmupRetryCount.get(
-            symbol
-          ) ||
-          0
-        ) +
-        1;
-
-
-      warmupRetryCount.set(
-        symbol,
-        retries
-      );
-
-
-      if (
-        retries <=
-          C.warmupMaxRetries &&
-        !shuttingDown
-      ) {
-
-        warmupStats.retries++;
-
-
-        setTimeout(
-
-          () =>
-            queueWarmup(
-              symbol
-            ),
-
-          Math.min(
-            C.warmupRetryMaxMs,
-            C.warmupRetryBaseMs *
-            Math.max(
-              1,
-              retries
-            )
-          )
-        );
-      }
     }
 
 
@@ -2608,72 +2149,15 @@ async function fetchWarmup(
     error
   ) {
 
-    warmupStats.failed++;
-
-
-    console.error(
-      `Warmup ${symbol}:`,
-      error.message
+    console.warn(
+      `Warmup ${tf} ${symbol}: ${error.message}`
     );
-
-
-    const retries =
-      (
-        warmupRetryCount.get(
-          symbol
-        ) ||
-        0
-      ) +
-      1;
-
-
-    warmupRetryCount.set(
-      symbol,
-      retries
-    );
-
-
-    /*
-     * If external providers do not carry the symbol,
-     * do not kill the symbol.
-     *
-     * Binance LIVE candles will continue accumulating.
-     * Once 60 closed Binance candles exist the symbol becomes
-     * historical-ready naturally.
-     */
-    if (
-      retries <=
-        C.warmupMaxRetries &&
-      !shuttingDown
-    ) {
-
-      warmupStats.retries++;
-
-
-      setTimeout(
-
-        () =>
-          queueWarmup(
-            symbol
-          ),
-
-        Math.min(
-          C.warmupRetryMaxMs,
-
-          C.warmupRetryBaseMs *
-          Math.max(
-            1,
-            retries
-          )
-        )
-      );
-    }
 
 
   } finally {
 
     warmupLoading.delete(
-      symbol
+      key
     );
   }
 }
@@ -2687,27 +2171,41 @@ function queueWarmup(
   symbol
 ) {
 
-  if (
-    !subscribed.has(
-      symbol
-    ) ||
-    warmupLoaded.has(
-      symbol
-    ) ||
-    warmupLoading.has(
-      symbol
-    ) ||
-    warmupQueue.includes(
-      symbol
-    )
+  for (
+    const tf
+    of C.timeframes
   ) {
-    return;
+
+    const key =
+      `${tf}:${symbol}`;
+
+
+    if (
+      !warmupLoaded[
+        tf
+      ].has(
+        symbol
+      ) &&
+      !warmupLoading.has(
+        key
+      ) &&
+      !warmupQueue.some(
+        item =>
+          item.key ===
+          key
+      )
+    ) {
+
+      warmupQueue.push({
+
+        key,
+
+        symbol,
+
+        tf
+      });
+    }
   }
-
-
-  warmupQueue.push(
-    symbol
-  );
 
 
   processWarmupQueue();
@@ -2716,27 +2214,13 @@ function queueWarmup(
 
 function processWarmupQueue() {
 
-  if (
-    Date.now() <
-    warmupBlockedUntil
-  ) {
-
-    scheduleWarmupResume(
-      warmupBlockedUntil -
-      Date.now()
-    );
-
-    return;
-  }
-
-
   while (
     warmupWorkers <
       C.warmupConcurrency &&
     warmupQueue.length
   ) {
 
-    const symbol =
+    const job =
       warmupQueue.shift();
 
 
@@ -2749,7 +2233,8 @@ function processWarmupQueue() {
         try {
 
           await fetchWarmup(
-            symbol
+            job.symbol,
+            job.tf
           );
 
 
@@ -2773,53 +2258,12 @@ function processWarmupQueue() {
 
 
 // ============================================================
-// INDICATORS
+// EMA
 // ============================================================
-
-function sma(
-  arr,
-  period,
-  key =
-    'close'
-) {
-
-  if (
-    !arr ||
-    arr.length <
-    period
-  ) {
-    return null;
-  }
-
-
-  return (
-    arr
-      .slice(
-        -period
-      )
-      .reduce(
-        (
-          sum,
-          item
-        ) =>
-          sum +
-          n(
-            item[
-              key
-            ]
-          ),
-        0
-      ) /
-    period
-  );
-}
-
 
 function ema(
   arr,
-  period,
-  key =
-    'close'
+  period
 ) {
 
   if (
@@ -2827,6 +2271,7 @@ function ema(
     arr.length <
     period
   ) {
+
     return null;
   }
 
@@ -2840,14 +2285,10 @@ function ema(
       .reduce(
         (
           sum,
-          item
+          candle
         ) =>
           sum +
-          n(
-            item[
-              key
-            ]
-          ),
+          candle.close,
         0
       ) /
     period;
@@ -2873,11 +2314,9 @@ function ema(
 
     value =
       (
-        n(
-          arr[i][
-            key
-          ]
-        ) -
+        arr[
+          i
+        ].close -
         value
       ) *
       multiplier +
@@ -2888,6 +2327,31 @@ function ema(
   return value;
 }
 
+
+function emaAt(
+  arr,
+  period,
+  trim =
+    0
+) {
+
+  return ema(
+
+    trim
+      ? arr.slice(
+          0,
+          -trim
+        )
+      : arr,
+
+    period
+  );
+}
+
+
+// ============================================================
+// CMO
+// ============================================================
 
 function cmo(
   arr,
@@ -2901,12 +2365,14 @@ function cmo(
     period +
     1
   ) {
+
     return null;
   }
 
 
   let up =
     0;
+
 
   let down =
     0;
@@ -2924,7 +2390,9 @@ function cmo(
   ) {
 
     const diff =
-      arr[i].close -
+      arr[
+        i
+      ].close -
       arr[
         i -
         1
@@ -2968,6 +2436,10 @@ function cmo(
 }
 
 
+// ============================================================
+// ATR
+// ============================================================
+
 function atr(
   arr,
   period =
@@ -2980,6 +2452,7 @@ function atr(
     period +
     1
   ) {
+
     return null;
   }
 
@@ -2998,32 +2471,35 @@ function atr(
     i++
   ) {
 
-    const current =
-      arr[i];
-
-
-    const previous =
-      arr[
-        i -
-        1
-      ];
-
-
     ranges.push(
 
       Math.max(
 
-        current.high -
-        current.low,
+        arr[
+          i
+        ].high -
+        arr[
+          i
+        ].low,
 
         Math.abs(
-          current.high -
-          previous.close
+          arr[
+            i
+          ].high -
+          arr[
+            i -
+            1
+          ].close
         ),
 
         Math.abs(
-          current.low -
-          previous.close
+          arr[
+            i
+          ].low -
+          arr[
+            i -
+            1
+          ].close
         )
       )
     );
@@ -3051,6 +2527,10 @@ function atr(
 }
 
 
+// ============================================================
+// STRUCTURE
+// ============================================================
+
 function structure(
   arr
 ) {
@@ -3058,37 +2538,38 @@ function structure(
   if (
     !arr ||
     arr.length <
-    4
+    5
   ) {
+
     return 'NEUTRAL';
   }
 
 
-  const a =
+  const current =
     arr.at(
       -1
     );
 
 
-  const b =
+  const previous =
     arr.at(
       -2
     );
 
 
-  const c =
+  const third =
     arr.at(
       -3
     );
 
 
   if (
-    a.high >
-      b.high &&
-    a.low >
-      b.low &&
-    b.low >=
-      c.low
+    current.high >
+      previous.high &&
+    current.low >
+      previous.low &&
+    previous.low >=
+      third.low
   ) {
 
     return 'BULLISH';
@@ -3096,10 +2577,10 @@ function structure(
 
 
   if (
-    a.high <
-      b.high &&
-    a.low <
-      b.low
+    current.high <
+      previous.high &&
+    current.low <
+      previous.low
   ) {
 
     return 'BEARISH';
@@ -3110,27 +2591,76 @@ function structure(
 }
 
 
-/*
- * Volume acceleration is NEVER calculated using
- * Bybit/OKX candles.
- *
- * Pass Binance-only candles to this function.
- */
-function volumeAcceleration(
-  arr
+// ============================================================
+// BINANCE VOLUME
+// ============================================================
+
+function volumeRatio(
+  binanceArr,
+  period =
+    12
 ) {
 
   if (
-    !arr ||
-    arr.length <
+    binanceArr.length <
+    period +
+    1
+  ) {
+
+    return null;
+  }
+
+
+  const current =
+    binanceArr.at(
+      -1
+    ).volume;
+
+
+  const average =
+    binanceArr
+      .slice(
+        -(
+          period +
+          1
+        ),
+        -1
+      )
+      .reduce(
+        (
+          sum,
+          candle
+        ) =>
+          sum +
+          candle.volume,
+        0
+      ) /
+    period;
+
+
+  return average >
+    0
+      ? current /
+        average
+      : null;
+}
+
+
+function volumeAcceleration(
+  binanceArr
+) {
+
+  if (
+    binanceArr.length <
     7
   ) {
+
     return null;
   }
 
 
   const recent =
-    arr
+    binanceArr
       .slice(
         -3
       )
@@ -3147,7 +2677,7 @@ function volumeAcceleration(
 
 
   const previous =
-    arr
+    binanceArr
       .slice(
         -6,
         -3
@@ -3172,51 +2702,9 @@ function volumeAcceleration(
 }
 
 
-function priceAcceleration(
-  arr
-) {
-
-  if (
-    !arr ||
-    arr.length <
-    4
-  ) {
-    return 0;
-  }
-
-
-  const a =
-    arr.at(
-      -1
-    ).close;
-
-
-  const b =
-    arr.at(
-      -2
-    ).close;
-
-
-  const c =
-    arr.at(
-      -3
-    ).close;
-
-
-  return (
-    pct(
-      a -
-      b,
-      b
-    ) -
-    pct(
-      b -
-      c,
-      c
-    )
-  );
-}
-
+// ============================================================
+// TAKER BUY RATIO
+// ============================================================
 
 function takerBuyRatio(
   candle
@@ -3226,18 +2714,11 @@ function takerBuyRatio(
     !candle ||
     !isBinanceCandle(
       candle
-    )
-  ) {
-    return null;
-  }
-
-
-  if (
+    ) ||
     candle.volume <=
-      0 ||
-    candle.takerBuyBase <
       0
   ) {
+
     return null;
   }
 
@@ -3253,18 +2734,19 @@ function takerBuyRatio(
 }
 
 
-/*
- * Only genuine Binance candles are accepted here.
- */
+// ============================================================
+// ORDER FLOW PERSISTENCE
+// ============================================================
+
 function orderFlowMomentum(
   binanceArr
 ) {
 
   if (
-    !binanceArr ||
     binanceArr.length <
     C.flowBinanceCandlesRequired
   ) {
+
     return null;
   }
 
@@ -3277,6 +2759,7 @@ function orderFlowMomentum(
 
   let buy =
     0;
+
 
   let total =
     0;
@@ -3320,244 +2803,145 @@ function orderFlowMomentum(
 }
 
 
-function breakoutAcceptance(
-  arr,
-  resistance,
-  atrPct
+// ============================================================
+// CANDLE SHAPE
+// ============================================================
+
+function candleShape(
+  candle
 ) {
-
-  const current =
-    arr.at(
-      -1
-    );
-
-
-  const previous =
-    arr.at(
-      -2
-    );
-
-
-  let score =
-    0;
-
-
-  const reasons =
-    [];
-
 
   const range =
     Math.max(
 
-      current.high -
-      current.low,
+      candle.high -
+      candle.low,
 
       Number.EPSILON
     );
 
 
-  const body =
+  const bodyRatio =
     Math.abs(
-      current.close -
-      current.open
+      candle.close -
+      candle.open
+    ) /
+    range;
+
+
+  const upperWickRatio =
+    (
+      candle.high -
+      Math.max(
+        candle.open,
+        candle.close
+      )
     ) /
     range;
 
 
   const closeLocation =
     (
-      current.close -
-      current.low
+      candle.close -
+      candle.low
     ) /
     range;
 
 
-  const breakoutPct =
-    pct(
-
-      current.close -
-      resistance,
-
-      resistance
-    );
-
-
-  const previousNear =
-    Math.abs(
-
-      pct(
-        previous.close -
-        resistance,
-        resistance
-      )
-    ) <=
-    C.retestTolerancePct;
-
-
-  if (
-    current.close >
-    resistance
-  ) {
-
-    score +=
-      25;
-
-
-    reasons.push(
-      'CLOSE_ABOVE_RES'
-    );
-  }
-
-
-  if (
-    closeLocation >=
-    0.72
-  ) {
-
-    score +=
-      15;
-
-
-    reasons.push(
-      'CLOSE_HIGH'
-    );
-  }
-
-
-  if (
-    body >=
-    0.55
-  ) {
-
-    score +=
-      15;
-
-
-    reasons.push(
-      'STRONG_BODY'
-    );
-  }
-
-
-  if (
-    breakoutPct >=
-      0 &&
-    breakoutPct <=
-      Math.max(
-        0.55,
-        atrPct *
-        1.4
-      )
-  ) {
-
-    score +=
-      15;
-
-
-    reasons.push(
-      'CONTROLLED_BREAKOUT'
-    );
-  }
-
-
-  if (
-    previousNear &&
-    previous.low <=
-      resistance *
-      (
-        1 +
-        C.retestTolerancePct /
-        100
-      )
-  ) {
-
-    score +=
-      20;
-
-
-    reasons.push(
-      'RETEST_ACCEPTED'
-    );
-  }
-
-
-  if (
-    previous.close >
-      resistance &&
-    current.close >
-      previous.close
-  ) {
-
-    score +=
-      10;
-
-
-    reasons.push(
-      'SECOND_CLOSE_CONFIRM'
-    );
-  }
-
-
-  score =
-    clamp(
-      score,
-      0,
-      100
-    );
-
-
   return {
 
-    score,
-    reasons,
-    breakoutPct,
+    bodyRatio,
 
-    accepted:
-      score >=
-      C.minBreakoutAcceptance
+    upperWickRatio,
+
+    closeLocation,
+
+    range
   };
 }
 
 
 // ============================================================
-// BTC CONTEXT
+// SWING LEVELS
 // ============================================================
 
-function btcContext() {
+function swingResistance(
+  arr,
+  lookback =
+    12
+) {
 
-  const arr =
-    candles[
-      C.btcSymbol
-    ];
+  /*
+   * Exclude current AND previous candle.
+   * This lets us detect a genuine previous breakout + current retest.
+   */
 
+  const sample =
+    arr.slice(
+      -(
+        lookback +
+        2
+      ),
+      -2
+    );
+
+
+  return sample.length
+    ? Math.max(
+        ...sample.map(
+          candle =>
+            candle.high
+        )
+      )
+    : null;
+}
+
+
+function recentSwingLow(
+  arr,
+  lookback =
+    8
+) {
+
+  const sample =
+    arr.slice(
+      -lookback
+    );
+
+
+  return sample.length
+    ? Math.min(
+        ...sample.map(
+          candle =>
+            candle.low
+        )
+      )
+    : null;
+}
+
+
+// ============================================================
+// TIMEFRAME STATE
+// ============================================================
+
+function timeframeState(
+  arr
+) {
 
   if (
     !arr ||
     arr.length <
-      C.warmupCandles
+    C.warmupCandles
   ) {
 
-    return {
-
-      ready:
-        false,
-
-      bullish:
-        false,
-
-      score:
-        0,
-
-      freshness:
-        0
-    };
+    return null;
   }
 
 
-  const current =
+  const close =
     arr.at(
       -1
-    );
+    ).close;
 
 
   const e20 =
@@ -3574,189 +2958,66 @@ function btcContext() {
     );
 
 
-  const momentum =
-    cmo(
+  const e20Previous =
+    emaAt(
       arr,
-      9
-    );
-
-
-  const atrValue =
-    atr(
-      arr,
-      14
+      20,
+      3
     );
 
 
   if (
     !e20 ||
     !e50 ||
-    momentum ===
-      null ||
-    atrValue ===
-      null
+    !e20Previous
   ) {
 
-    return {
-
-      ready:
-        false,
-
-      bullish:
-        false,
-
-      score:
-        0,
-
-      freshness:
-        0
-    };
+    return null;
   }
 
 
-  const emaDistance =
+  const slopePct =
     pct(
-
-      current.close -
-      e20,
-
-      e20
-    );
-
-
-  const atrPct =
-    pct(
-
-      atrValue,
-
-      current.close
-    );
-
-
-  const ext5 =
-    pct(
-
-      current.close -
-      arr.at(
-        -6
-      ).close,
-
-      arr.at(
-        -6
-      ).close
-    );
-
-
-  let score =
-    0;
-
-
-  let freshness =
-    100;
-
-
-  if (
-    current.close >
-    e20
-  ) {
-
-    score +=
-      30;
-  }
-
-
-  if (
-    e20 >
-    e50
-  ) {
-
-    score +=
-      30;
-  }
-
-
-  if (
-    structure(
-      arr
-    ) ===
-    'BULLISH'
-  ) {
-
-    score +=
-      20;
-  }
-
-
-  if (
-    momentum >=
-      45 &&
-    momentum <=
-      70
-  ) {
-
-    score +=
-      20;
-  }
-
-
-  if (
-    emaDistance >
-    1.2
-  ) {
-
-    freshness -=
-      30;
-  }
-
-
-  if (
-    ext5 >
-    2
-  ) {
-
-    freshness -=
-      30;
-  }
-
-
-  if (
-    momentum >
-    72
-  ) {
-
-    freshness -=
-      25;
-  }
-
-
-  if (
-    atrPct >
-    C.maxAtrPct
-  ) {
-
-    freshness -=
-      15;
-  }
+      e20 -
+      e20Previous,
+      e20Previous
+    ) /
+    3;
 
 
   return {
 
-    ready:
-      true,
+    close,
+
+    e20,
+
+    e50,
+
+    slopePct,
+
+    structure:
+      structure(
+        arr
+      ),
 
     bullish:
-      current.close >
-        e20 &&
-      e20 >
-        e50,
+      (
+        close >
+          e20 &&
+        e20 >
+          e50 &&
+        slopePct >
+          0
+      ),
 
-    score,
-
-    freshness:
-      clamp(
-        freshness,
-        0,
-        100
+    bearish:
+      (
+        close <
+          e20 &&
+        e20 <
+          e50 &&
+        slopePct <
+          0
       )
   };
 }
@@ -3766,7 +3027,7 @@ function btcContext() {
 // MARKET REGIME
 // ============================================================
 
-function calculateMarketRegime() {
+function buildRegime() {
 
   let ready =
     0;
@@ -3781,31 +3042,20 @@ function calculateMarketRegime() {
     of subscribed
   ) {
 
-    const arr =
-      candles[
-        symbol
-      ];
+    const state =
+      timeframeState(
 
-
-    if (
-      !arr ||
-      arr.length <
-        C.warmupCandles
-    ) {
-      continue;
-    }
-
-
-    const e20 =
-      ema(
-        arr,
-        20
+        tfArr(
+          C.trendTf,
+          symbol
+        )
       );
 
 
     if (
-      !e20
+      !state
     ) {
+
       continue;
     }
 
@@ -3814,10 +3064,7 @@ function calculateMarketRegime() {
 
 
     if (
-      arr.at(
-        -1
-      ).close >
-      e20
+      state.bullish
     ) {
 
       bullish++;
@@ -3836,71 +3083,53 @@ function calculateMarketRegime() {
 
 
   const btc =
-    btcContext();
+    timeframeState(
 
-
-  let regime =
-    'DEFENSIVE';
-
-
-  if (
-    btc.bullish &&
-    breadth >=
-      55
-  ) {
-
-    regime =
-      'RISK_ON';
-
-  } else if (
-    btc.ready &&
-    breadth >=
-      45
-  ) {
-
-    regime =
-      'NEUTRAL';
-  }
-
-
-  const overextended =
-    regime ===
-      'RISK_ON' &&
-    (
-      breadth >=
-        C.overextendedRiskOnBreadth ||
-      btc.freshness <
-        55
+      tfArr(
+        C.trendTf,
+        C.btcSymbol
+      )
     );
+
+
+  const regime =
+    !ready
+      ? 'WARMING'
+      : breadth >=
+          58
+        ? 'RISK_ON'
+        : breadth >=
+            38
+          ? 'NEUTRAL'
+          : 'DEFENSIVE';
 
 
   marketRegime = {
 
     ready:
-      ready >=
+      ready >
       20,
 
-    btcBullish:
-      btc.bullish,
-
-    btcScore:
-      btc.score,
-
-    btcFreshness:
-      btc.freshness,
+    regime,
 
     breadth:
       +breadth.toFixed(
         2
       ),
 
-    regime:
-      ready >=
-        20
-        ? regime
-        : 'WARMING',
+    btcBullish:
+      !!btc?.bullish,
 
-    overextended,
+    btcScore:
+      btc?.bullish
+        ? 100
+        : btc?.bearish
+          ? 0
+          : 50,
+
+    overextended:
+      breadth >=
+      C.overextendedBreadth,
 
     updatedAt:
       Date.now()
@@ -3909,70 +3138,516 @@ function calculateMarketRegime() {
 
 
 // ============================================================
-// SCORE
+// ADAPTIVE RISK
 // ============================================================
 
-function buildScore(
-  ctx
+function adaptiveRisk() {
+
+  if (
+    lossStreak >=
+    C.lossRiskStep2
+  ) {
+
+    return {
+
+      riskMultiplier:
+        C.lossRiskMultiplier2,
+
+      qualityPenalty:
+        C.lossQualityPenalty2,
+
+      label:
+        'CAUTION_2'
+    };
+  }
+
+
+  if (
+    lossStreak >=
+    C.lossRiskStep1
+  ) {
+
+    return {
+
+      riskMultiplier:
+        C.lossRiskMultiplier1,
+
+      qualityPenalty:
+        C.lossQualityPenalty1,
+
+      label:
+        'CAUTION_1'
+    };
+  }
+
+
+  return {
+
+    riskMultiplier:
+      1,
+
+    qualityPenalty:
+      0,
+
+    label:
+      'NORMAL'
+  };
+}
+
+
+// ============================================================
+// V6 ENTRY ANALYSIS
+// ============================================================
+
+function analyze(
+  symbol
 ) {
 
-  const {
-
-    arr,
-    x,
-    e20,
-    e50,
-    momentum,
-    atrPct,
-
-    volumeRatio,
-    volumeAccel,
-
-    takerRatio,
-    flowMomentum,
-
-    emaDistance,
-    ext5,
-    ext10,
-
-    marketStructure,
-    acceptance,
-
-    bodyRatio,
-    upperWickRatio,
-    closeLocation,
-
-    liveDataReady
-
-  } =
-    ctx;
+  const arr5 =
+    tfArr(
+      C.entryTf,
+      symbol
+    );
 
 
-  let trend =
-    0;
+  const arr15 =
+    tfArr(
+      C.structureTf,
+      symbol
+    );
 
 
-  let freshness =
-    100;
+  const arr1h =
+    tfArr(
+      C.trendTf,
+      symbol
+    );
 
 
-  let flow =
-    0;
+  if (
+    arr5.length <
+      C.warmupCandles ||
+    arr15.length <
+      C.warmupCandles ||
+    arr1h.length <
+      C.warmupCandles
+  ) {
+
+    return null;
+  }
 
 
-  let momentumScore =
-    0;
+  const liveReady =
+    symbolLiveReady(
+      symbol
+    );
 
 
-  let volatility =
-    0;
+  const binanceArr =
+    arr5.filter(
+      isBinanceCandle
+    );
 
 
-  let structureScore =
-    0;
+  const current =
+    arr5.at(
+      -1
+    );
 
 
-  let regimeScore =
+  const previous =
+    arr5.at(
+      -2
+    );
+
+
+  const state15 =
+    timeframeState(
+      arr15
+    );
+
+
+  const state1h =
+    timeframeState(
+      arr1h
+    );
+
+
+  const state5 =
+    timeframeState(
+      arr5
+    );
+
+
+  if (
+    !state15 ||
+    !state1h ||
+    !state5
+  ) {
+
+    return null;
+  }
+
+
+  const atrValue =
+    atr(
+      arr5,
+      14
+    );
+
+
+  const momentum =
+    cmo(
+      arr5,
+      9
+    );
+
+
+  const volRatio =
+    volumeRatio(
+      binanceArr
+    );
+
+
+  const volAcceleration =
+    volumeAcceleration(
+      binanceArr
+    );
+
+
+  const taker =
+    takerBuyRatio(
+      binanceArr.at(
+        -1
+      )
+    );
+
+
+  const flow =
+    orderFlowMomentum(
+      binanceArr
+    );
+
+
+  const shape =
+    candleShape(
+      current
+    );
+
+
+  const resistance =
+    swingResistance(
+      arr5,
+      12
+    );
+
+
+  const swingLow =
+    recentSwingLow(
+      arr5,
+      8
+    );
+
+
+  if (
+    !atrValue ||
+    momentum ===
+      null ||
+    !resistance
+  ) {
+
+    return null;
+  }
+
+
+  const atrPct =
+    pct(
+      atrValue,
+      current.close
+    );
+
+
+  const emaDistance =
+    pct(
+
+      current.close -
+      state5.e20,
+
+      state5.e20
+    );
+
+
+  const ext5 =
+    pct(
+
+      current.close -
+      arr5.at(
+        -6
+      ).close,
+
+      arr5.at(
+        -6
+      ).close
+    );
+
+
+  const ext10 =
+    pct(
+
+      current.close -
+      arr5.at(
+        -11
+      ).close,
+
+      arr5.at(
+        -11
+      ).close
+    );
+
+
+  const breakoutAtr =
+    (
+      current.close -
+      resistance
+    ) /
+    atrValue;
+
+
+  const preBreakoutAtr =
+    (
+      resistance -
+      current.close
+    ) /
+    atrValue;
+
+
+  // ==========================================================
+  // ENTRY TIMING
+  // ==========================================================
+
+  const previousBroke =
+    previous.close >
+    resistance;
+
+
+  const retest =
+    (
+      previousBroke &&
+
+      current.low <=
+        resistance *
+        (
+          1 +
+          C.retestTolerancePct /
+          100
+        ) &&
+
+      current.close >
+        resistance &&
+
+      shape.closeLocation >=
+        0.62
+    );
+
+
+  const controlledBreakout =
+    (
+      current.close >
+        resistance &&
+
+      breakoutAtr >=
+        0 &&
+
+      breakoutAtr <=
+        C.maxControlledBreakoutAtr &&
+
+      shape.bodyRatio <=
+        0.88
+    );
+
+
+  /*
+   * Early Build:
+   *
+   * السعر لم ينفجر بعد.
+   * قريب من المقاومة.
+   * شمعة إيجابية.
+   * نسمح بالدخول مبكرًا إذا باقي السياق قوي.
+   */
+
+  const earlyBuild =
+    (
+      current.close <=
+        resistance &&
+
+      preBreakoutAtr >=
+        0 &&
+
+      preBreakoutAtr <=
+        C.preBreakoutDistanceAtr &&
+
+      current.close >
+        current.open &&
+
+      shape.closeLocation >=
+        0.65
+    );
+
+
+  const triggerType =
+    retest
+      ? 'RETEST_CONTINUATION'
+      : controlledBreakout
+        ? 'CONTROLLED_BREAKOUT'
+        : earlyBuild
+          ? 'EARLY_BUILD'
+          : 'NONE';
+
+
+  // ==========================================================
+  // FLOW PRICE RESPONSE
+  // ==========================================================
+
+  const currentReturnPct =
+    pct(
+
+      current.close -
+      current.open,
+
+      current.open
+    );
+
+
+  const priceProgress3 =
+    pct(
+
+      current.close -
+      arr5.at(
+        -4
+      ).close,
+
+      arr5.at(
+        -4
+      ).close
+    );
+
+
+  const flowEfficiency =
+    flow !==
+      null
+      ? (
+          priceProgress3 /
+          Math.max(
+            (
+              flow -
+              0.5
+            ) *
+            2,
+            0.08
+          )
+        )
+      : 0;
+
+
+  // ==========================================================
+  // ABSORPTION DETECTOR
+  //
+  // Aggressive buying without price response = danger.
+  // ==========================================================
+
+  const absorption =
+    (
+      taker !==
+        null &&
+
+      taker >=
+        C.eliteTakerBuyRatio &&
+
+      (
+        (
+          currentReturnPct <
+            0.03 &&
+          shape.closeLocation <
+            0.72
+        ) ||
+
+        shape.upperWickRatio >
+          0.34 ||
+
+        priceProgress3 <
+          0.08
+      )
+    );
+
+
+  // ==========================================================
+  // CLIMAX / EXHAUSTION
+  // ==========================================================
+
+  const climax =
+    (
+      (
+        volRatio !==
+          null &&
+        volRatio >=
+          C.volumeClimaxRatio
+      ) ||
+
+      (
+        volAcceleration !==
+          null &&
+
+        volAcceleration >=
+          C.volumeAccelClimax &&
+
+        shape.bodyRatio >=
+          0.82
+      )
+    );
+
+
+  /*
+   * أهم فلتر جديد لعلاج دخول البوت بعد نهاية الحركة.
+   */
+
+  const lateCandle =
+    (
+      shape.bodyRatio >=
+        0.88 &&
+
+      shape.closeLocation >=
+        0.90 &&
+
+      (
+        emaDistance >
+          0.75 ||
+        ext5 >
+          1.00
+      ) &&
+
+      (
+        volAcceleration ||
+        0
+      ) >
+        1.45
+    );
+
+
+  const hardChase =
+    (
+      emaDistance >
+        C.hardChaseEmaPct ||
+
+      ext5 >
+        C.hardChaseExt5Pct
+    );
+
+
+  // ==========================================================
+  // QUALITY ENGINE
+  // ==========================================================
+
+  let quality =
     0;
 
 
@@ -3984,331 +3659,217 @@ function buildScore(
     [];
 
 
-  // ==========================================================
-  // TREND
-  // ==========================================================
+  const hardBlocks =
+    [];
+
+
+  // ----------------------------------------------------------
+  // 1H
+  // ----------------------------------------------------------
 
   if (
-    x.close >
-    e20
+    state1h.bullish
   ) {
 
-    trend +=
-      35;
-  }
-
-
-  if (
-    e20 >
-    e50
-  ) {
-
-    trend +=
-      35;
-  }
-
-
-  if (
-    marketStructure ===
-    'BULLISH'
-  ) {
-
-    trend +=
-      20;
-  }
-
-
-  const oldEma =
-    ema(
-
-      arr.slice(
-        0,
-        -3
-      ),
-
-      20
-    );
-
-
-  if (
-    oldEma &&
-    pct(
-      e20 -
-      oldEma,
-      oldEma
-    ) >
-      0.02
-  ) {
-
-    trend +=
-      10;
-  }
-
-
-  trend =
-    clamp(
-      trend,
-      0,
-      100
-    );
-
-
-  // ==========================================================
-  // FRESHNESS
-  // ==========================================================
-
-  if (
-    emaDistance >
-    C.maxEmaDistancePct
-  ) {
-
-    freshness -=
-      55;
-
-
-    warnings.push(
-      'EMA_CHASE'
-    );
-
-
-  } else if (
-    emaDistance >
-    1.0
-  ) {
-
-    freshness -=
+    quality +=
       18;
-  }
-
-
-  if (
-    ext5 >
-    C.maxExt5Pct
-  ) {
-
-    freshness -=
-      35;
-
-
-    warnings.push(
-      'EXT5_CHASE'
-    );
-  }
-
-
-  if (
-    ext10 >
-    C.maxExt10Pct
-  ) {
-
-    freshness -=
-      30;
-
-
-    warnings.push(
-      'EXT10_CHASE'
-    );
-  }
-
-
-  if (
-    liveDataReady &&
-    volumeAccel !==
-      null &&
-    volumeAccel >
-      C.volumeClimaxAcceleration
-  ) {
-
-    freshness -=
-      40;
-
-
-    warnings.push(
-      'VOLUME_CLIMAX'
-    );
-  }
-
-
-  if (
-    momentum >
-    C.cmoCoreMax
-  ) {
-
-    freshness -=
-      30;
-
-
-    warnings.push(
-      'CMO_OVERHEAT'
-    );
-  }
-
-
-  if (
-    priceAcceleration(
-      arr
-    ) >
-    1.0
-  ) {
-
-    freshness -=
-      20;
-
-
-    warnings.push(
-      'PRICE_ACCEL_CHASE'
-    );
-  }
-
-
-  freshness =
-    clamp(
-      freshness,
-      0,
-      100
-    );
-
-
-  // ==========================================================
-  // FLOW — BINANCE ONLY
-  // ==========================================================
-
-  if (
-    takerRatio !==
-    null
-  ) {
-
-    if (
-      takerRatio >=
-      C.eliteTakerBuyRatio
-    ) {
-
-      flow +=
-        70;
-
-
-      reasons.push(
-        'ELITE_TAKER_FLOW'
-      );
-
-
-    } else if (
-      takerRatio >=
-      C.minTakerBuyRatio
-    ) {
-
-      flow +=
-        42;
-    }
-
-
-    if (
-      takerRatio >=
-        0.70 &&
-      takerRatio <
-        0.80
-    ) {
-
-      flow -=
-        15;
-
-
-      warnings.push(
-        'MID_HIGH_FLOW_RISK'
-      );
-    }
-  }
-
-
-  if (
-    flowMomentum !==
-    null
-  ) {
-
-    if (
-      flowMomentum >=
-      0.72
-    ) {
-
-      flow +=
-        30;
-
-
-    } else if (
-      flowMomentum >=
-      C.minFlowMomentum
-    ) {
-
-      flow +=
-        18;
-
-
-    } else {
-
-      flow -=
-        20;
-    }
-  }
-
-
-  flow =
-    clamp(
-      flow,
-      0,
-      100
-    );
-
-
-  // ==========================================================
-  // MOMENTUM
-  // ==========================================================
-
-  if (
-    momentum >=
-      C.cmoCoreMin &&
-    momentum <=
-      C.cmoCoreMax
-  ) {
-
-    momentumScore =
-      100;
 
 
     reasons.push(
-      'CMO_CORE'
+      '1H_TREND'
     );
 
 
   } else if (
-    momentum >=
-      C.cmoSoftMin &&
-    momentum <=
-      C.cmoSoftMax
+    state1h.bearish
   ) {
 
-    momentumScore =
-      68;
-
-
-  } else if (
-    momentum >
-    C.cmoSoftMax
-  ) {
-
-    momentumScore =
-      25;
+    hardBlocks.push(
+      '1H_BEARISH'
+    );
 
 
   } else {
 
-    momentumScore =
-      20;
+    quality +=
+      7;
+
+
+    warnings.push(
+      '1H_NEUTRAL'
+    );
   }
 
 
-  // ==========================================================
-  // VOLATILITY
-  // ==========================================================
+  // ----------------------------------------------------------
+  // 15M
+  // ----------------------------------------------------------
+
+  if (
+    state15.bullish ||
+    state15.structure ===
+      'BULLISH'
+  ) {
+
+    quality +=
+      14;
+
+
+    reasons.push(
+      '15M_STRUCTURE'
+    );
+
+
+  } else {
+
+    quality +=
+      5;
+
+
+    warnings.push(
+      '15M_NOT_STRONG'
+    );
+  }
+
+
+  // ----------------------------------------------------------
+  // 5M EMA
+  // ----------------------------------------------------------
+
+  if (
+    state5.slopePct >
+    0
+  ) {
+
+    quality +=
+      7;
+
+
+    reasons.push(
+      '5M_EMA_SLOPE'
+    );
+  }
+
+
+  // ----------------------------------------------------------
+  // TRIGGER
+  // ----------------------------------------------------------
+
+  if (
+    triggerType ===
+    'RETEST_CONTINUATION'
+  ) {
+
+    quality +=
+      18;
+
+
+    reasons.push(
+      triggerType
+    );
+
+
+  } else if (
+    triggerType ===
+    'CONTROLLED_BREAKOUT'
+  ) {
+
+    quality +=
+      14;
+
+
+    reasons.push(
+      triggerType
+    );
+
+
+  } else if (
+    triggerType ===
+    'EARLY_BUILD'
+  ) {
+
+    quality +=
+      12;
+
+
+    reasons.push(
+      triggerType
+    );
+
+
+  } else {
+
+    hardBlocks.push(
+      'NO_EARLY_OR_RETEST_TRIGGER'
+    );
+  }
+
+
+  // ----------------------------------------------------------
+  // CMO
+  // ----------------------------------------------------------
+
+  if (
+    momentum >=
+      C.cmoIdealMin &&
+    momentum <=
+      C.cmoIdealMax
+  ) {
+
+    quality +=
+      10;
+
+
+    reasons.push(
+      'CMO_IDEAL'
+    );
+
+
+  } else if (
+    momentum >=
+      C.cmoMin &&
+    momentum <
+      C.cmoHot
+  ) {
+
+    quality +=
+      5;
+
+
+    warnings.push(
+      'CMO_EDGE'
+    );
+
+
+  } else if (
+    momentum >=
+    C.cmoHot
+  ) {
+
+    quality -=
+      8;
+
+
+    warnings.push(
+      'CMO_HOT'
+    );
+
+
+  } else {
+
+    quality -=
+      6;
+
+
+    warnings.push(
+      'CMO_WEAK'
+    );
+  }
+
+
+  // ----------------------------------------------------------
+  // ATR
+  // ----------------------------------------------------------
 
   if (
     atrPct >=
@@ -4317,8 +3878,13 @@ function buildScore(
       C.atrSweetMax
   ) {
 
-    volatility +=
-      45;
+    quality +=
+      8;
+
+
+    reasons.push(
+      'ATR_SWEET'
+    );
 
 
   } else if (
@@ -4328,158 +3894,261 @@ function buildScore(
       C.maxAtrPct
   ) {
 
-    volatility +=
-      28;
+    quality +=
+      3;
+
+
+    warnings.push(
+      'ATR_EDGE'
+    );
 
 
   } else {
 
+    hardBlocks.push(
+      'ATR_INVALID'
+    );
+  }
+
+
+  // ----------------------------------------------------------
+  // VOLUME
+  // ----------------------------------------------------------
+
+  if (
+    volRatio !==
+      null &&
+
+    volRatio >=
+      C.minVolumeRatio &&
+
+    volRatio <=
+      C.maxHealthyVolumeRatio
+  ) {
+
+    quality +=
+      7;
+
+
+    reasons.push(
+      'HEALTHY_VOLUME'
+    );
+
+
+  } else if (
+    volRatio !==
+      null &&
+
+    volRatio <
+      C.minVolumeRatio
+  ) {
+
+    quality -=
+      4;
+
+
     warnings.push(
-      'ATR_OUTSIDE_EDGE'
+      'VOLUME_LIGHT'
     );
   }
 
 
-  /*
-   * Volume scores only exist when Binance data is ready.
-   */
   if (
-    liveDataReady &&
-    volumeRatio !==
-      null
+    volAcceleration !==
+      null &&
+
+    volAcceleration >=
+      C.volumeAccelMin &&
+
+    volAcceleration <
+      C.volumeAccelClimax
   ) {
 
-    if (
-      volumeRatio >=
-        1.05 &&
-      volumeRatio <=
-        1.80
-    ) {
-
-      volatility +=
-        30;
+    quality +=
+      5;
 
 
-    } else if (
-      volumeRatio <=
-      C.maxVolumeRatio
-    ) {
-
-      volatility +=
-        18;
-    }
+    reasons.push(
+      'VOLUME_ACCEL_OK'
+    );
   }
 
 
+  // ----------------------------------------------------------
+  // TAKER BUY
+  // ----------------------------------------------------------
+
   if (
-    liveDataReady &&
-    volumeAccel !==
-      null
+    taker !==
+      null &&
+
+    taker >=
+      C.eliteTakerBuyRatio
   ) {
 
-    if (
-      volumeAccel >=
-        C.volumeAccelSweetMin &&
-      volumeAccel <=
-        C.volumeAccelSweetMax
-    ) {
-
-      volatility +=
-        25;
+    quality +=
+      9;
 
 
-    } else if (
-      volumeAccel >
-      C.volumeClimaxAcceleration
-    ) {
-
-      volatility -=
-        25;
-    }
-  }
-
-
-  volatility =
-    clamp(
-      volatility,
-      0,
-      100
+    reasons.push(
+      'ELITE_TAKER_FLOW'
     );
 
 
-  // ==========================================================
-  // STRUCTURE
-  // ==========================================================
+  } else if (
+    taker !==
+      null &&
 
-  structureScore =
-    acceptance.score *
-    0.65;
-
-
-  if (
-    bodyRatio >=
-    0.55
+    taker >=
+      C.minTakerBuyRatio
   ) {
 
-    structureScore +=
-      15;
-  }
+    quality +=
+      5;
 
 
-  if (
-    upperWickRatio <=
-    0.30
-  ) {
-
-    structureScore +=
-      10;
-  }
-
-
-  if (
-    closeLocation >=
-    0.72
-  ) {
-
-    structureScore +=
-      10;
-  }
-
-
-  structureScore =
-    clamp(
-      structureScore,
-      0,
-      100
+    reasons.push(
+      'BUY_FLOW'
     );
 
 
-  // ==========================================================
+  } else {
+
+    quality -=
+      5;
+
+
+    warnings.push(
+      'TAKER_WEAK'
+    );
+  }
+
+
+  // ----------------------------------------------------------
+  // FLOW PERSISTENCE
+  // ----------------------------------------------------------
+
+  if (
+    flow !==
+      null &&
+
+    flow >=
+      0.70
+  ) {
+
+    quality +=
+      8;
+
+
+    reasons.push(
+      'FLOW_PERSISTENT'
+    );
+
+
+  } else if (
+    flow !==
+      null &&
+
+    flow >=
+      C.minFlowMomentum
+  ) {
+
+    quality +=
+      4;
+
+
+    reasons.push(
+      'FLOW_OK'
+    );
+
+
+  } else {
+
+    quality -=
+      5;
+
+
+    warnings.push(
+      'FLOW_WEAK'
+    );
+  }
+
+
+  // ----------------------------------------------------------
+  // ANTI CHASE
+  // ----------------------------------------------------------
+
+  if (
+    emaDistance <=
+      C.maxEmaDistancePct &&
+
+    ext5 <=
+      C.maxExt5Pct &&
+
+    ext10 <=
+      C.maxExt10Pct
+  ) {
+
+    quality +=
+      6;
+
+
+    reasons.push(
+      'NOT_CHASING'
+    );
+
+
+  } else {
+
+    quality -=
+      8;
+
+
+    warnings.push(
+      'EXTENDED'
+    );
+  }
+
+
+  // ----------------------------------------------------------
+  // FLOW PRICE RESPONSE
+  // ----------------------------------------------------------
+
+  if (
+    flowEfficiency >
+    0.18
+  ) {
+
+    quality +=
+      4;
+
+
+    reasons.push(
+      'FLOW_PRICE_RESPONSE'
+    );
+  }
+
+
+  // ----------------------------------------------------------
   // REGIME
-  // ==========================================================
+  // ----------------------------------------------------------
+
+  if (
+    marketRegime.btcBullish
+  ) {
+
+    quality +=
+      3;
+  }
+
 
   if (
     marketRegime.regime ===
     'RISK_ON'
   ) {
 
-    regimeScore =
-      85;
-
-
-  } else if (
-    marketRegime.regime ===
-    'NEUTRAL'
-  ) {
-
-    regimeScore =
-      70;
-
-
-  } else {
-
-    regimeScore =
-      35;
+    quality +=
+      3;
   }
 
 
@@ -4487,950 +4156,231 @@ function buildScore(
     marketRegime.overextended
   ) {
 
-    regimeScore -=
-      30;
+    quality -=
+      5;
 
 
     warnings.push(
-      'RISK_ON_OVEREXTENDED'
+      'BREADTH_OVEREXTENDED'
     );
   }
 
 
   if (
     sessionUTC() ===
-      'ASIA' &&
-    marketRegime.regime ===
-      'RISK_ON'
+    'ASIA'
   ) {
 
-    regimeScore -=
-      C.asiaRiskOnPenalty;
+    quality -=
+      C.asiaQualityPenalty;
 
 
     warnings.push(
-      'ASIA_RISK_ON_PENALTY'
+      'ASIA'
     );
   }
 
 
-  regimeScore =
+  // ==========================================================
+  // HARD BLOCKS
+  // ==========================================================
+
+  if (
+    !liveReady
+  ) {
+
+    hardBlocks.push(
+
+      `BINANCE_DATA_${totalBinanceCount(
+        symbol
+      )}/${C.liveBinanceCandlesRequired}`
+    );
+  }
+
+
+  if (
+    absorption
+  ) {
+
+    hardBlocks.push(
+      'ABSORPTION'
+    );
+  }
+
+
+  if (
+    climax
+  ) {
+
+    hardBlocks.push(
+      'VOLUME_CLIMAX'
+    );
+  }
+
+
+  if (
+    lateCandle
+  ) {
+
+    hardBlocks.push(
+      'LATE_EXHAUSTION_CANDLE'
+    );
+  }
+
+
+  if (
+    hardChase
+  ) {
+
+    hardBlocks.push(
+      'HARD_CHASE'
+    );
+  }
+
+
+  if (
+    current.close <=
+    current.open
+  ) {
+
+    hardBlocks.push(
+      'NO_BULLISH_TRIGGER'
+    );
+  }
+
+
+  quality =
     clamp(
-      regimeScore,
+      Math.round(
+        quality
+      ),
       0,
       100
     );
 
 
   // ==========================================================
-  // FINAL SCORE
+  // DYNAMIC THRESHOLD
   // ==========================================================
 
-  const edgeScore =
-    Math.round(
+  const adaptive =
+    adaptiveRisk();
 
-      trend *
-        0.15 +
 
-      freshness *
-        0.22 +
+  let minQuality =
 
-      flow *
-        0.20 +
-
-      momentumScore *
-        0.15 +
-
-      volatility *
-        0.10 +
-
-      structureScore *
-        0.10 +
-
-      regimeScore *
-        0.08
-    );
-
-
-  const shadowEdge =
-    liveDataReady &&
-    momentum >=
-      50 &&
-    momentum <=
-      65 &&
-    takerRatio !==
-      null &&
-    takerRatio >=
-      0.80 &&
-    atrPct >=
-      0.18;
-
-
-  return {
-
-    edgeScore,
-
-    trendScore:
-      Math.round(
-        trend
-      ),
-
-    freshnessScore:
-      Math.round(
-        freshness
-      ),
-
-    flowScore:
-      Math.round(
-        flow
-      ),
-
-    momentumScore:
-      Math.round(
-        momentumScore
-      ),
-
-    volatilityScore:
-      Math.round(
-        volatility
-      ),
-
-    structureScore:
-      Math.round(
-        structureScore
-      ),
-
-    regimeScore:
-      Math.round(
-        regimeScore
-      ),
-
-    shadowEdge,
-
-    reasons,
-    warnings
-  };
-}
-
-
-// ============================================================
-// ANALYZE
-// ============================================================
-
-function analyze(
-  arr,
-  symbol
-) {
-
-  if (
-    !arr ||
-    arr.length <
-      C.warmupCandles
-  ) {
-    return null;
-  }
-
-
-  const current =
-    arr.at(
-      -1
-    );
-
-
-  // ==========================================================
-  // OHLC INDICATORS
-  // These may use external historical candles.
-  // ==========================================================
-
-  const e20 =
-    ema(
-      arr,
-      20
-    );
-
-
-  const e50 =
-    ema(
-      arr,
-      50
-    );
-
-
-  const momentum =
-    cmo(
-      arr,
-      9
-    );
-
-
-  const atrValue =
-    atr(
-      arr,
-      14
-    );
-
-
-  if (
-    [
-      e20,
-      e50,
-      momentum,
-      atrValue
-    ].some(
-      value =>
-        value ===
-        null
-    )
-  ) {
-    return null;
-  }
-
-
-  // ==========================================================
-  // BINANCE-ONLY DATA
-  // ==========================================================
-
-  const binanceArr =
-    getBinanceCandles(
-      arr
-    );
-
-
-  const binanceCount =
-    binanceArr.length;
-
-
-  const liveCount =
-    binanceArr.filter(
-      isLiveBinanceCandle
-    ).length;
-
-
-  const currentIsBinance =
-    isBinanceCandle(
-      current
-    );
-
-
-  const liveDataReady =
-    currentIsBinance &&
-    binanceCount >=
-      C.liveBinanceCandlesRequired;
-
-
-  const flowDataReady =
-    currentIsBinance &&
-    binanceCount >=
-      C.flowBinanceCandlesRequired;
-
-
-  /*
-   * Binance-only volume SMA.
-   *
-   * External volume NEVER enters this calculation.
-   */
-  const volumeSma =
-    liveDataReady
-      ? sma(
-          binanceArr,
-          C.liveBinanceCandlesRequired,
-          'volume'
-        )
-      : null;
-
-
-  const volumeRatio =
-    (
-      liveDataReady &&
-      volumeSma &&
-      volumeSma >
-        0
-    )
-      ? current.volume /
-        volumeSma
-      : null;
-
-
-  const volumeAccel =
-    liveDataReady
-      ? volumeAcceleration(
-          binanceArr
-        )
-      : null;
-
-
-  const takerRatio =
-    flowDataReady
-      ? takerBuyRatio(
-          current
-        )
-      : null;
-
-
-  const flowMomentum =
-    flowDataReady
-      ? orderFlowMomentum(
-          binanceArr
-        )
-      : null;
-
-
-  // ==========================================================
-  // CANDLE STRUCTURE
-  // ==========================================================
-
-  const range =
-    current.high -
-    current.low;
-
-
-  if (
-    range <=
-    0
-  ) {
-    return null;
-  }
-
-
-  const bodyRatio =
-    Math.abs(
-
-      current.close -
-      current.open
-    ) /
-    range;
-
-
-  const upperWickRatio =
-    (
-      current.high -
-      Math.max(
-        current.open,
-        current.close
-      )
-    ) /
-    range;
-
-
-  const closeLocation =
-    (
-      current.close -
-      current.low
-    ) /
-    range;
-
-
-  const bullish =
-    current.close >
-    current.open;
-
-
-  const emaDistance =
-    pct(
-
-      current.close -
-      e20,
-
-      e20
-    );
-
-
-  const atrPct =
-    pct(
-
-      atrValue,
-
-      current.close
-    );
-
-
-  const marketStructure =
-    structure(
-      arr
-    );
-
-
-  const prior =
-    arr.slice(
-      -21,
-      -1
-    );
-
-
-  if (
-    prior.length <
-    10
-  ) {
-    return null;
-  }
-
-
-  const resistance =
-    Math.max(
-
-      ...prior.map(
-        candle =>
-          candle.high
-      )
-    );
-
-
-  const support =
-    Math.min(
-
-      ...prior.map(
-        candle =>
-          candle.low
-      )
-    );
-
-
-  const ext5 =
-    pct(
-
-      current.close -
-      arr.at(
-        -6
-      ).close,
-
-      arr.at(
-        -6
-      ).close
-    );
-
-
-  const ext10 =
-    pct(
-
-      current.close -
-      arr.at(
-        -11
-      ).close,
-
-      arr.at(
-        -11
-      ).close
-    );
-
-
-  const acceptance =
-    breakoutAcceptance(
-
-      arr,
-      resistance,
-      atrPct
-    );
-
-
-  const score =
-    buildScore({
-
-      arr,
-
-      x:
-        current,
-
-      e20,
-      e50,
-
-      momentum,
-      atrPct,
-
-      volumeRatio,
-      volumeAccel,
-
-      takerRatio,
-      flowMomentum,
-
-      emaDistance,
-      ext5,
-      ext10,
-
-      marketStructure,
-      acceptance,
-
-      bodyRatio,
-      upperWickRatio,
-      closeLocation,
-
-      liveDataReady
-    });
-
-
-  const hardBlocks =
-    [];
-
-
-  // ==========================================================
-  // LIVE BINANCE GUARD
-  // ==========================================================
-
-  /*
-   * This is the key V5.1.2 protection.
-   *
-   * External OHLC can make the symbol WARMUP READY,
-   * but a PAPER trade is impossible until Binance has
-   * enough genuine candles for liquidity/order-flow analysis.
-   */
-  if (
-    !liveDataReady
-  ) {
-
-    hardBlocks.push(
-      `LIVE_BINANCE_WARMUP_${binanceCount}/${C.liveBinanceCandlesRequired}`
-    );
-  }
-
-
-  if (
-    !currentIsBinance
-  ) {
-
-    hardBlocks.push(
-      'WAIT_BINANCE_CLOSED_CANDLE'
-    );
-  }
-
-
-  // ==========================================================
-  // CANDLE / TREND
-  // ==========================================================
-
-  if (
-    !bullish
-  ) {
-
-    hardBlocks.push(
-      'NOT_BULLISH'
-    );
-  }
-
-
-  if (
-    !(
-      current.close >
-        e20 &&
-      e20 >
-        e50
-    )
-  ) {
-
-    hardBlocks.push(
-      'TREND_FAIL'
-    );
-  }
-
-
-  if (
-    marketStructure ===
-    'BEARISH'
-  ) {
-
-    hardBlocks.push(
-      'BEARISH_STRUCTURE'
-    );
-  }
-
-
-  // ==========================================================
-  // MOMENTUM
-  // ==========================================================
-
-  if (
-    momentum <
-      C.cmoSoftMin ||
-    momentum >
-      C.cmoSoftMax
-  ) {
-
-    hardBlocks.push(
-      'CMO_OUTSIDE'
-    );
-  }
-
-
-  // ==========================================================
-  // ATR
-  // ==========================================================
-
-  if (
-    atrPct <
-      C.minAtrPct ||
-    atrPct >
-      C.maxAtrPct
-  ) {
-
-    hardBlocks.push(
-      'ATR_OUTSIDE'
-    );
-  }
-
-
-  // ==========================================================
-  // BINANCE VOLUME
-  // ==========================================================
-
-  if (
-    liveDataReady
-  ) {
-
-    if (
-      volumeRatio ===
-        null
-    ) {
-
-      hardBlocks.push(
-        'BINANCE_VOLUME_NOT_READY'
-      );
-
-
-    } else if (
-      volumeRatio <
-        C.minVolumeRatio ||
-      volumeRatio >
-        C.maxVolumeRatio
-    ) {
-
-      hardBlocks.push(
-        'VOLUME_OUTSIDE'
-      );
-    }
-
-
-    if (
-      volumeAccel !==
-        null &&
-      volumeAccel >
-        C.volumeClimaxAcceleration
-    ) {
-
-      hardBlocks.push(
-        'VOLUME_CLIMAX'
-      );
-    }
-  }
-
-
-  // ==========================================================
-  // ANTI CHASE
-  // ==========================================================
-
-  if (
-    emaDistance >
-    C.maxEmaDistancePct
-  ) {
-
-    hardBlocks.push(
-      'EMA_CHASE'
-    );
-  }
-
-
-  if (
-    ext5 >
-    C.maxExt5Pct
-  ) {
-
-    hardBlocks.push(
-      'EXT5_CHASE'
-    );
-  }
-
-
-  if (
-    ext10 >
-    C.maxExt10Pct
-  ) {
-
-    hardBlocks.push(
-      'EXT10_CHASE'
-    );
-  }
-
-
-  // ==========================================================
-  // REAL BINANCE FLOW
-  // ==========================================================
-
-  if (
-    liveDataReady
-  ) {
-
-    if (
-      takerRatio ===
-        null
-    ) {
-
-      hardBlocks.push(
-        'BINANCE_FLOW_NOT_READY'
-      );
-
-
-    } else if (
-      takerRatio <
-      C.minTakerBuyRatio
-    ) {
-
-      hardBlocks.push(
-        'FLOW_WEAK'
-      );
-    }
-
-
-    if (
-      flowMomentum ===
-        null
-    ) {
-
-      hardBlocks.push(
-        'FLOW_MOMENTUM_NOT_READY'
-      );
-
-
-    } else if (
-      flowMomentum <
-      C.minFlowMomentum
-    ) {
-
-      hardBlocks.push(
-        'FLOW_MOMENTUM_WEAK'
-      );
-    }
-
-
-    if (
-      score.flowScore <
-      C.minFlowScore
-    ) {
-
-      hardBlocks.push(
-        'FLOW_SCORE_LOW'
-      );
-    }
-  }
-
-
-  // ==========================================================
-  // FRESHNESS
-  // ==========================================================
-
-  if (
-    score.freshnessScore <
-    C.minFreshnessScore
-  ) {
-
-    hardBlocks.push(
-      'STALE_MOMENTUM'
-    );
-  }
-
-
-  // ==========================================================
-  // SCORE THRESHOLD
-  // ==========================================================
-
-  const threshold =
     marketRegime.regime ===
-      'RISK_ON'
-      ? C.minEdgeScoreRiskOn
+      'DEFENSIVE'
+      ? C.defensiveMinQuality
+
       : marketRegime.regime ===
           'NEUTRAL'
-        ? C.minEdgeScoreNeutral
-        : C.minEdgeScoreDefensive;
+        ? C.neutralMinQuality
+
+        : C.baseMinQuality;
 
 
-  if (
-    score.edgeScore <
-    threshold
-  ) {
-
-    hardBlocks.push(
-      'EDGE_SCORE_LOW'
-    );
-  }
+  minQuality +=
+    adaptive.qualityPenalty;
 
 
-  if (
-    marketRegime.regime ===
-      'DEFENSIVE' &&
-    !score.shadowEdge
-  ) {
-
-    hardBlocks.push(
-      'DEFENSIVE_NO_ELITE_EDGE'
-    );
-  }
-
-
-  // ==========================================================
-  // BREAKOUT ACCEPTANCE
-  // ==========================================================
-
-  const nearBreakout =
-    acceptance.breakoutPct >=
-    -0.20;
-
-
-  if (
-    !acceptance.accepted &&
-    !(
-      nearBreakout &&
-      score.shadowEdge
-    )
-  ) {
-
-    hardBlocks.push(
-      'NO_BREAKOUT_ACCEPTANCE'
-    );
-  }
-
-
-  const grade =
+  const eligible =
     (
-      score.edgeScore >=
-        84 &&
-      score.freshnessScore >=
-        75 &&
-      score.flowScore >=
-        75
-    )
-      ? 'A'
-      : score.edgeScore >=
-          72
-        ? 'B'
-        : 'C';
+      hardBlocks.length ===
+        0 &&
+
+      quality >=
+        minQuality
+    );
 
 
   return {
 
     symbol,
 
-    eligible:
-      hardBlocks.length ===
-      0,
+    eligible,
 
-    liveDataReady,
-    flowDataReady,
+    quality,
 
-    binanceCandles:
-      binanceCount,
+    minQuality,
 
-    liveBinanceCandles:
-      liveCount,
+    grade:
+      quality >=
+        82
+        ? 'A+'
 
-    requiredBinanceCandles:
-      C.liveBinanceCandlesRequired,
+        : quality >=
+            74
+          ? 'A'
 
-    dataSource:
-      current.source ||
-      'UNKNOWN',
+          : quality >=
+              66
+            ? 'B'
 
-    grade,
+            : 'C',
 
-    score:
-      score.edgeScore,
-
-    edgeScore:
-      score.edgeScore,
-
-    trendScore:
-      score.trendScore,
-
-    freshnessScore:
-      score.freshnessScore,
-
-    flowScore:
-      score.flowScore,
-
-    momentumScore:
-      score.momentumScore,
-
-    volatilityScore:
-      score.volatilityScore,
-
-    structureScore:
-      score.structureScore,
-
-    regimeScore:
-      score.regimeScore,
-
-    shadowEdge:
-      score.shadowEdge,
-
-    reasons:
-      score.reasons,
-
-    warnings:
-      score.warnings,
-
-    price:
-      current.close,
+    triggerType,
 
     signalPrice:
       current.close,
 
-    candleTime:
+    signalTime:
       current.closeTime,
 
-    bullish,
+    liveDataReady:
+      liveReady,
 
-    bodyRatio,
-
-    upperWickRatio,
-
-    closeLocation,
-
-    ema20:
-      e20,
-
-    ema50:
-      e50,
-
-    emaDistance,
+    binanceCandles:
+      totalBinanceCount(
+        symbol
+      ),
 
     cmo:
       momentum,
 
-    atr:
-      atrValue,
-
     atrPct,
 
-    volumeRatio,
+    volumeRatio:
+      volRatio,
 
     volumeAcceleration:
-      volumeAccel,
-
-    priceAcceleration:
-      priceAcceleration(
-        arr
-      ),
+      volAcceleration,
 
     takerBuyRatio:
-      takerRatio,
+      taker,
 
     orderFlowMomentum:
-      flowMomentum,
+      flow,
 
-    structure:
-      marketStructure,
+    flowEfficiency,
 
-    resistance,
-
-    support,
-
-    breakoutPct:
-      acceptance.breakoutPct,
-
-    breakoutAcceptance:
-      acceptance.score,
-
-    acceptanceReasons:
-      acceptance.reasons,
+    emaDistance,
 
     ext5,
 
     ext10,
+
+    bodyRatio:
+      shape.bodyRatio,
+
+    upperWickRatio:
+      shape.upperWickRatio,
+
+    closeLocation:
+      shape.closeLocation,
+
+    resistance,
+
+    swingLow,
+
+    trend1h:
+      state1h,
+
+    structure15m:
+      state15,
+
+    trend5m:
+      state5,
 
     regime:
       marketRegime.regime,
@@ -5438,391 +4388,476 @@ function analyze(
     breadth:
       marketRegime.breadth,
 
-    marketOverextended:
-      marketRegime.overextended,
+    btcBullish:
+      marketRegime.btcBullish,
 
-    hardBlocks
+    absorption,
+
+    climax,
+
+    lateCandle,
+
+    reasons,
+
+    warnings,
+
+    hardBlocks,
+
+    adaptiveRisk:
+      adaptive
   };
 }
+
+
 // ============================================================
-// RISK / PAPER TRADING
+// ACCOUNT EQUITY
 // ============================================================
 
 function equity() {
 
-  let value =
+  let total =
     cash;
 
+
   for (
-    const position
-    of Object.values(
+    const [
+      symbol,
+      position
+    ]
+    of Object.entries(
       positions
     )
   ) {
 
     const price =
       tickers.get(
-        position.symbol
+        symbol
       )?.price ||
-      position.lastPrice ||
       position.entryPrice;
 
-    value +=
+
+    total +=
       position.qty *
-      price;
+      price *
+      (
+        1 -
+        C.feePct
+      );
   }
 
-  return value;
+
+  return total;
 }
 
 
-function updateDrawdown() {
+// ============================================================
+// DAILY RESET
+// ============================================================
 
-  const currentEquity =
-    equity();
+function resetDailyIfNeeded() {
+
+  const today =
+    utcDay();
+
 
   if (
-    currentEquity >
-    peakEquity
+    today ===
+    currentDay
   ) {
 
-    peakEquity =
-      currentEquity;
+    return;
   }
+
+
+  currentDay =
+    today;
+
+
+  dailyPnL =
+    0;
+
+
+  dailyEntries =
+    0;
+
+
+  dailyStartEquity =
+    equity();
+
+
+  dailyPause =
+    false;
+
+
+  console.log(
+    'DAILY RESET'
+  );
+
+
+  saveCloudState();
+}
+
+
+// ============================================================
+// DRAWDOWN
+// ============================================================
+
+function updateDrawdown() {
+
+  const current =
+    equity();
+
+
+  peakEquity =
+    Math.max(
+      peakEquity,
+      current
+    );
+
 
   const drawdown =
     peakEquity
-      ? (
-          (
-            peakEquity -
-            currentEquity
-          ) /
+      ? pct(
+          peakEquity -
+          current,
           peakEquity
-        ) *
-        100
+        )
       : 0;
+
 
   stats.maxDrawdown =
     Math.max(
       stats.maxDrawdown,
       drawdown
     );
-}
 
-
-function checkDay() {
-
-  const day =
-    utcDay();
 
   if (
-    day ===
-    currentDay
+    drawdown >=
+    C.maxAccountDrawdownPct *
+    100
   ) {
-    return;
+
+    drawdownPause =
+      true;
+
+
+    tg(
+      `🛑 <b>V6 MAX DRAWDOWN GUARD</b>
+DD: ${drawdown.toFixed(2)}%`
+    );
   }
-
-  currentDay =
-    day;
-
-  dailyPnL =
-    0;
-
-  dailyPause =
-    false;
-
-  dailyStartEquity =
-    equity();
-
-  saveCloudState();
 }
 
 
+// ============================================================
+// DAILY LOSS GUARD
+// ============================================================
+
 function checkDailyLoss() {
+
+  resetDailyIfNeeded();
+
 
   const limit =
     dailyStartEquity *
     C.dailyLossLimitPct;
 
+
   if (
-    !dailyPause &&
     dailyPnL <=
-      -limit
+    -limit
   ) {
 
     dailyPause =
       true;
 
-    candidatePool.clear();
 
     tg(
-      `🛑 <b>LOMY V5.1.2 DAILY PROTECTION</b>
+      `🛑 <b>V6 DAILY LOSS GUARD</b>
 PnL: $${dailyPnL.toFixed(2)}`
     );
-
-    saveCloudState();
   }
 }
 
 
-function cooldownActive() {
+// ============================================================
+// CAN TRADE
+// ============================================================
 
-  if (
-    !cooldownUntil
-  ) {
-    return false;
-  }
+function canTrade() {
 
-  if (
-    Date.now() >=
-    cooldownUntil
-  ) {
-
-    cooldownUntil =
-      0;
-
-    cooldownReason =
-      null;
-
-    entriesSinceCooldown =
-      0;
-
-    candidatePool.clear();
-
-    saveCloudState();
-
-    return false;
-  }
-
-  return true;
-}
+  resetDailyIfNeeded();
 
 
-function startCooldown(
-  ms,
-  reason
-) {
-
-  const until =
-    Date.now() +
-    ms;
-
-  if (
-    until <=
-    cooldownUntil
-  ) {
-    return;
-  }
-
-  cooldownUntil =
-    until;
-
-  cooldownReason =
-    reason;
-
-  candidatePool.clear();
-
-  tg(
-    `⏸ <b>LOMY V5.1.2 COOLDOWN</b>
-${reason}
-${Math.ceil(
-      ms /
-      60000
-    )} minutes`
+  return (
+    !manualPause &&
+    !dailyPause &&
+    !drawdownPause &&
+    dailyEntries <
+      C.maxDailyEntries
   );
-
-  saveCloudState();
 }
 
+
+// ============================================================
+// SYMBOL COOLDOWN
+// ============================================================
 
 function symbolCooling(
   symbol
 ) {
 
-  const lastLoss =
+  return (
+    Date.now() -
     n(
       lastLossBySymbol[
         symbol
       ]
-    );
+    )
+  ) <
+  C.symbolLossCooldownMs;
+}
 
-  return (
-    !!lastLoss &&
-    Date.now() -
-      lastLoss <
-      C.symbolLossCooldownMs
+
+// ============================================================
+// DYNAMIC EMERGENCY STOP
+// ============================================================
+
+function emergencyStopPct(
+  analysis
+) {
+
+  return clamp(
+
+    (
+      analysis.atrPct /
+      100
+    ) *
+    C.atrEmergencyMultiplier,
+
+    C.minEmergencyStopPct,
+
+    C.maxEmergencyStopPct
   );
 }
 
 
-function paperAllocation() {
+// ============================================================
+// RISK BASED ALLOCATION
+// ============================================================
 
-  const open =
-    Object.keys(
-      positions
-    ).length;
+function allocationFor(
+  analysis,
+  stopPct
+) {
 
-  const slots =
+  const accountEquity =
+    equity();
+
+
+  const adaptive =
+    adaptiveRisk();
+
+
+  const riskBudget =
+    accountEquity *
+    C.riskPerTradePct *
+    adaptive.riskMultiplier;
+
+
+  const byRisk =
+    riskBudget /
     Math.max(
-      1,
-      C.maxPositions -
-      open
+      stopPct,
+      0.0001
     );
 
-  return Math.max(
-    0,
 
-    Math.min(
-      cash,
+  const maximumAllocation =
+    accountEquity *
+    C.maxPositionAllocationPct;
 
-      equity() /
-      Math.max(
-        C.maxPositions,
-        slots
-      )
+
+  return Math.min(
+
+    byRisk,
+
+    maximumAllocation,
+
+    cash *
+    0.985
+  );
+}
+
+
+// ============================================================
+// TRUE BREAK EVEN
+// ============================================================
+
+function realBreakEvenPrice(
+  entryPrice
+) {
+
+  /*
+   * حماية رأس المال بعد الرسوم والانزلاق.
+   */
+
+  const roundTripCost =
+    C.feePct *
+      2 +
+
+    C.slippagePct *
+      2 +
+
+    C.extraBreakEvenBufferPct;
+
+
+  return (
+    entryPrice *
+    (
+      1 +
+      roundTripCost
     )
   );
 }
 
 
-function candidateValid(
+// ============================================================
+// CANDIDATE
+// ============================================================
+
+function addCandidate(
+  analysis
+) {
+
+  candidatePool.set(
+
+    analysis.symbol,
+
+    {
+
+      ...analysis,
+
+      addedAt:
+        Date.now()
+    }
+  );
+}
+
+
+function candidateStillValid(
   candidate
 ) {
 
   if (
-    !candidate ||
-    !candidatePool.has(
-      candidate.symbol
-    )
-  ) {
-
-    return {
-      ok:
-        false,
-
-      reason:
-        'MISSING'
-    };
-  }
-
-
-  if (
     Date.now() -
-      candidate.createdAt >
-      C.candidateExpiryMs
+      candidate.addedAt >
+    C.candidateExpiryMs
   ) {
 
-    return {
-      ok:
-        false,
-
-      reason:
-        'EXPIRED'
-    };
+    return false;
   }
 
 
-  if (
-    positions[
-      candidate.symbol
-    ]
-  ) {
-
-    return {
-      ok:
-        false,
-
-      reason:
-        'ALREADY_OPEN'
-    };
-  }
-
-
-  if (
-    symbolCooling(
-      candidate.symbol
-    )
-  ) {
-
-    return {
-      ok:
-        false,
-
-      reason:
-        'SYMBOL_COOLDOWN'
-    };
-  }
-
-
-  /*
-   * Final live Binance guard.
-   *
-   * Even if something incorrectly entered the candidate pool,
-   * execution is blocked until real Binance candle data exists.
-   */
-  if (
-    !symbolLiveReady(
-      candidate.symbol
-    )
-  ) {
-
-    return {
-      ok:
-        false,
-
-      reason:
-        'LIVE_BINANCE_NOT_READY'
-    };
-  }
-
-
-  const live =
+  const price =
     tickers.get(
       candidate.symbol
-    )?.price ||
-    candidate.signalPrice;
+    )?.price;
 
 
-  const drift =
-    pct(
+  if (
+    !price
+  ) {
 
-      live -
-      candidate.signalPrice,
+    return false;
+  }
 
-      candidate.signalPrice
+
+  return (
+    Math.abs(
+
+      pct(
+
+        price -
+        candidate.signalPrice,
+
+        candidate.signalPrice
+      )
+    ) <=
+    C.maxPriceDriftPct
+  );
+}
+
+
+// ============================================================
+// ENTRY REVALIDATION
+// ============================================================
+
+function revalidateCandidate(
+  candidate
+) {
+
+  /*
+   * أهم فرق عن النسخ القديمة:
+   *
+   * قبل التنفيذ نعيد تحليل الفرصة مرة ثانية.
+   * لا نعتمد على Candidate قديم.
+   */
+
+  const fresh =
+    analyze(
+      candidate.symbol
     );
 
 
   if (
-    drift >
-      C.maxPriceDriftPct ||
-    drift >
-      C.liveChasePct
+    !fresh?.eligible
   ) {
 
-    return {
-      ok:
-        false,
-
-      reason:
-        'LIVE_CHASE',
-
-      drift
-    };
+    return null;
   }
 
 
-  return {
-    ok:
-      true,
+  const price =
+    tickers.get(
+      candidate.symbol
+    )?.price;
 
-    price:
-      live,
 
-    drift
-  };
+  if (
+    !price
+  ) {
+
+    return null;
+  }
+
+
+  if (
+    Math.abs(
+
+      pct(
+
+        price -
+        fresh.signalPrice,
+
+        fresh.signalPrice
+      )
+    ) >
+    C.maxPriceDriftPct
+  ) {
+
+    return null;
+  }
+
+
+  return fresh;
 }
 
+
+// ============================================================
+// OPEN PAPER
+// ============================================================
 
 function openPaper(
   candidate
@@ -5830,26 +4865,15 @@ function openPaper(
 
   if (
     !C.paperTrading ||
-    manualPause ||
-    dailyPause ||
-    cooldownActive()
-  ) {
-    return false;
-  }
-
-
-  if (
-    !candidate?.liveDataReady
-  ) {
-    return false;
-  }
-
-
-  if (
-    !symbolLiveReady(
+    !canTrade() ||
+    positions[
+      candidate.symbol
+    ] ||
+    symbolCooling(
       candidate.symbol
     )
   ) {
+
     return false;
   }
 
@@ -5860,145 +4884,202 @@ function openPaper(
     ).length >=
     C.maxPositions
   ) {
+
     return false;
   }
 
 
-  const validation =
-    candidateValid(
+  const analysis =
+    revalidateCandidate(
       candidate
     );
 
 
   if (
-    !validation.ok
+    !analysis
   ) {
-
-    candidatePool.delete(
-      candidate.symbol
-    );
 
     return false;
   }
 
 
-  const allocation =
-    paperAllocation();
+  const marketPrice =
+    tickers.get(
+      analysis.symbol
+    )?.price ||
+    analysis.signalPrice;
 
 
-  if (
-    allocation <
-      10 ||
-    cash <
-      10
-  ) {
-    return false;
-  }
-
-
-  const rawEntry =
-    validation.price;
-
-
-  const entry =
-    rawEntry *
+  const entryPrice =
+    marketPrice *
     (
       1 +
       C.slippagePct
     );
 
 
+  // ==========================================================
+  // EMERGENCY STRUCTURAL STOP
+  // ==========================================================
+
+  let stopPct =
+    emergencyStopPct(
+      analysis
+    );
+
+
+  let emergencyStop =
+    entryPrice *
+    (
+      1 -
+      stopPct
+    );
+
+
+  if (
+    analysis.swingLow &&
+    analysis.swingLow <
+      entryPrice
+  ) {
+
+    const structureStop =
+
+      analysis.swingLow *
+
+      (
+        1 -
+        (
+          analysis.atrPct /
+          100
+        ) *
+        C.structureStopBufferAtr
+      );
+
+
+    const structureRisk =
+      (
+        entryPrice -
+        structureStop
+      ) /
+      entryPrice;
+
+
+    if (
+      structureRisk >=
+        C.minEmergencyStopPct &&
+
+      structureRisk <=
+        C.maxEmergencyStopPct
+    ) {
+
+      stopPct =
+        structureRisk;
+
+
+      emergencyStop =
+        structureStop;
+    }
+  }
+
+
+  const invested =
+    allocationFor(
+      analysis,
+      stopPct
+    );
+
+
+  if (
+    invested <
+    10
+  ) {
+
+    return false;
+  }
+
+
   const buyFee =
-    allocation *
+    invested *
     C.feePct;
 
 
-  const netInvest =
-    allocation -
+  const netInvestment =
+    invested -
     buyFee;
 
 
   const qty =
-    netInvest /
-    entry;
-
-
-  const stopPct =
-    clamp(
-
-      (
-        candidate.atrPct /
-        100
-      ) *
-      C.atrStopMultiplier,
-
-      C.minStopPct,
-      C.maxStopPct
-    );
-
-
-  const targetPct =
-    stopPct *
-    C.rewardRisk;
-
-
-  const riskPrice =
-    entry *
-    stopPct;
+    netInvestment /
+    entryPrice;
 
 
   cash -=
-    allocation;
+    invested;
+
+
+  dailyEntries++;
+
+
+  const id =
+    makeTradeId(
+      analysis.symbol
+    );
 
 
   positions[
-    candidate.symbol
+    analysis.symbol
   ] = {
 
-    symbol:
-      candidate.symbol,
+    tradeId:
+      id,
 
-    entryPrice:
-      entry,
+    symbol:
+      analysis.symbol,
+
+    entryPrice,
 
     qty,
 
-    invested:
-      allocation,
+    investedUSDT:
+      invested,
 
     buyFee,
 
-    stopLoss:
-      entry *
-      (
-        1 -
-        stopPct
-      ),
+    entryTime:
+      Date.now(),
 
-    takeProfit:
-      entry *
-      (
-        1 +
-        targetPct
-      ),
+    signalPrice:
+      analysis.signalPrice,
 
-    initialStop:
-      entry *
-      (
-        1 -
-        stopPct
-      ),
+    signalTime:
+      analysis.signalTime,
 
-    riskPrice,
+    quality:
+      analysis.quality,
+
+    grade:
+      analysis.grade,
+
+    triggerType:
+      analysis.triggerType,
+
+    emergencyStop,
+
+    initialRiskPct:
+      stopPct *
+      100,
+
+    protectionStop:
+      null,
+
+    breakEvenActive:
+      false,
+
+    trailingActive:
+      false,
 
     highestPrice:
-      entry,
-
-    lowestPrice:
-      entry,
-
-    lastPrice:
-      entry,
+      entryPrice,
 
     mfePct:
       0,
@@ -6006,147 +5087,69 @@ function openPaper(
     maePct:
       0,
 
-    profitLockActive:
-      false,
-
-    breakEvenMoved:
-      false,
-
-    trailingActive:
-      false,
-
-    closing:
-      false,
-
-    grade:
-      candidate.grade,
-
-    edgeScore:
-      candidate.edgeScore,
-
-    freshnessScore:
-      candidate.freshnessScore,
-
-    flowScore:
-      candidate.flowScore,
-
-    cmo:
-      candidate.cmo,
-
-    atrPct:
-      candidate.atrPct,
-
-    volumeRatio:
-      candidate.volumeRatio,
-
-    volumeAcceleration:
-      candidate.volumeAcceleration,
-
-    takerBuyRatio:
-      candidate.takerBuyRatio,
-
-    orderFlowMomentum:
-      candidate.orderFlowMomentum,
-
-    breakoutAcceptance:
-      candidate.breakoutAcceptance,
-
-    warnings:
-      candidate.warnings,
-
-    reasons:
-      candidate.reasons,
-
-    regime:
-      candidate.regime,
-
-    binanceCandles:
-      candidate.binanceCandles,
-
-    dataSource:
-      candidate.dataSource,
-
-    signalPrice:
-      candidate.signalPrice,
-
-    signalAgeMs:
-      Date.now() -
-      candidate.createdAt,
-
-    entryDriftPct:
-      validation.drift,
-
-    entryTime:
-      Date.now()
+    snapshot:
+      analysis
   };
 
 
-  entriesSinceCooldown++;
+  cloudJournal({
 
+    type:
+      'ENTRY',
 
-  candidatePool.delete(
-    candidate.symbol
-  );
+    tradeId:
+      id,
 
+    symbol:
+      analysis.symbol,
 
-  cloudJournal(
-    {
+    entryPrice,
 
-      type:
-        'ENTRY',
+    investedUSDT:
+      invested,
 
-      symbol:
-        candidate.symbol,
+    initialRiskPct:
+      stopPct *
+      100,
 
-      entry,
+    emergencyStop,
 
-      stopPct,
+    quality:
+      analysis.quality,
 
-      targetPct,
+    grade:
+      analysis.grade,
 
-      edgeScore:
-        candidate.edgeScore,
+    triggerType:
+      analysis.triggerType,
 
-      grade:
-        candidate.grade,
+    snapshot:
+      analysis
 
-      binanceCandles:
-        candidate.binanceCandles
-    },
-    true
-  );
+  }, true);
 
 
   tg(
-    `🟢 <b>LOMY V5.1.2 BUY</b>
-<b>${candidate.symbol}</b>
-Edge: ${candidate.edgeScore}/100 | ${candidate.grade}
-Fresh: ${candidate.freshnessScore} | Flow: ${candidate.flowScore}
-Binance candles: ${candidate.binanceCandles}
-CMO: ${candidate.cmo.toFixed(1)} | ATR: ${candidate.atrPct.toFixed(2)}%
-Entry: ${entry.toFixed(8)}`
+    `🟢 <b>LOMY V6 PAPER ENTRY</b>
+<b>${analysis.symbol}</b>
+Trigger: ${analysis.triggerType}
+Quality: ${analysis.quality}/${analysis.minQuality}
+Risk state: ${analysis.adaptiveRisk.label}`
   );
 
 
-  if (
-    entriesSinceCooldown >=
-    C.entriesBeforeCooldown
-  ) {
-
-    startCooldown(
-      C.batchCooldownMs,
-      'BATCH_LIMIT'
-    );
-  }
-
-
   saveCloudState();
+
 
   return true;
 }
 
 
-function closePaper(
+// ============================================================
+// CLOSE PAPER
+// ============================================================
+
+async function closePaper(
   symbol,
   marketPrice,
   reason
@@ -6162,6 +5165,7 @@ function closePaper(
     !position ||
     position.closing
   ) {
+
     return;
   }
 
@@ -6178,43 +5182,39 @@ function closePaper(
     );
 
 
-  const grossValue =
+  const gross =
     position.qty *
     exitPrice;
 
 
   const sellFee =
-    grossValue *
+    gross *
     C.feePct;
 
 
-  const returned =
-    grossValue -
+  const net =
+    gross -
     sellFee;
 
 
   const profit =
-    returned -
-    position.invested;
+    net -
+    position.investedUSDT;
 
 
   const profitPct =
-    position.invested
-      ? (
-          profit /
-          position.invested
-        ) *
-        100
-      : 0;
+    pct(
+      profit,
+      position.investedUSDT
+    );
 
 
   cash +=
-    returned;
+    net;
 
 
-  delete positions[
-    symbol
-  ];
+  dailyPnL +=
+    profit;
 
 
   stats.totalTrades++;
@@ -6229,30 +5229,6 @@ function closePaper(
     profit;
 
 
-  dailyPnL +=
-    profit;
-
-
-  stats.bestTrade =
-    stats.totalTrades ===
-      1
-      ? profit
-      : Math.max(
-          stats.bestTrade,
-          profit
-        );
-
-
-  stats.worstTrade =
-    stats.totalTrades ===
-      1
-      ? profit
-      : Math.min(
-          stats.worstTrade,
-          profit
-        );
-
-
   if (
     profit >
     0
@@ -6260,22 +5236,46 @@ function closePaper(
 
     stats.wins++;
 
+
     stats.grossProfit +=
       profit;
+
+
+    stats.bestTrade =
+      Math.max(
+        stats.bestTrade,
+        profit
+      );
+
+
+    /*
+     * الصفقة الناجحة تعيد Adaptive Risk للوضع الطبيعي.
+     */
 
     lossStreak =
       0;
 
+
   } else {
 
     stats.losses++;
+
 
     stats.grossLoss +=
       Math.abs(
         profit
       );
 
+
+    stats.worstTrade =
+      Math.min(
+        stats.worstTrade,
+        profit
+      );
+
+
     lossStreak++;
+
 
     lastLossBySymbol[
       symbol
@@ -6295,27 +5295,9 @@ function closePaper(
 
   const record = {
 
-    symbol,
-
-    entryPrice:
-      position.entryPrice,
+    ...position,
 
     exitPrice,
-
-    qty:
-      position.qty,
-
-    investedUSDT:
-      position.invested,
-
-    profit,
-
-    profitPct,
-
-    reason,
-
-    buyFee:
-      position.buyFee,
 
     sellFee,
 
@@ -6323,103 +5305,74 @@ function closePaper(
       position.buyFee +
       sellFee,
 
-    mfePct:
-      position.mfePct,
+    profit,
 
-    maePct:
-      position.maePct,
+    profitPct,
 
-    edgeScore:
-      position.edgeScore,
+    reason,
 
-    grade:
-      position.grade,
-
-    freshnessScore:
-      position.freshnessScore,
-
-    flowScore:
-      position.flowScore,
-
-    cmo:
-      position.cmo,
-
-    atrPct:
-      position.atrPct,
-
-    volumeRatio:
-      position.volumeRatio,
-
-    volumeAcceleration:
-      position.volumeAcceleration,
-
-    takerBuyRatio:
-      position.takerBuyRatio,
-
-    orderFlowMomentum:
-      position.orderFlowMomentum,
-
-    regime:
-      position.regime,
-
-    binanceCandles:
-      position.binanceCandles,
-
-    warnings:
-      position.warnings,
-
-    entryTime:
-      position.entryTime,
+    holdingMinutes:
+      (
+        Date.now() -
+        position.entryTime
+      ) /
+      60000,
 
     exitTime:
       Date.now()
   };
 
 
-  saveTrade(
-    record
-  );
+  delete record.closing;
 
 
-  cloudJournal(
-    {
-
-      type:
-        'EXIT',
-
-      ...record
-    },
-    true
-  );
-
-
-  tg(
-    `${profit >= 0 ? '✅' : '🔴'} <b>LOMY V5.1.2 EXIT</b>
-<b>${symbol}</b>
-Reason: ${reason}
-PnL: $${profit.toFixed(2)} (${profitPct.toFixed(2)}%)`
-  );
-
-
-  if (
-    lossStreak >=
-    C.lossStreakLimit
-  ) {
-
-    startCooldown(
-      C.lossCooldownMs,
-      'LOSS_STREAK'
-    );
-  }
+  delete positions[
+    symbol
+  ];
 
 
   updateDrawdown();
 
+
   checkDailyLoss();
 
-  saveCloudState();
+
+  await saveTrade(
+    record
+  );
+
+
+  await cloudJournal({
+
+    type:
+      'EXIT',
+
+    ...record
+
+  }, true);
+
+
+  await saveCloudState();
+
+
+  tg(
+    `${
+      profit >=
+      0
+        ? '✅'
+        : '❌'
+    } <b>LOMY V6 EXIT</b>
+<b>${symbol}</b>
+${reason}
+PnL: $${profit.toFixed(2)} (${profitPct.toFixed(2)}%)
+MFE: ${position.mfePct.toFixed(2)}% | MAE: ${position.maePct.toFixed(2)}%`
+  );
 }
 
+
+// ============================================================
+// POSITION MANAGEMENT
+// ============================================================
 
 function managePosition(
   symbol,
@@ -6435,18 +5388,11 @@ function managePosition(
   if (
     !position ||
     position.closing ||
-    !Number.isFinite(
-      price
-    ) ||
-    price <=
-      0
+    !price
   ) {
+
     return;
   }
-
-
-  position.lastPrice =
-    price;
 
 
   position.highestPrice =
@@ -6456,130 +5402,111 @@ function managePosition(
     );
 
 
-  position.lowestPrice =
-    Math.min(
-      position.lowestPrice,
-      price
+  const movePct =
+    pct(
+
+      price -
+      position.entryPrice,
+
+      position.entryPrice
     );
 
 
   position.mfePct =
     Math.max(
-
       position.mfePct,
-
-      pct(
-
-        position.highestPrice -
-        position.entryPrice,
-
-        position.entryPrice
-      )
+      movePct
     );
 
 
   position.maePct =
     Math.min(
-
       position.maePct,
-
-      pct(
-
-        position.lowestPrice -
-        position.entryPrice,
-
-        position.entryPrice
-      )
+      movePct
     );
 
 
-  const move =
-    price -
-    position.entryPrice;
-
-
-  const r =
-    position.riskPrice
-      ? move /
-        position.riskPrice
-      : 0;
-
+  // ==========================================================
+  // PHASE 1
+  // EMERGENCY PROTECTION
+  // ==========================================================
 
   if (
-    !position.profitLockActive &&
-    position.mfePct >=
-      C.profitLockMfePct
+    price <=
+      position.emergencyStop &&
+    !position.breakEvenActive
   ) {
 
-    position.profitLockActive =
-      true;
-
-
-    position.stopLoss =
-      Math.max(
-
-        position.stopLoss,
-
-        position.entryPrice *
-        (
-          1 +
-          C.profitLockBufferPct
-        )
-      );
-
-
-    stats.profitLocks++;
-
-
-    cloudJournal(
-      {
-
-        type:
-          'PROFIT_LOCK',
-
-        symbol,
-
-        mfePct:
-          position.mfePct,
-
-        newStop:
-          position.stopLoss
-      },
-      true
+    closePaper(
+      symbol,
+      price,
+      'EMERGENCY_STOP'
     );
+
+
+    return;
   }
 
 
+  // ==========================================================
+  // PHASE 2
+  // +0.50% = CAPITAL PROTECTION
+  // ==========================================================
+
   if (
-    !position.breakEvenMoved &&
-    r >=
-      C.breakEvenAtR
+    !position.breakEvenActive &&
+    position.mfePct >=
+      C.breakEvenTriggerPct
   ) {
 
-    position.breakEvenMoved =
+    position.breakEvenActive =
       true;
 
 
-    position.stopLoss =
-      Math.max(
-
-        position.stopLoss,
-
-        position.entryPrice *
-        (
-          1 +
-          C.breakEvenBufferPct
-        )
+    position.protectionStop =
+      realBreakEvenPrice(
+        position.entryPrice
       );
 
 
     stats.breakEvenMoves++;
+
+
+    cloudJournal({
+
+      type:
+        'CAPITAL_PROTECTION',
+
+      tradeId:
+        position.tradeId,
+
+      symbol,
+
+      protectionStop:
+        position.protectionStop,
+
+      mfePct:
+        position.mfePct
+
+    }, true);
+
+
+    tg(
+      `🛡️ <b>${symbol} CAPITAL PROTECTED</b>
+MFE: ${position.mfePct.toFixed(2)}%`
+    );
   }
 
 
+  // ==========================================================
+  // PHASE 3
+  // DYNAMIC TRAILING
+  // ==========================================================
+
   if (
-    r >=
-    C.trailAtR
+    position.breakEvenActive &&
+    position.mfePct >=
+      C.trailingStartPct
   ) {
 
     if (
@@ -6589,179 +5516,224 @@ function managePosition(
       position.trailingActive =
         true;
 
+
       stats.trailingActivations++;
+
+
+      cloudJournal({
+
+        type:
+          'TRAIL_ACTIVATED',
+
+        tradeId:
+          position.tradeId,
+
+        symbol,
+
+        mfePct:
+          position.mfePct
+
+      }, true);
     }
 
 
-    const trailingStop =
-      position.entryPrice +
-      position.riskPrice *
-      C.trailLockR;
-
-
-    position.stopLoss =
-      Math.max(
-        position.stopLoss,
-        trailingStop
+    const atrPctNow =
+      n(
+        position.snapshot?.atrPct,
+        0.30
       );
+
+
+    let gapPct =
+      clamp(
+
+        atrPctNow *
+        C.trailAtrMultiplier,
+
+        C.trailGapMinPct,
+
+        C.trailGapMaxPct
+      );
+
+
+    /*
+     * كلما تكبر الأرباح،
+     * نضيّق الـTrail تدريجيًا.
+     */
+
+    if (
+      position.mfePct >=
+      2.00
+    ) {
+
+      gapPct *=
+        0.65;
+
+
+    } else if (
+      position.mfePct >=
+      1.25
+    ) {
+
+      gapPct *=
+        0.78;
+    }
+
+
+    const priceTrail =
+
+      position.highestPrice *
+
+      (
+        1 -
+        gapPct /
+        100
+      );
+
+
+    /*
+     * Structure Trail
+     */
+
+    const structureLow =
+      recentSwingLow(
+
+        tfArr(
+          C.entryTf,
+          symbol
+        ),
+
+        5
+      );
+
+
+    const structureTrail =
+
+      (
+        structureLow &&
+        structureLow >
+          position.entryPrice
+      )
+
+        ? structureLow
+
+        : null;
+
+
+    const nextStop =
+      Math.max(
+
+        position.protectionStop ||
+        0,
+
+        priceTrail,
+
+        structureTrail ||
+        0
+      );
+
+
+    if (
+      nextStop >
+      (
+        position.protectionStop ||
+        0
+      )
+    ) {
+
+      position.protectionStop =
+        nextStop;
+    }
   }
 
+
+  // ==========================================================
+  // DYNAMIC EXIT
+  // ==========================================================
+
+  if (
+    position.breakEvenActive &&
+    position.protectionStop &&
+    price <=
+      position.protectionStop
+  ) {
+
+    closePaper(
+
+      symbol,
+
+      price,
+
+      position.trailingActive
+        ? 'DYNAMIC_TRAIL'
+        : 'CAPITAL_PROTECTION_STOP'
+    );
+
+
+    return;
+  }
+
+
+  // ==========================================================
+  // EARLY FAILED SETUP
+  // ==========================================================
 
   const age =
     Date.now() -
     position.entryTime;
 
 
-  const earlyFailPrice =
-    position.entryPrice *
+  const failedLevel =
     (
-      1 -
-      C.earlyFailureLossPct
+      position.snapshot
+        ?.resistance &&
+
+      price <
+      position.snapshot
+        .resistance
     );
 
 
   if (
     age <=
       C.earlyFailureWindowMs &&
-    price <=
-      earlyFailPrice &&
-    position.mfePct <
-      C.earlyFailureMfeGuardPct
+
+    movePct <=
+      -(
+        C.earlyFailureLossPct *
+        100
+      ) &&
+
+    position.mfePct <=
+      C.earlyFailureMaxMfePct &&
+
+    failedLevel
   ) {
 
-    return closePaper(
+    closePaper(
+
       symbol,
+
       price,
+
       'EARLY_FAILURE'
     );
   }
-
-
-  if (
-    price <=
-    position.stopLoss
-  ) {
-
-    return closePaper(
-
-      symbol,
-
-      price,
-
-      position.breakEvenMoved ||
-      position.profitLockActive
-        ? 'PROTECTED_STOP'
-        : 'STOP_LOSS'
-    );
-  }
-
-
-  if (
-    price >=
-    position.takeProfit
-  ) {
-
-    return closePaper(
-      symbol,
-      price,
-      'TAKE_PROFIT'
-    );
-  }
 }
 
 
 // ============================================================
-// CANDIDATES
+// EXECUTE BEST CANDIDATES
 // ============================================================
-
-function addCandidate(
-  analysis
-) {
-
-  if (
-    !analysis?.eligible ||
-    !analysis.liveDataReady ||
-    positions[
-      analysis.symbol
-    ] ||
-    symbolCooling(
-      analysis.symbol
-    )
-  ) {
-    return;
-  }
-
-
-  candidatePool.set(
-
-    analysis.symbol,
-
-    {
-      ...analysis,
-
-      createdAt:
-        Date.now()
-    }
-  );
-}
-
-
-function pruneCandidates() {
-
-  const now =
-    Date.now();
-
-
-  for (
-    const [
-      symbol,
-      candidate
-    ]
-    of candidatePool
-  ) {
-
-    if (
-      now -
-        candidate.createdAt >
-        C.candidateExpiryMs ||
-      !subscribed.has(
-        symbol
-      ) ||
-      !symbolLiveReady(
-        symbol
-      ) ||
-      positions[
-        symbol
-      ]
-    ) {
-
-      candidatePool.delete(
-        symbol
-      );
-    }
-  }
-}
-
 
 function executeCandidates() {
 
   if (
-    manualPause ||
-    dailyPause ||
-    cooldownActive()
+    !canTrade()
   ) {
+
     return;
   }
-
-
-  if (
-    !marketRegime.ready
-  ) {
-    return;
-  }
-
-
-  pruneCandidates();
 
 
   const slots =
@@ -6775,24 +5747,29 @@ function executeCandidates() {
     slots <=
     0
   ) {
+
     return;
   }
 
 
   const candidates =
     [...candidatePool.values()]
+
+      .filter(
+        candidateStillValid
+      )
+
       .sort(
         (
           a,
           b
         ) =>
-          b.edgeScore -
-            a.edgeScore ||
-          b.freshnessScore -
-            a.freshnessScore ||
-          b.flowScore -
-            a.flowScore
+          b.quality -
+          a.quality
       );
+
+
+  candidatePool.clear();
 
 
   let opened =
@@ -6811,6 +5788,7 @@ function executeCandidates() {
         C.maxEntriesPerCycle
       )
     ) {
+
       break;
     }
 
@@ -6828,11 +5806,12 @@ function executeCandidates() {
 
 
 // ============================================================
-// BINANCE CLOSED KLINE
+// CLOSED KLINE
 // ============================================================
 
 function onClosedKline(
   symbol,
+  tf,
   kline
 ) {
 
@@ -6894,65 +5873,51 @@ function onClosedKline(
 
 
   mergeCandles(
+
+    tf,
+
     symbol,
+
     [
       candle
     ]
   );
 
 
-  /*
-   * If an external provider did not support this symbol,
-   * Binance live candles accumulate naturally.
-   */
   if (
-    (
-      candles[
-        symbol
-      ]?.length ||
-      0
-    ) >=
+    tfArr(
+      tf,
+      symbol
+    ).length >=
     C.warmupCandles
   ) {
 
-    warmupLoaded.add(
+    warmupLoaded[
+      tf
+    ].add(
       symbol
     );
-  }
 
 
-  if (
-    (
-      candles[
-        symbol
-      ]?.length ||
-      0
-    ) <
-    C.warmupCandles
-  ) {
+  } else {
 
     queueWarmup(
       symbol
     );
-
-    return;
   }
 
 
-  const binanceCount =
-    totalBinanceCount(
-      symbol
-    );
-
+  /*
+   * الاستراتيجية تدخل فقط عند إغلاق 5m.
+   * 15m / 1h تحدث Context فقط.
+   */
 
   if (
-    binanceCount ===
-    C.liveBinanceCandlesRequired
+    tf !==
+    C.entryTf
   ) {
 
-    console.log(
-      `LIVE DATA READY ${symbol} | Binance ${binanceCount}/${C.liveBinanceCandlesRequired}`
-    );
+    return;
   }
 
 
@@ -6962,6 +5927,7 @@ function onClosedKline(
     ] ===
     candle.closeTime
   ) {
+
     return;
   }
 
@@ -6974,11 +5940,6 @@ function onClosedKline(
 
   const analysis =
     analyze(
-
-      candles[
-        symbol
-      ],
-
       symbol
     );
 
@@ -6986,6 +5947,7 @@ function onClosedKline(
   if (
     !analysis
   ) {
+
     return;
   }
 
@@ -7004,11 +5966,14 @@ function onClosedKline(
           ? 'REJECT'
           : 'LIVE_WARMUP',
 
-    edgeScore:
-      analysis.edgeScore,
+    quality:
+      analysis.quality,
 
-    grade:
-      analysis.grade,
+    minQuality:
+      analysis.minQuality,
+
+    triggerType:
+      analysis.triggerType,
 
     cmo:
       analysis.cmo,
@@ -7019,17 +5984,35 @@ function onClosedKline(
     volumeRatio:
       analysis.volumeRatio,
 
-    binanceCandles:
-      analysis.binanceCandles,
+    volumeAcceleration:
+      analysis.volumeAcceleration,
 
-    blockers:
+    takerBuyRatio:
+      analysis.takerBuyRatio,
+
+    orderFlowMomentum:
+      analysis.orderFlowMomentum,
+
+    flowEfficiency:
+      analysis.flowEfficiency,
+
+    absorption:
+      analysis.absorption,
+
+    lateCandle:
+      analysis.lateCandle,
+
+    hardBlocks:
       analysis.hardBlocks,
 
     warnings:
       analysis.warnings,
 
     regime:
-      analysis.regime
+      analysis.regime,
+
+    breadth:
+      analysis.breadth
   });
 
 
@@ -7066,20 +6049,10 @@ function wsSend(
   }
 
 
-  const text =
+  ws.send(
     JSON.stringify(
       object
-    );
-
-
-  networkMeter.wsControlBytes +=
-    byteLen(
-      text
-    );
-
-
-  ws.send(
-    text
+    )
   );
 
 
@@ -7125,7 +6098,7 @@ function chunks(
 
 
 // ============================================================
-// MINI TICKER WEBSOCKET
+// MINI TICKER
 // ============================================================
 
 function connectMiniWs() {
@@ -7133,6 +6106,7 @@ function connectMiniWs() {
   if (
     shuttingDown
   ) {
+
     return;
   }
 
@@ -7157,8 +6131,10 @@ function connectMiniWs() {
       miniConnected =
         true;
 
+
       miniReconnectAttempts =
         0;
+
 
       console.log(
         'MINI LIVE'
@@ -7184,6 +6160,7 @@ function connectMiniWs() {
             data
           )
         ) {
+
           return;
         }
 
@@ -7208,6 +6185,7 @@ function connectMiniWs() {
               symbol
             )
           ) {
+
             continue;
           }
 
@@ -7228,6 +6206,7 @@ function connectMiniWs() {
             price <=
             0
           ) {
+
             continue;
           }
 
@@ -7286,11 +6265,9 @@ function connectMiniWs() {
       if (
         shuttingDown
       ) {
+
         return;
       }
-
-
-      miniReconnectAttempts++;
 
 
       const delay =
@@ -7302,8 +6279,7 @@ function connectMiniWs() {
           (
             2 **
             Math.min(
-              miniReconnectAttempts -
-              1,
+              miniReconnectAttempts++,
               5
             )
           )
@@ -7330,7 +6306,7 @@ function connectMiniWs() {
 
 
 // ============================================================
-// KLINE WEBSOCKET
+// MULTI TIMEFRAME KLINE WS
 // ============================================================
 
 function connectKlineWs() {
@@ -7338,6 +6314,7 @@ function connectKlineWs() {
   if (
     shuttingDown
   ) {
+
     return;
   }
 
@@ -7362,21 +6339,38 @@ function connectKlineWs() {
       klineConnected =
         true;
 
+
       klineReconnectAttempts =
         0;
 
 
       console.log(
-        'KLINE LIVE'
+        'KLINE MULTI-TF LIVE'
       );
 
 
       const params =
-        [...subscribed]
-          .map(
-            symbol =>
-              `${symbol.toLowerCase()}@kline_${C.interval}`
+        [];
+
+
+      for (
+        const symbol
+        of subscribed
+      ) {
+
+        for (
+          const tf
+          of C.timeframes
+        ) {
+
+          params.push(
+
+            `${
+              symbol.toLowerCase()
+            }@kline_${tf}`
           );
+        }
+      }
 
 
       let id =
@@ -7396,6 +6390,7 @@ function connectKlineWs() {
           klineWs,
 
           {
+
             method:
               'SUBSCRIBE',
 
@@ -7409,7 +6404,7 @@ function connectKlineWs() {
 
 
         await sleep(
-          250
+          200
         );
       }
     }
@@ -7434,19 +6429,16 @@ function connectKlineWs() {
 
 
         if (
-          !payload?.k ||
-          !payload.s
-        ) {
-          return;
-        }
-
-
-        if (
-          payload.k.x
+          payload?.k?.x &&
+          payload.s
         ) {
 
           onClosedKline(
+
             payload.s,
+
+            payload.k.i,
+
             payload.k
           );
         }
@@ -7476,11 +6468,9 @@ function connectKlineWs() {
       if (
         shuttingDown
       ) {
+
         return;
       }
-
-
-      klineReconnectAttempts++;
 
 
       const delay =
@@ -7492,8 +6482,7 @@ function connectKlineWs() {
           (
             2 **
             Math.min(
-              klineReconnectAttempts -
-              1,
+              klineReconnectAttempts++,
               5
             )
           )
@@ -7525,226 +6514,64 @@ function connectKlineWs() {
 
 async function refreshUniverse() {
 
-  try {
-
-    let ranked =
-      [];
+  let ranked =
+    [];
 
 
-    // ========================================================
-    // BINANCE REST
-    // ========================================================
+  // ==========================================================
+  // BINANCE REST
+  // ==========================================================
 
-    if (
-      Date.now() >=
-      binanceRestBlockedUntil
-    ) {
+  if (
+    Date.now() >=
+    binanceRestBlockedUntil
+  ) {
 
-      try {
+    try {
 
-        const url =
-          `${REST_BASE}/api/v3/ticker/24hr`;
+      const response =
+        await axios.get(
 
+          `${REST_BASE}/api/v3/ticker/24hr`,
 
-        networkMeter.restRequestBytes +=
-          byteLen(
-            url
-          );
+          {
 
-
-        const response =
-          await axios.get(
-
-            url,
-
-            {
-              timeout:
-                15000
-            }
-          );
+            timeout:
+              15000
+          }
+        );
 
 
-        const rows =
+      ranked =
+        (
           Array.isArray(
             response.data
           )
             ? response.data
-            : [];
-
-
-        ranked =
-          rows
-
-            .filter(
-              row =>
-                String(
-                  row.symbol ||
-                  ''
-                ).endsWith(
-                  'USDT'
-                )
-            )
-
-            .filter(
-              row =>
-                !IGNORED.has(
-                  row.symbol
-                )
-            )
-
-            .filter(
-              row =>
-                n(
-                  row.quoteVolume
-                ) >=
-                C.minQuoteVolume
-            )
-
-            .sort(
-              (
-                a,
-                b
-              ) =>
-                n(
-                  b.quoteVolume
-                ) -
-                n(
-                  a.quoteVolume
-                )
-            )
-
-            .slice(
-              0,
-              C.universeSize
-            )
-
-            .map(
-              row =>
-                row.symbol
-            );
-
-
-        console.log(
-          `UNIVERSE REST OK | ${ranked.length} symbols`
-        );
-
-
-      } catch (
-        error
-      ) {
-
-        const status =
-          error.response
-            ?.status;
-
-
-        if (
-          status ===
-            418 ||
-          status ===
-            429
-        ) {
-
-          const retryAfterSec =
-            n(
-              error.response
-                ?.headers?.[
-                  'retry-after'
-                ]
-            );
-
-
-          const pauseMs =
-            Math.max(
-
-              retryAfterSec >
-                0
-                ? retryAfterSec *
-                  1000
-                : 0,
-
-              status ===
-                418
-                ? 30 *
-                  60 *
-                  1000
-                : 5 *
-                  60 *
-                  1000
-            );
-
-
-          binanceRestBlockedUntil =
-            Math.max(
-
-              binanceRestBlockedUntil,
-
-              Date.now() +
-              pauseMs
-            );
-
-
-          console.warn(
-            `UNIVERSE REST ${status} | USING MINI WS FALLBACK`
-          );
-
-
-        } else {
-
-          console.warn(
-            `UNIVERSE REST FAILED | ${
-              status ||
-              error.message
-            } | USING MINI WS FALLBACK`
-          );
-        }
-      }
-
-
-    } else {
-
-      console.log(
-        'UNIVERSE REST PAUSED | USING MINI WS FALLBACK'
-      );
-    }
-
-
-    // ========================================================
-    // MINI WEBSOCKET FALLBACK
-    // ========================================================
-
-    if (
-      !ranked.length
-    ) {
-
-      if (
-        tickers.size <
-        20
-      ) {
-
-        await sleep(
-          3000
-        );
-      }
-
-
-      ranked =
-        [...tickers.entries()]
+            : []
+        )
 
           .filter(
-            ([symbol]) =>
-              symbol.endsWith(
+            row =>
+              String(
+                row.symbol ||
+                ''
+              ).endsWith(
                 'USDT'
-              ) &&
-              !IGNORED.has(
-                symbol
               )
           )
 
           .filter(
-            ([, data]) =>
+            row =>
+              !IGNORED.has(
+                row.symbol
+              )
+          )
+
+          .filter(
+            row =>
               n(
-                data.quoteVolume
+                row.quoteVolume
               ) >=
               C.minQuoteVolume
           )
@@ -7755,10 +6582,10 @@ async function refreshUniverse() {
               b
             ) =>
               n(
-                b[1].quoteVolume
+                b.quoteVolume
               ) -
               n(
-                a[1].quoteVolume
+                a.quoteVolume
               )
           )
 
@@ -7768,141 +6595,136 @@ async function refreshUniverse() {
           )
 
           .map(
-            ([symbol]) =>
-              symbol
+            row =>
+              row.symbol
           );
 
 
-      console.log(
-        `UNIVERSE MINI FALLBACK | ${ranked.length} symbols`
-      );
-    }
-
-
-    if (
-      !ranked.includes(
-        C.btcSymbol
-      )
+    } catch (
+      error
     ) {
 
-      ranked.unshift(
-        C.btcSymbol
-      );
-    }
+      if (
+        [
+          418,
+          429
+        ].includes(
+          error.response?.status
+        )
+      ) {
 
+        binanceRestBlockedUntil =
+          Date.now() +
+          (
+            error.response.status ===
+              418
+              ? 30
+              : 5
+          ) *
+          60 *
+          1000;
+      }
+    }
+  }
+
+
+  // ==========================================================
+  // MINI WS FALLBACK
+  // ==========================================================
+
+  if (
+    !ranked.length
+  ) {
 
     ranked =
-      [...new Set(
-        ranked
-      )]
+      [...tickers.entries()]
+
+        .filter(
+          (
+            [
+              symbol,
+              ticker
+            ]
+          ) =>
+            symbol.endsWith(
+              'USDT'
+            ) &&
+            !IGNORED.has(
+              symbol
+            ) &&
+            n(
+              ticker.quoteVolume
+            ) >=
+              C.minQuoteVolume
+        )
+
+        .sort(
+          (
+            a,
+            b
+          ) =>
+            b[
+              1
+            ].quoteVolume -
+            a[
+              1
+            ].quoteVolume
+        )
+
         .slice(
           0,
           C.universeSize
+        )
+
+        .map(
+          (
+            [
+              symbol
+            ]
+          ) =>
+            symbol
         );
+  }
 
 
-    if (
-      ranked.length ===
-      0
-    ) {
+  if (
+    !ranked.includes(
+      C.btcSymbol
+    )
+  ) {
 
-      console.warn(
-        'UNIVERSE EMPTY | retrying in 10s'
-      );
-
-
-      setTimeout(
-        refreshUniverse,
-        10000
-      );
+    ranked.unshift(
+      C.btcSymbol
+    );
+  }
 
 
-      return;
-    }
-
-
-    const next =
-      new Set(
-        ranked
-      );
-
-
-    const changed =
-      next.size !==
+  const changed =
+    (
+      ranked.length !==
         subscribed.size ||
-      [...next].some(
+
+      ranked.some(
         symbol =>
           !subscribed.has(
             symbol
           )
-      );
-
-
-    warmupQueue =
-      warmupQueue.filter(
-        symbol =>
-          next.has(
-            symbol
-          )
-      );
-
-
-    subscribed =
-      next;
-
-
-    for (
-      const symbol
-      of subscribed
-    ) {
-
-      queueWarmup(
-        symbol
-      );
-    }
-
-
-    if (
-      changed &&
-      klineConnected
-    ) {
-
-      connectKlineWs();
-    }
-
-
-    console.log(
-      `UNIVERSE ${subscribed.size} | WARMUP READY ${readyCount()} | LIVE READY ${liveReadyCount()}`
+      )
     );
 
 
-  } catch (
-    error
+  subscribed.clear();
+
+
+  for (
+    const symbol
+    of ranked
   ) {
 
-    console.error(
-      'Universe:',
-      error.response?.status ||
-      error.message
-    );
-
-
-    setTimeout(
-      refreshUniverse,
-      30000
+    subscribed.add(
+      symbol
     );
   }
-}
-
-
-// ============================================================
-// READY COUNTERS
-// ============================================================
-
-function readyCount() {
-
-  let count =
-    0;
 
 
   for (
@@ -7910,91 +6732,38 @@ function readyCount() {
     of subscribed
   ) {
 
-    if (
-      (
-        candles[
-          symbol
-        ]?.length ||
-        0
-      ) >=
-      C.warmupCandles
-    ) {
-
-      count++;
-    }
+    queueWarmup(
+      symbol
+    );
   }
 
 
-  return count;
-}
+  /*
+   * Universe changed:
+   * reconnect Kline WS with new subscriptions.
+   */
 
-
-// ============================================================
-// LATEST TABLE
-// ============================================================
-
-function buildLatest() {
-
-  const rows =
-    [];
-
-
-  for (
-    const symbol
-    of subscribed
+  if (
+    changed &&
+    klineWs?.readyState ===
+      WebSocket.OPEN
   ) {
 
-    const arr =
-      candles[
-        symbol
-      ];
+    try {
 
+      klineWs.terminate();
 
-    if (
-      !arr ||
-      arr.length <
-      C.warmupCandles
-    ) {
-      continue;
-    }
-
-
-    const analysis =
-      analyze(
-        arr,
-        symbol
-      );
-
-
-    if (
-      !analysis
-    ) {
-      continue;
-    }
-
-
-    rows.push(
-      analysis
-    );
+    } catch {}
   }
 
 
   latest =
-    rows
+    ranked;
 
-      .sort(
-        (
-          a,
-          b
-        ) =>
-          b.edgeScore -
-          a.edgeScore
-      )
 
-      .slice(
-        0,
-        50
-      );
+  console.log(
+    `UNIVERSE ${ranked.length}`
+  );
 }
 
 
@@ -8003,81 +6772,18 @@ function buildLatest() {
 // ============================================================
 
 app.get(
-  '/health',
-  (
-    req,
-    res
-  ) => {
-
-    res.json({
-
-      ok:
-        true,
-
-      version:
-        C.version,
-
-      paperTrading:
-        C.paperTrading,
-
-      cloudConnected,
-
-      miniConnected,
-
-      klineConnected,
-
-      warmupReady:
-        readyCount(),
-
-      liveReady:
-        liveReadyCount(),
-
-      symbols:
-        subscribed.size,
-
-      binanceRestPaused:
-        Date.now() <
-        binanceRestBlockedUntil
-    });
-  }
-);
-
-
-app.get(
   '/api/data',
   (
     req,
     res
   ) => {
 
-    const grossLoss =
-      stats.grossLoss ||
-      0;
+    const currentEquity =
+      equity();
 
 
-    const winRate =
-      stats.totalTrades
-        ? (
-            stats.wins /
-            stats.totalTrades
-          ) *
-          100
-        : 0;
-
-
-    const profitFactor =
-      grossLoss >
-        0
-        ? stats.grossProfit /
-          grossLoss
-        : stats.grossProfit >
-            0
-          ? 999
-          : 0;
-
-
-    const liveReady =
-      liveReadyCount();
+    const adaptive =
+      adaptiveRisk();
 
 
     res.json({
@@ -8085,62 +6791,11 @@ app.get(
       version:
         C.version,
 
+      buildHash:
+        BUILD_HASH,
+
       paperTrading:
         C.paperTrading,
-
-      cash:
-        +cash.toFixed(
-          2
-        ),
-
-      equity:
-        +equity().toFixed(
-          2
-        ),
-
-      positions,
-
-      stats,
-
-      winRate:
-        +winRate.toFixed(
-          2
-        ),
-
-      profitFactor:
-        +profitFactor.toFixed(
-          2
-        ),
-
-      dailyPnL:
-        +dailyPnL.toFixed(
-          2
-        ),
-
-      manualPause,
-
-      dailyPause,
-
-      cooldown:
-        cooldownActive(),
-
-      cooldownReason,
-
-      cooldownMinutes:
-        cooldownUntil
-          ? Math.max(
-
-              0,
-
-              Math.ceil(
-                (
-                  cooldownUntil -
-                  Date.now()
-                ) /
-                60000
-              )
-            )
-          : 0,
 
       cloudConnected,
 
@@ -8150,153 +6805,83 @@ app.get(
 
       marketRegime,
 
-      ready:
-        readyCount(),
+      cash,
 
-      liveReady,
+      equity:
+        currentEquity,
 
-      liveRequired:
-        C.liveBinanceCandlesRequired,
+      dailyPnL,
 
-      symbols:
+      dailyEntries,
+
+      maxDailyEntries:
+        C.maxDailyEntries,
+
+      lossStreak,
+
+      adaptiveRisk:
+        adaptive,
+
+      manualPause,
+
+      dailyPause,
+
+      drawdownPause,
+
+      positions,
+
+      stats,
+
+      subscribed:
         subscribed.size,
 
-      pool:
-        candidatePool.size,
+      warmup: {
 
-      warmupQueue:
-        warmupQueue.length,
+        '5m':
+          warmupLoaded[
+            '5m'
+          ].size,
 
-      warmupWorkers,
+        '15m':
+          warmupLoaded[
+            '15m'
+          ].size,
 
-      binanceRestPaused:
-        Date.now() <
-        binanceRestBlockedUntil,
+        '1h':
+          warmupLoaded[
+            '1h'
+          ].size
+      },
 
-      binanceRestPauseMinutes:
-        Date.now() <
-          binanceRestBlockedUntil
-          ? Math.ceil(
-              (
-                binanceRestBlockedUntil -
-                Date.now()
-              ) /
-              60000
-            )
-          : 0,
+      binanceReady:
+        [...subscribed]
+          .filter(
+            symbolLiveReady
+          )
+          .length,
 
-      latest:
-        latest.map(
-          analysis => ({
-
-            symbol:
-              analysis.symbol,
-
-            grade:
-              analysis.grade,
-
-            edge:
-              analysis.edgeScore,
-
-            fresh:
-              analysis.freshnessScore,
-
-            flow:
-              analysis.flowScore,
-
-            decision:
-              analysis.eligible
-                ? 'ELIGIBLE'
-                : analysis.liveDataReady
-                  ? 'REJECT'
-                  : 'LIVE WARMUP',
-
-            binance:
-              analysis.binanceCandles,
-
-            required:
-              analysis.requiredBinanceCandles,
-
-            source:
-              analysis.dataSource,
-
-            cmo:
-              +analysis.cmo.toFixed(
-                1
-              ),
-
-            atr:
-              +analysis.atrPct.toFixed(
-                2
-              ),
-
-            volume:
-              analysis.volumeRatio ===
-                null
-                ? 'N/A'
-                : +analysis.volumeRatio.toFixed(
-                    2
-                  ),
-
-            volAccel:
-              analysis.volumeAcceleration ===
-                null
-                ? 'N/A'
-                : +analysis.volumeAcceleration.toFixed(
-                    2
-                  ),
-
-            buyFlow:
-              analysis.takerBuyRatio ===
-                null
-                ? 'N/A'
-                : +(
-                    analysis.takerBuyRatio *
-                    100
-                  ).toFixed(
-                    1
-                  ),
-
-            flowMomentum:
-              analysis.orderFlowMomentum ===
-                null
-                ? 'N/A'
-                : +(
-                    analysis.orderFlowMomentum *
-                    100
-                  ).toFixed(
-                    1
-                  ),
-
-            accept:
-              analysis.breakoutAcceptance,
-
-            shadow:
-              analysis.shadowEdge
-                ? 'YES'
-                : 'NO',
-
-            regime:
-              analysis.regime,
-
-            warnings:
-              [
-                ...analysis.hardBlocks,
-                ...analysis.warnings
-              ].join(
-                ', '
-              )
-          })
-        ),
-
-      warmupStats,
-
-      network:
-        networkSnapshot()
+      candidates:
+        [...candidatePool.values()]
+          .sort(
+            (
+              a,
+              b
+            ) =>
+              b.quality -
+              a.quality
+          )
+          .slice(
+            0,
+            20
+          )
     });
   }
 );
 
+
+// ============================================================
+// PAUSE
+// ============================================================
 
 app.post(
   '/api/pause',
@@ -8309,23 +6894,20 @@ app.post(
       true;
 
 
-    candidatePool.clear();
-
-
     saveCloudState();
 
 
     res.json({
-
       ok:
-        true,
-
-      paused:
         true
     });
   }
 );
 
+
+// ============================================================
+// RESUME
+// ============================================================
 
 app.post(
   '/api/resume',
@@ -8342,33 +6924,29 @@ app.post(
 
 
     res.json({
-
       ok:
-        true,
-
-      paused:
-        false
+        true
     });
   }
 );
 
 
+// ============================================================
+// EMERGENCY CLOSE
+// ============================================================
+
 app.post(
   '/api/emergency-close',
-  (
+  async (
     req,
     res
   ) => {
 
-    const symbols =
-      Object.keys(
-        positions
-      );
-
-
     for (
       const symbol
-      of symbols
+      of Object.keys(
+        positions
+      )
     ) {
 
       const price =
@@ -8377,30 +6955,23 @@ app.post(
         )?.price ||
         positions[
           symbol
-        ].lastPrice ||
-        positions[
-          symbol
         ].entryPrice;
 
 
-      closePaper(
+      await closePaper(
 
         symbol,
 
         price,
 
-        'EMERGENCY_CLOSE'
+        'MANUAL_EMERGENCY'
       );
     }
 
 
     res.json({
-
       ok:
-        true,
-
-      closed:
-        symbols.length
+        true
     });
   }
 );
@@ -8417,1098 +6988,178 @@ app.get(
     res
   ) => {
 
-    res
-      .type(
-        'html'
-      )
-      .send(
+    res.send(
 `<!doctype html>
 
-<html lang="en">
+<html>
 
 <head>
 
 <meta charset="utf-8">
 
-<meta
-  name="viewport"
-  content="width=device-width,initial-scale=1"
->
+<meta name="viewport"
+content="width=device-width,initial-scale=1">
 
-<title>
-LOMY V5.1.2
-</title>
+<title>LOMY V6</title>
 
 <style>
 
 body {
-
-  font-family:
-    Arial,
-    sans-serif;
-
-  background:
-    #0b1020;
-
-  color:
-    #eef2ff;
-
-  margin:
-    0;
-
-  padding:
-    20px;
-}
-
-h1 {
-
-  margin:
-    0 0 8px;
-}
-
-.banner,
-.status {
-
-  padding:
-    10px 12px;
-
-  border-radius:
-    10px;
-
-  background:
-    #151d33;
-
-  margin:
-    8px 0;
-}
-
-.grid {
-
-  display:
-    grid;
-
-  grid-template-columns:
-    repeat(
-      auto-fit,
-      minmax(
-        130px,
-        1fr
-      )
-    );
-
-  gap:
-    8px;
-
-  margin:
-    14px 0;
+  font-family: Arial;
+  background: #0d1117;
+  color: #e6edf3;
+  margin: 20px;
 }
 
 .card {
-
-  background:
-    #151d33;
-
-  padding:
-    12px;
-
-  border-radius:
-    10px;
+  background: #161b22;
+  padding: 14px;
+  border-radius: 12px;
+  margin: 8px 0;
 }
 
-.label {
-
-  font-size:
-    12px;
-
-  opacity:
-    .7;
-}
-
-.value {
-
-  font-size:
-    22px;
-
-  font-weight:
-    bold;
-
-  margin-top:
-    5px;
-}
-
-button {
-
-  padding:
-    10px 14px;
-
-  border:
-    0;
-
-  border-radius:
-    8px;
-
-  margin-right:
-    6px;
-
-  margin-bottom:
-    6px;
-
-  cursor:
-    pointer;
-}
-
-table {
-
-  width:
-    100%;
-
-  border-collapse:
-    collapse;
-
-  margin-top:
-    15px;
-
-  font-size:
-    12px;
-}
-
-th,
-td {
-
-  padding:
-    7px;
-
-  border-bottom:
-    1px solid #26324f;
-
-  text-align:
-    left;
-
-  white-space:
-    nowrap;
-}
-
-.green {
-
-  color:
-    #4ade80;
-}
-
-.red {
-
-  color:
-    #fb7185;
-}
-
-.yellow {
-
-  color:
-    #facc15;
-}
-
-.blue {
-
-  color:
-    #60a5fa;
+pre {
+  white-space: pre-wrap;
 }
 
 </style>
 
 </head>
 
-
 <body>
 
+<h2>
+LOMY V6 — Early Confirm + Dynamic Trail
+</h2>
 
-<h1>
-🤖 LOMY V5.1.2
-</h1>
-
-
-<div class="banner">
-PAPER ONLY • BINANCE LIVE DATA GUARD • BYBIT/OKX OHLC WARMUP
-</div>
-
-
-<div
-  id="cloud"
-  class="status"
->
-Cloud...
-</div>
-
-
-<div
-  id="ws"
-  class="status"
->
-Market...
-</div>
-
-
-<div
-  id="regime"
-  class="status"
->
-Regime...
-</div>
-
-
-<div
-  id="warmup"
-  class="status"
->
-Historical warmup...
-</div>
-
-
-<div
-  id="livewarmup"
-  class="status"
->
-Binance live data...
-</div>
-
-
-<div
-  id="cooldown"
-  class="status"
->
-Cooldown...
-</div>
-
-
-<div
-  class="grid"
-  id="cards"
-></div>
-
-
-<button
-  onclick="post('/api/pause')"
->
-⏸ PAUSE
-</button>
-
-
-<button
-  onclick="post('/api/resume')"
->
-▶ RESUME
-</button>
-
-
-<button
-  onclick="closeAll()"
->
-🚨 CLOSE ALL
-</button>
-
-
-<div
-  style="overflow-x:auto"
->
-
-<table>
-
-<thead>
-
-<tr>
-
-<th>Symbol</th>
-<th>Grade</th>
-<th>Edge</th>
-<th>Fresh</th>
-<th>Flow</th>
-<th>Status</th>
-<th>Binance</th>
-<th>CMO</th>
-<th>ATR%</th>
-<th>Volume</th>
-<th>VolAccel</th>
-<th>BuyFlow</th>
-<th>FlowMom</th>
-<th>Accept</th>
-<th>Regime</th>
-<th>Warnings</th>
-
-</tr>
-
-</thead>
-
-
-<tbody
-  id="rows"
->
-
-<tr>
-
-<td
-  colspan="16"
->
+<div id="dashboard">
 Loading...
-</td>
-
-</tr>
-
-</tbody>
-
-</table>
-
 </div>
-
 
 <script>
 
-const defs = [
+async function updateDashboard() {
 
-  [
-    'cash',
-    'CASH'
-  ],
-
-  [
-    'equity',
-    'EQUITY'
-  ],
-
-  [
-    'closed',
-    'CLOSED'
-  ],
-
-  [
-    'win',
-    'WIN RATE'
-  ],
-
-  [
-    'profit',
-    'NET PROFIT'
-  ],
-
-  [
-    'pf',
-    'PROFIT FACTOR'
-  ],
-
-  [
-    'open',
-    'OPEN'
-  ],
-
-  [
-    'ready',
-    'OHLC READY'
-  ],
-
-  [
-    'liveready',
-    'LIVE READY'
-  ],
-
-  [
-    'symbols',
-    'WS SYMBOLS'
-  ],
-
-  [
-    'breadth',
-    'BREADTH'
-  ],
-
-  [
-    'pool',
-    'CANDIDATE POOL'
-  ],
-
-  [
-    'daily',
-    'TODAY PNL'
-  ],
-
-  [
-    'dd',
-    'MAX DD'
-  ],
-
-  [
-    'early',
-    'EARLY EXITS'
-  ],
-
-  [
-    'be',
-    'BREAK EVEN'
-  ],
-
-  [
-    'trail',
-    'TRAILING'
-  ],
-
-  [
-    'locks',
-    'PROFIT LOCKS'
-  ],
-
-  [
-    'netmb',
-    'EST. OUT MB'
-  ]
-
-];
+  const data =
+    await fetch('/api/data')
+      .then(
+        response =>
+          response.json()
+      );
 
 
-document
-  .getElementById(
-    'cards'
-  )
-  .innerHTML =
-    defs
-      .map(
-        function (
-          item
-        ) {
+  document.getElementById(
+    'dashboard'
+  ).innerHTML =
 
-          return (
-            '<div class="card">' +
-            '<div class="label">' +
-            item[1] +
-            '</div>' +
-            '<div class="value" id="' +
-            item[0] +
-            '">' +
-            '0' +
-            '</div>' +
-            '</div>'
-          );
-        }
-      )
-      .join('');
+  '<div class="card">' +
+
+  'Version ' +
+  data.version +
+
+  ' | Build ' +
+  data.buildHash +
+
+  ' | ' +
+  (
+    data.paperTrading
+      ? 'PAPER'
+      : 'LIVE'
+  ) +
+
+  '</div>' +
 
 
-async function post(
-  url
-) {
+  '<div class="card">' +
 
-  await fetch(
-    url,
-    {
-      method:
-        'POST'
-    }
-  );
+  'Equity $' +
+  data.equity.toFixed(2) +
+
+  ' | Daily P/L $' +
+  data.dailyPnL.toFixed(2) +
+
+  ' | Entries ' +
+  data.dailyEntries +
+  '/' +
+  data.maxDailyEntries +
+
+  ' | Loss streak ' +
+  data.lossStreak +
+
+  ' | Risk ' +
+  data.adaptiveRisk.label +
+
+  '</div>' +
 
 
-  await load();
+  '<div class="card">' +
+
+  'Regime ' +
+  data.marketRegime.regime +
+
+  ' | Breadth ' +
+  data.marketRegime.breadth +
+  '%' +
+
+  ' | BTC ' +
+  (
+    data.marketRegime.btcBullish
+      ? 'Bullish'
+      : 'Not bullish'
+  ) +
+
+  '</div>' +
+
+
+  '<div class="card">' +
+
+  'WS ' +
+  data.klineConnected +
+
+  ' | Binance ready ' +
+  data.binanceReady +
+  '/' +
+  data.subscribed +
+
+  ' | Warmup 5m ' +
+  data.warmup['5m'] +
+
+  ' | 15m ' +
+  data.warmup['15m'] +
+
+  ' | 1h ' +
+  data.warmup['1h'] +
+
+  '</div>' +
+
+
+  '<pre class="card">' +
+
+  JSON.stringify(
+    data.positions,
+    null,
+    2
+  ) +
+
+  '</pre>';
 }
 
 
-async function closeAll() {
-
-  if (
-    confirm(
-      'Close all PAPER positions?'
-    )
-  ) {
-
-    await post(
-      '/api/emergency-close'
-    );
-  }
-}
-
-
-async function load() {
-
-  try {
-
-    const response =
-      await fetch(
-        '/api/data'
-      );
-
-
-    const d =
-      await response.json();
-
-
-    const set =
-      function (
-        id,
-        value
-      ) {
-
-        document
-          .getElementById(
-            id
-          )
-          .innerText =
-            value;
-      };
-
-
-    set(
-      'cash',
-      '$' +
-      d.cash
-    );
-
-
-    set(
-      'equity',
-      '$' +
-      d.equity
-    );
-
-
-    set(
-      'closed',
-      d.stats.totalTrades
-    );
-
-
-    set(
-      'win',
-      d.winRate +
-      '%'
-    );
-
-
-    set(
-      'profit',
-      '$' +
-      Number(
-        d.stats.netProfit ||
-        0
-      ).toFixed(
-        2
-      )
-    );
-
-
-    set(
-      'pf',
-      d.profitFactor
-    );
-
-
-    set(
-      'open',
-      Object.keys(
-        d.positions
-      ).length
-    );
-
-
-    set(
-      'ready',
-      d.ready
-    );
-
-
-    set(
-      'liveready',
-      d.liveReady
-    );
-
-
-    set(
-      'symbols',
-      d.symbols
-    );
-
-
-    set(
-      'breadth',
-      d.marketRegime.breadth +
-      '%'
-    );
-
-
-    set(
-      'pool',
-      d.pool
-    );
-
-
-    set(
-      'daily',
-      '$' +
-      d.dailyPnL
-    );
-
-
-    set(
-      'dd',
-      Number(
-        d.stats.maxDrawdown ||
-        0
-      ).toFixed(
-        2
-      ) +
-      '%'
-    );
-
-
-    set(
-      'early',
-      d.stats.earlyFailureExits
-    );
-
-
-    set(
-      'be',
-      d.stats.breakEvenMoves
-    );
-
-
-    set(
-      'trail',
-      d.stats.trailingActivations
-    );
-
-
-    set(
-      'locks',
-      d.stats.profitLocks
-    );
-
-
-    set(
-      'netmb',
-      d.network.estimatedOutboundMB +
-      ' MB'
-    );
-
-
-    const cloud =
-      document.getElementById(
-        'cloud'
-      );
-
-
-    cloud.innerText =
-      d.cloudConnected
-        ? '🟢 CLOUD CONNECTED'
-        : '🔴 CLOUD OFF';
-
-
-    cloud.className =
-      'status ' +
-      (
-        d.cloudConnected
-          ? 'green'
-          : 'red'
-      );
-
-
-    const ws =
-      document.getElementById(
-        'ws'
-      );
-
-
-    ws.innerText =
-      (
-        d.miniConnected &&
-        d.klineConnected
-      )
-        ? '🟢 BINANCE MARKET WEBSOCKETS LIVE'
-        : '🔴 MARKET CONNECTING';
-
-
-    ws.className =
-      'status ' +
-      (
-        d.miniConnected &&
-        d.klineConnected
-          ? 'green'
-          : 'red'
-      );
-
-
-    const regime =
-      document.getElementById(
-        'regime'
-      );
-
-
-    regime.innerText =
-      'MARKET REGIME: ' +
-      d.marketRegime.regime +
-      ' • BREADTH ' +
-      d.marketRegime.breadth +
-      '% • BTC FRESH ' +
-      d.marketRegime.btcFreshness;
-
-
-    regime.className =
-      'status ' +
-      (
-        d.marketRegime.regime ===
-          'RISK_ON'
-          ? 'green'
-          : d.marketRegime.regime ===
-              'NEUTRAL'
-            ? 'yellow'
-            : 'red'
-      );
-
-
-    const warm =
-      document.getElementById(
-        'warmup'
-      );
-
-
-    warm.innerText =
-      'OHLC WARMUP ' +
-      d.ready +
-      ' / ' +
-      d.symbols +
-      ' • QUEUE ' +
-      d.warmupQueue +
-      ' • BINANCE REST ' +
-      (
-        d.binanceRestPaused
-          ? (
-              'PAUSED ' +
-              d.binanceRestPauseMinutes +
-              'm'
-            )
-          : 'READY'
-      );
-
-
-    warm.className =
-      'status ' +
-      (
-        d.ready >=
-        Math.min(
-          20,
-          d.symbols
-        )
-          ? 'green'
-          : 'yellow'
-      );
-
-
-    const livewarmup =
-      document.getElementById(
-        'livewarmup'
-      );
-
-
-    livewarmup.innerText =
-      'BINANCE LIVE READY ' +
-      d.liveReady +
-      ' / ' +
-      d.symbols +
-      ' • NEED ' +
-      d.liveRequired +
-      ' REAL BINANCE CANDLES PER SYMBOL';
-
-
-    livewarmup.className =
-      'status ' +
-      (
-        d.liveReady >=
-        Math.min(
-          20,
-          d.symbols
-        )
-          ? 'green'
-          : 'yellow'
-      );
-
-
-    const cooldown =
-      document.getElementById(
-        'cooldown'
-      );
-
-
-    cooldown.innerText =
-      d.cooldown
-        ? (
-            '🧠 COOLDOWN ' +
-            d.cooldownReason +
-            ' • ' +
-            d.cooldownMinutes +
-            ' MIN'
-          )
-        : '✅ SMART COOLDOWN READY';
-
-
-    cooldown.className =
-      'status ' +
-      (
-        d.cooldown
-          ? 'yellow'
-          : 'green'
-      );
-
-
-    const rows =
-      document.getElementById(
-        'rows'
-      );
-
-
-    rows.innerHTML =
-      '';
-
-
-    if (
-      !d.latest.length
-    ) {
-
-      rows.innerHTML =
-        '<tr>' +
-        '<td colspan="16">' +
-        'OHLC Warmup ' +
-        d.ready +
-        '/' +
-        d.symbols +
-        ' • Live Ready ' +
-        d.liveReady +
-        '/' +
-        d.symbols +
-        '</td>' +
-        '</tr>';
-
-
-      return;
-    }
-
-
-    d.latest.forEach(
-      function (
-        item
-      ) {
-
-        rows.innerHTML +=
-          '<tr>' +
-
-          '<td><b>' +
-          item.symbol +
-          '</b></td>' +
-
-          '<td>' +
-          item.grade +
-          '</td>' +
-
-          '<td>' +
-          item.edge +
-          '</td>' +
-
-          '<td>' +
-          item.fresh +
-          '</td>' +
-
-          '<td>' +
-          item.flow +
-          '</td>' +
-
-          '<td>' +
-          item.decision +
-          '</td>' +
-
-          '<td>' +
-          item.binance +
-          '/' +
-          item.required +
-          '</td>' +
-
-          '<td>' +
-          item.cmo +
-          '</td>' +
-
-          '<td>' +
-          item.atr +
-          '</td>' +
-
-          '<td>' +
-          item.volume +
-          (
-            item.volume ===
-              'N/A'
-              ? ''
-              : 'x'
-          ) +
-          '</td>' +
-
-          '<td>' +
-          item.volAccel +
-          (
-            item.volAccel ===
-              'N/A'
-              ? ''
-              : 'x'
-          ) +
-          '</td>' +
-
-          '<td>' +
-          item.buyFlow +
-          (
-            item.buyFlow ===
-              'N/A'
-              ? ''
-              : '%'
-          ) +
-          '</td>' +
-
-          '<td>' +
-          item.flowMomentum +
-          (
-            item.flowMomentum ===
-              'N/A'
-              ? ''
-              : '%'
-          ) +
-          '</td>' +
-
-          '<td>' +
-          item.accept +
-          '</td>' +
-
-          '<td>' +
-          item.regime +
-          '</td>' +
-
-          '<td>' +
-          item.warnings +
-          '</td>' +
-
-          '</tr>';
-      }
-    );
-
-
-  } catch (
-    error
-  ) {
-
-    console.error(
-      error
-    );
-  }
-}
+updateDashboard();
 
 
 setInterval(
-  load,
+  updateDashboard,
   3000
 );
-
-
-load();
 
 </script>
 
 </body>
 
 </html>`
-      );
+    );
   }
-);
-
-
-// ============================================================
-// SHUTDOWN
-// ============================================================
-
-async function shutdown(
-  signal
-) {
-
-  if (
-    shuttingDown
-  ) {
-    return;
-  }
-
-
-  shuttingDown =
-    true;
-
-
-  console.log(
-    `${signal} - saving V5.1.2`
-  );
-
-
-  try {
-
-    await saveCloudState();
-
-  } catch {}
-
-
-  try {
-
-    miniWs?.close();
-
-  } catch {}
-
-
-  try {
-
-    klineWs?.close();
-
-  } catch {}
-
-
-  try {
-
-    await mongoClient?.close();
-
-  } catch {}
-
-
-  process.exit(
-    0
-  );
-}
-
-
-process.on(
-  'SIGTERM',
-  () =>
-    shutdown(
-      'SIGTERM'
-    )
-);
-
-
-process.on(
-  'SIGINT',
-  () =>
-    shutdown(
-      'SIGINT'
-    )
-);
-
-
-process.on(
-  'unhandledRejection',
-  error =>
-    console.error(
-      'UNHANDLED REJECTION:',
-      error
-    )
-);
-
-
-process.on(
-  'uncaughtException',
-  error =>
-    console.error(
-      'UNCAUGHT EXCEPTION:',
-      error
-    )
 );
 
 
@@ -9518,144 +7169,185 @@ process.on(
 
 async function start() {
 
-  console.log(
-    `LOMY ${C.version} | PAPER ONLY`
-  );
+  try {
+
+    await connectCloud();
 
 
-  await connectCloud();
+    await loadCloudState();
 
 
-  await loadCloudState();
+    resetDailyIfNeeded();
 
 
-  /*
-   * MiniTicker first.
-   */
-  connectMiniWs();
+    connectMiniWs();
 
 
-  /*
-   * Give MiniTicker a moment before Universe fallback.
-   */
-  await sleep(
-    1500
-  );
+    /*
+     * Give MINI ticker time to populate
+     * if Binance REST is blocked.
+     */
+
+    await sleep(
+      3500
+    );
 
 
-  await refreshUniverse();
+    await refreshUniverse();
 
 
-  /*
-   * Binance live kline stream.
-   */
-  connectKlineWs();
+    connectKlineWs();
 
 
-  calculateMarketRegime();
+    buildRegime();
 
 
-  buildLatest();
+    // --------------------------------------------------------
+    // Fast control cycle
+    // --------------------------------------------------------
+
+    setInterval(
+
+      () => {
+
+        resetDailyIfNeeded();
+
+        buildRegime();
+
+        executeCandidates();
+      },
+
+      C.rankRefreshMs
+    );
 
 
-  setInterval(
-    checkDay,
-    30000
-  );
+    // --------------------------------------------------------
+    // Market regime
+    // --------------------------------------------------------
+
+    setInterval(
+
+      buildRegime,
+
+      C.regimeRefreshMs
+    );
 
 
-  setInterval(
-    () => {
+    // --------------------------------------------------------
+    // Universe refresh
+    // --------------------------------------------------------
 
-      calculateMarketRegime();
+    setInterval(
 
-      updateDrawdown();
+      refreshUniverse,
 
-    },
-    C.regimeRefreshMs
-  );
-
-
-  setInterval(
-    buildLatest,
-    C.rankRefreshMs
-  );
+      C.universeRefreshMs
+    );
 
 
-  setInterval(
-    refreshUniverse,
-    C.universeRefreshMs
-  );
+    // --------------------------------------------------------
+    // State
+    // --------------------------------------------------------
+
+    setInterval(
+
+      saveCloudState,
+
+      C.stateSaveMs
+    );
 
 
-  setInterval(
-    saveCloudState,
-    C.stateSaveMs
-  );
+    app.listen(
 
+      PORT,
 
-  setInterval(
-    () => {
+      () => {
 
-      const snapshot =
-        networkSnapshot();
+        console.log(
 
-
-      console.log(
-        `NETWORK ~${snapshot.estimatedOutboundMB} MB | REST ${snapshot.restRequestMB} | WS CTRL ${snapshot.wsControlMB} | MONGO ${snapshot.mongoWriteMB} | OHLC READY ${readyCount()} | LIVE READY ${liveReadyCount()}`
-      );
-
-
-      if (
-        snapshot.estimatedOutboundMB -
-        networkMeter.lastAlertMB >=
-        C.networkAlertMB
-      ) {
-
-        networkMeter.lastAlertMB =
-          snapshot.estimatedOutboundMB;
+          `LOMY ${C.version} | BUILD ${BUILD_HASH} | PORT ${PORT} | PAPER ONLY`
+        );
       }
-
-    },
-    C.networkReportMs
-  );
+    );
 
 
-  app.listen(
-    PORT,
-    '0.0.0.0',
-    () => {
-
-      console.log(
-        `HTTP LIVE :${PORT}`
-      );
-
-
-      tg(
-        `🤖 <b>LOMY ${C.version}</b>
+    tg(
+      `🚀 <b>LOMY ${C.version}</b>
+Build: ${BUILD_HASH}
 PAPER ONLY
-Historical OHLC fallback enabled.
-Binance Live Data Guard enabled.
-Need ${C.liveBinanceCandlesRequired} real Binance candles before trading.
-Server started.`
-      );
-    }
-  );
+Early-confirm + multi-TF + dynamic capital protection`
+    );
+
+
+  } catch (
+    error
+  ) {
+
+    console.error(
+      'START FAILED:',
+      error
+    );
+
+
+    process.exit(
+      1
+    );
+  }
 }
 
 
-start()
-  .catch(
-    error => {
+// ============================================================
+// SHUTDOWN
+// ============================================================
 
-      console.error(
-        'STARTUP FATAL:',
-        error
-      );
+process.on(
+  'SIGTERM',
+  async () => {
+
+    shuttingDown =
+      true;
 
 
-      process.exit(
-        1
-      );
-    }
-  );
+    try {
+
+      await saveCloudState();
+
+      await mongoClient
+        ?.close();
+
+    } catch {}
+
+
+    process.exit(
+      0
+    );
+  }
+);
+
+
+process.on(
+  'SIGINT',
+  async () => {
+
+    shuttingDown =
+      true;
+
+
+    try {
+
+      await saveCloudState();
+
+      await mongoClient
+        ?.close();
+
+    } catch {}
+
+
+    process.exit(
+      0
+    );
+  }
+);
+
+
+start();
