@@ -23,17 +23,11 @@ const MONGODB_DB =
 
 
 // ============================================================
-// EXCHANGES
+// BINANCE SPOT TESTNET ONLY
 // ============================================================
 
 const BINANCE_REST =
-  'https://data-api.binance.vision';
-
-const BYBIT_REST =
-  'https://api.bybit.com';
-
-const OKX_REST =
-  'https://www.okx.com';
+  'https://testnet.binance.vision';
 
 
 // ============================================================
@@ -43,17 +37,17 @@ const OKX_REST =
 const C = Object.freeze({
 
   version:
-    '6.1.1-15M-CYCLE20-MULTISOURCE',
+    '6.2.1-15M-CYCLE20-BINANCE-MICRO',
 
-  // NEW KEY = NO OLD STATE
   stateKey:
-    'main-v611',
+    'main-v621',
 
   paperTrading:
     true,
 
   startingBalance:
     10000,
+
 
   // ==========================================================
   // MARKET
@@ -74,6 +68,7 @@ const C = Object.freeze({
   maxEntriesPerScan:
     2,
 
+
   // ==========================================================
   // CYCLE
   // ==========================================================
@@ -83,6 +78,7 @@ const C = Object.freeze({
 
   maxPositions:
     6,
+
 
   // ==========================================================
   // TIMEFRAMES
@@ -99,6 +95,7 @@ const C = Object.freeze({
 
   klineLimit1h:
     80,
+
 
   // ==========================================================
   // ULTRA FAST CORE
@@ -125,6 +122,7 @@ const C = Object.freeze({
   minBodyRatio:
     0.50,
 
+
   // ==========================================================
   // ENTRY
   // ==========================================================
@@ -149,6 +147,7 @@ const C = Object.freeze({
 
   maxEntryDriftPct:
     0.18,
+
 
   // ==========================================================
   // RISK
@@ -178,6 +177,7 @@ const C = Object.freeze({
   structureBufferAtr:
     0.20,
 
+
   // ==========================================================
   // PROFIT MANAGEMENT
   // ==========================================================
@@ -200,6 +200,53 @@ const C = Object.freeze({
   trailingGapMaxPct:
     0.55,
 
+
+  // ==========================================================
+  // STATE-FIRST MICROSTRUCTURE GATE
+  // Does NOT create entry signals.
+  // It only confirms/rejects execution.
+  // ==========================================================
+
+  depthLimit:
+    100,
+
+  aggTradeLimit:
+    150,
+
+  microSecondSnapshotDelayMs:
+    650,
+
+  microTopLevels:
+    20,
+
+  microFlowWindowMs:
+    30 * 1000,
+
+  microMinRecentTrades:
+    8,
+
+  stressedSpreadBps:
+    18,
+
+  stressedMinSideDepthUSDT:
+    1200,
+
+  severeSellBookImbalance:
+    -0.35,
+
+  severeMicropriceEdgeBps:
+    -6,
+
+  sarReduceFromBps:
+    12,
+
+  sarRejectBps:
+    25,
+
+  sarMinSizeScale:
+    0.40,
+
+
   // ==========================================================
   // ACCOUNT GUARDS
   // ==========================================================
@@ -213,8 +260,9 @@ const C = Object.freeze({
   symbolLossCooldownMs:
     45 * 60 * 1000,
 
+
   // ==========================================================
-  // EXCHANGE FAILOVER
+  // BINANCE HEALTH
   // ==========================================================
 
   binance429PauseMs:
@@ -223,11 +271,9 @@ const C = Object.freeze({
   binance418PauseMs:
     30 * 60 * 1000,
 
-  exchangeFailurePauseMs:
-    60 * 1000,
-
   requestTimeoutMs:
     12000,
+
 
   // ==========================================================
   // RUNTIME
@@ -245,20 +291,21 @@ const C = Object.freeze({
 
 
 // ============================================================
-// STABLECOIN / FIAT PAIRS TO IGNORE
+// IGNORE
 // ============================================================
 
-const IGNORED = new Set([
+const IGNORED =
+  new Set([
 
-  'USDCUSDT',
-  'FDUSDUSDT',
-  'TUSDUSDT',
-  'USDPUSDT',
-  'BUSDUSDT',
-  'DAIUSDT',
-  'USDEUSDT',
-  'USD1USDT'
-]);
+    'USDCUSDT',
+    'FDUSDUSDT',
+    'TUSDUSDT',
+    'USDPUSDT',
+    'BUSDUSDT',
+    'DAIUSDT',
+    'USDEUSDT',
+    'USD1USDT'
+  ]);
 
 
 // ============================================================
@@ -281,15 +328,15 @@ function n(
   fallback = 0
 ) {
 
-  const number =
+  const x =
     Number(
       value
     );
 
   return Number.isFinite(
-    number
+    x
   )
-    ? number
+    ? x
     : fallback;
 }
 
@@ -348,7 +395,7 @@ function roundTripCostPct() {
 
 
 // ============================================================
-// ACCOUNT STATE
+// ACCOUNT
 // ============================================================
 
 let cash =
@@ -417,7 +464,7 @@ let drawdownPause =
 
 
 // ============================================================
-// CYCLE STATE
+// CYCLE
 // ============================================================
 
 let cycle = {
@@ -462,47 +509,20 @@ let universeUpdatedAt =
 let scanning =
   false;
 
+let positionManagerRunning =
+  false;
+
 let shuttingDown =
   false;
 
 
 // ============================================================
-// EXCHANGE HEALTH
+// BINANCE HEALTH
 // ============================================================
 
 const exchangeHealth = {
 
   BINANCE: {
-
-    blockedUntil:
-      0,
-
-    failures:
-      0,
-
-    lastError:
-      null,
-
-    lastSuccess:
-      0
-  },
-
-  BYBIT: {
-
-    blockedUntil:
-      0,
-
-    failures:
-      0,
-
-    lastError:
-      null,
-
-    lastSuccess:
-      0
-  },
-
-  OKX: {
 
     blockedUntil:
       0,
@@ -544,6 +564,7 @@ function equity(
   let value =
     cash;
 
+
   for (
     const position
     of Object.values(
@@ -562,10 +583,12 @@ function equity(
         position.entryPrice
       );
 
+
     value +=
       position.qty *
       price;
   }
+
 
   return value;
 }
@@ -582,6 +605,7 @@ function resetDailyIfNeeded(
   const today =
     utcDay();
 
+
   if (
     today ===
     currentDay
@@ -590,16 +614,20 @@ function resetDailyIfNeeded(
     return;
   }
 
+
   currentDay =
     today;
+
 
   dailyStartEquity =
     equity(
       prices
     );
 
+
   dailyPnL =
     0;
+
 
   dailyPause =
     false;
@@ -615,6 +643,7 @@ function updateAccountGuards(
       prices
     );
 
+
   peakEquity =
     Math.max(
       peakEquity,
@@ -623,8 +652,10 @@ function updateAccountGuards(
 
 
   const ddPct =
+
     peakEquity >
     0
+
       ? (
           (
             peakEquity -
@@ -633,6 +664,7 @@ function updateAccountGuards(
           peakEquity
         ) *
         100
+
       : 0;
 
 
@@ -644,11 +676,16 @@ function updateAccountGuards(
 
 
   if (
+
     dailyStartEquity >
-      0 &&
+      0
+
+    &&
+
     -dailyPnL /
       dailyStartEquity >=
       C.dailyLossLimitPct
+
   ) {
 
     dailyPause =
@@ -657,9 +694,11 @@ function updateAccountGuards(
 
 
   if (
+
     ddPct /
       100 >=
       C.maxAccountDrawdownPct
+
   ) {
 
     drawdownPause =
@@ -671,9 +710,13 @@ function updateAccountGuards(
 function entryBlocked() {
 
   return (
+
     manualPause ||
+
     dailyPause ||
+
     drawdownPause ||
+
     cycle.state !==
       'SCANNING'
   );
@@ -690,11 +733,16 @@ function ema(
 ) {
 
   if (
+
     !Array.isArray(
       values
-    ) ||
+    )
+
+    ||
+
     values.length <
       period
+
   ) {
 
     return null;
@@ -702,6 +750,7 @@ function ema(
 
 
   let result =
+
     values
       .slice(
         0,
@@ -720,6 +769,7 @@ function ema(
 
 
   const multiplier =
+
     2 /
     (
       period +
@@ -728,19 +778,26 @@ function ema(
 
 
   for (
+
     let i =
       period;
+
     i <
-    values.length;
+      values.length;
+
     i++
+
   ) {
 
     result =
+
       (
         values[i] -
         result
       ) *
+
       multiplier +
+
       result;
   }
 
@@ -755,12 +812,17 @@ function cmo(
 ) {
 
   if (
+
     !Array.isArray(
       closes
-    ) ||
+    )
+
+    ||
+
     closes.length <
       period +
       1
+
   ) {
 
     return null;
@@ -775,16 +837,22 @@ function cmo(
 
 
   for (
+
     let i =
       closes.length -
       period;
+
     i <
-    closes.length;
+      closes.length;
+
     i++
+
   ) {
 
     const difference =
+
       closes[i] -
+
       closes[
         i - 1
       ];
@@ -823,11 +891,14 @@ function cmo(
 
 
   return (
+
     (
       up -
       down
     ) /
+
     total
+
   ) *
     100;
 }
@@ -839,12 +910,17 @@ function atr(
 ) {
 
   if (
+
     !Array.isArray(
       candles
-    ) ||
+    )
+
+    ||
+
     candles.length <
       period +
       1
+
   ) {
 
     return null;
@@ -856,16 +932,21 @@ function atr(
 
 
   for (
+
     let i =
       candles.length -
       period;
+
     i <
-    candles.length;
+      candles.length;
+
     i++
+
   ) {
 
     const current =
       candles[i];
+
 
     const previous =
       candles[
@@ -895,6 +976,7 @@ function atr(
 
 
   return (
+
     values.reduce(
       (
         sum,
@@ -904,6 +986,7 @@ function atr(
         value,
       0
     ) /
+
     values.length
   );
 }
@@ -914,6 +997,7 @@ function candleBodyRatio(
 ) {
 
   const range =
+
     candle.high -
     candle.low;
 
@@ -928,10 +1012,14 @@ function candleBodyRatio(
 
 
   return (
+
     Math.abs(
+
       candle.close -
       candle.open
+
     ) /
+
     range
   );
 }
@@ -943,6 +1031,7 @@ function smaVolume(
 ) {
 
   const base =
+
     candles.slice(
       0,
       -1
@@ -959,12 +1048,14 @@ function smaVolume(
 
 
   const rows =
+
     base.slice(
       -period
     );
 
 
   return (
+
     rows.reduce(
       (
         sum,
@@ -976,121 +1067,180 @@ function smaVolume(
         ),
       0
     ) /
+
     rows.length
   );
 }
 
 
 // ============================================================
-// EXCHANGE HEALTH HELPERS
+// BINANCE REST
 // ============================================================
 
-function exchangeAvailable(
-  name
-) {
+function exchangeAvailable() {
 
   return (
+
     Date.now() >=
-    exchangeHealth[
-      name
-    ].blockedUntil
+
+    exchangeHealth
+      .BINANCE
+      .blockedUntil
   );
 }
 
 
-function markExchangeSuccess(
-  name
-) {
+function markExchangeSuccess() {
 
-  const health =
-    exchangeHealth[
-      name
-    ];
+  exchangeHealth
+    .BINANCE
+    .failures =
+      0;
 
-  health.failures =
-    0;
 
-  health.lastError =
-    null;
+  exchangeHealth
+    .BINANCE
+    .lastError =
+      null;
 
-  health.lastSuccess =
-    Date.now();
+
+  exchangeHealth
+    .BINANCE
+    .lastSuccess =
+      Date.now();
 }
 
 
-function markExchangeFailure(
-  name,
+function markBinanceFailure(
   error
 ) {
 
   const health =
-    exchangeHealth[
-      name
-    ];
+    exchangeHealth.BINANCE;
 
 
   health.failures++;
 
 
   health.lastError =
+
     error.message ||
+
     String(
       error
     );
-
-
-  let pause =
-    C.exchangeFailurePauseMs;
 
 
   const status =
     error.response?.status;
 
 
+  const retryAfter =
+
+    Number(
+      error.response
+        ?.headers
+        ?.['retry-after']
+    );
+
+
+  let pause =
+    0;
+
+
   if (
-    name ===
-      'BINANCE' &&
     status ===
-      418
+    418
   ) {
 
     pause =
-      C.binance418PauseMs;
+
+      Number.isFinite(
+        retryAfter
+      )
+
+      &&
+
+      retryAfter >
+      0
+
+        ? retryAfter *
+          1000
+
+        : C.binance418PauseMs;
 
   } else if (
-    name ===
-      'BINANCE' &&
     status ===
-      429
+    429
   ) {
 
     pause =
-      C.binance429PauseMs;
+
+      Number.isFinite(
+        retryAfter
+      )
+
+      &&
+
+      retryAfter >
+      0
+
+        ? retryAfter *
+          1000
+
+        : C.binance429PauseMs;
+
+  } else if (
+
+    !status ||
+
+    status >=
+    500
+
+  ) {
+
+    pause =
+      20 *
+      1000;
   }
 
 
-  health.blockedUntil =
-    Date.now() +
-    pause;
+  /*
+    IMPORTANT:
+    Ordinary 4xx symbol/request errors
+    do NOT globally disable Binance.
+  */
+
+  if (
+    pause >
+    0
+  ) {
+
+    health.blockedUntil =
+
+      Math.max(
+
+        health.blockedUntil,
+
+        Date.now() +
+        pause
+      );
 
 
-  console.warn(
+    console.warn(
 
-    `${name} paused ` +
+      `BINANCE paused ` +
 
-    `${Math.ceil(pause / 60000)}m | ` +
+      `${Math.ceil(
+        pause /
+        1000
+      )}s | ` +
 
-    `${
-      status ||
-      error.message
-    }`
-  );
+      `${status || error.message}`
+    );
+  }
 }
 
-
-// ============================================================
-// BINANCE
-// ============================================================
 
 async function binanceGet(
   path,
@@ -1098,9 +1248,7 @@ async function binanceGet(
 ) {
 
   if (
-    !exchangeAvailable(
-      'BINANCE'
-    )
+    !exchangeAvailable()
   ) {
 
     throw new Error(
@@ -1112,11 +1260,13 @@ async function binanceGet(
   try {
 
     const response =
+
       await axios.get(
 
         `${BINANCE_REST}${path}`,
 
         {
+
           params,
 
           timeout:
@@ -1125,9 +1275,7 @@ async function binanceGet(
       );
 
 
-    markExchangeSuccess(
-      'BINANCE'
-    );
+    markExchangeSuccess();
 
 
     return response.data;
@@ -1136,162 +1284,10 @@ async function binanceGet(
     error
   ) {
 
-    markExchangeFailure(
-      'BINANCE',
+    markBinanceFailure(
       error
     );
 
-    throw error;
-  }
-}
-
-
-// ============================================================
-// BYBIT
-// ============================================================
-
-async function bybitGet(
-  path,
-  params = {}
-) {
-
-  if (
-    !exchangeAvailable(
-      'BYBIT'
-    )
-  ) {
-
-    throw new Error(
-      'BYBIT_TEMP_BLOCKED'
-    );
-  }
-
-
-  try {
-
-    const response =
-      await axios.get(
-
-        `${BYBIT_REST}${path}`,
-
-        {
-          params,
-
-          timeout:
-            C.requestTimeoutMs
-        }
-      );
-
-
-    if (
-      n(
-        response.data?.retCode
-      ) !==
-      0
-    ) {
-
-      throw new Error(
-
-        `BYBIT_${
-          response.data?.retCode
-        }_${
-          response.data?.retMsg
-        }`
-      );
-    }
-
-
-    markExchangeSuccess(
-      'BYBIT'
-    );
-
-
-    return response.data;
-
-  } catch (
-    error
-  ) {
-
-    markExchangeFailure(
-      'BYBIT',
-      error
-    );
-
-    throw error;
-  }
-}
-
-
-// ============================================================
-// OKX
-// ============================================================
-
-async function okxGet(
-  path,
-  params = {}
-) {
-
-  if (
-    !exchangeAvailable(
-      'OKX'
-    )
-  ) {
-
-    throw new Error(
-      'OKX_TEMP_BLOCKED'
-    );
-  }
-
-
-  try {
-
-    const response =
-      await axios.get(
-
-        `${OKX_REST}${path}`,
-
-        {
-          params,
-
-          timeout:
-            C.requestTimeoutMs
-        }
-      );
-
-
-    if (
-      String(
-        response.data?.code
-      ) !==
-      '0'
-    ) {
-
-      throw new Error(
-
-        `OKX_${
-          response.data?.code
-        }_${
-          response.data?.msg
-        }`
-      );
-    }
-
-
-    markExchangeSuccess(
-      'OKX'
-    );
-
-
-    return response.data;
-
-  } catch (
-    error
-  ) {
-
-    markExchangeFailure(
-      'OKX',
-      error
-    );
 
     throw error;
   }
@@ -1309,13 +1305,17 @@ async function fetchBinanceKlines(
 ) {
 
   const data =
+
     await binanceGet(
 
       '/api/v3/klines',
 
       {
+
         symbol,
+
         interval,
+
         limit
       }
     );
@@ -1370,9 +1370,10 @@ async function fetchBinanceKlines(
           ),
 
         source:
-          'BINANCE'
+          'BINANCE_TESTNET'
       })
     )
+
     .filter(
       candle =>
         candle.closeTime <
@@ -1380,329 +1381,6 @@ async function fetchBinanceKlines(
     );
 }
 
-
-// ============================================================
-// BYBIT KLINES
-// ============================================================
-
-function bybitInterval(
-  interval
-) {
-
-  if (
-    interval ===
-    '15m'
-  ) {
-
-    return '15';
-  }
-
-
-  if (
-    interval ===
-    '1h'
-  ) {
-
-    return '60';
-  }
-
-
-  throw new Error(
-    `UNSUPPORTED_BYBIT_INTERVAL_${interval}`
-  );
-}
-
-
-async function fetchBybitKlines(
-  symbol,
-  interval,
-  limit
-) {
-
-  const data =
-    await bybitGet(
-
-      '/v5/market/kline',
-
-      {
-        category:
-          'spot',
-
-        symbol,
-
-        interval:
-          bybitInterval(
-            interval
-          ),
-
-        limit
-      }
-    );
-
-
-  const rows =
-    data.result?.list ||
-    [];
-
-
-  const intervalMs =
-    interval ===
-      '15m'
-      ? 15 * 60 * 1000
-      : 60 * 60 * 1000;
-
-
-  const now =
-    Date.now();
-
-
-  return rows
-    .map(
-      row => {
-
-        const openTime =
-          n(
-            row[0]
-          );
-
-
-        return {
-
-          openTime,
-
-          open:
-            n(
-              row[1]
-            ),
-
-          high:
-            n(
-              row[2]
-            ),
-
-          low:
-            n(
-              row[3]
-            ),
-
-          close:
-            n(
-              row[4]
-            ),
-
-          volume:
-            n(
-              row[5]
-            ),
-
-          quoteVolume:
-            n(
-              row[6]
-            ),
-
-          closeTime:
-            openTime +
-            intervalMs -
-            1,
-
-          source:
-            'BYBIT'
-        };
-      }
-    )
-    .filter(
-      candle =>
-        candle.closeTime <
-        now
-    )
-    .sort(
-      (
-        a,
-        b
-      ) =>
-        a.openTime -
-        b.openTime
-    );
-}
-
-
-// ============================================================
-// OKX KLINES
-// ============================================================
-
-function okxSymbol(
-  symbol
-) {
-
-  if (
-    symbol.endsWith(
-      'USDT'
-    )
-  ) {
-
-    return (
-      symbol.slice(
-        0,
-        -4
-      ) +
-      '-USDT'
-    );
-  }
-
-
-  return symbol;
-}
-
-
-function okxInterval(
-  interval
-) {
-
-  if (
-    interval ===
-    '15m'
-  ) {
-
-    return '15m';
-  }
-
-
-  if (
-    interval ===
-    '1h'
-  ) {
-
-    return '1H';
-  }
-
-
-  throw new Error(
-    `UNSUPPORTED_OKX_INTERVAL_${interval}`
-  );
-}
-
-
-async function fetchOkxKlines(
-  symbol,
-  interval,
-  limit
-) {
-
-  const data =
-    await okxGet(
-
-      '/api/v5/market/candles',
-
-      {
-        instId:
-          okxSymbol(
-            symbol
-          ),
-
-        bar:
-          okxInterval(
-            interval
-          ),
-
-        limit:
-          Math.min(
-            limit,
-            100
-          )
-      }
-    );
-
-
-  const rows =
-    data.data ||
-    [];
-
-
-  const intervalMs =
-    interval ===
-      '15m'
-      ? 15 * 60 * 1000
-      : 60 * 60 * 1000;
-
-
-  const now =
-    Date.now();
-
-
-  return rows
-    .map(
-      row => {
-
-        const openTime =
-          n(
-            row[0]
-          );
-
-
-        return {
-
-          openTime,
-
-          open:
-            n(
-              row[1]
-            ),
-
-          high:
-            n(
-              row[2]
-            ),
-
-          low:
-            n(
-              row[3]
-            ),
-
-          close:
-            n(
-              row[4]
-            ),
-
-          volume:
-            n(
-              row[5]
-            ),
-
-          quoteVolume:
-            n(
-              row[7] ||
-              row[6]
-            ),
-
-          closeTime:
-            openTime +
-            intervalMs -
-            1,
-
-          source:
-            'OKX'
-        };
-      }
-    )
-    .filter(
-      candle =>
-        candle.closeTime <
-        now
-    )
-    .sort(
-      (
-        a,
-        b
-      ) =>
-        a.openTime -
-        b.openTime
-    );
-}
-
-
-// ============================================================
-// MULTI SOURCE KLINES
-// ============================================================
 
 async function fetchClosedKlines(
   symbol,
@@ -1710,184 +1388,71 @@ async function fetchClosedKlines(
   limit
 ) {
 
-  const errors =
-    [];
+  const rows =
+
+    await fetchBinanceKlines(
+
+      symbol,
+
+      interval,
+
+      limit
+    );
 
 
-  // 1. BINANCE
   if (
-    exchangeAvailable(
-      'BINANCE'
-    )
+    rows.length <
+    30
   ) {
 
-    try {
+    throw new Error(
 
-      const rows =
-        await fetchBinanceKlines(
-
-          symbol,
-
-          interval,
-
-          limit
-        );
-
-
-      if (
-        rows.length >=
-        30
-      ) {
-
-        return {
-
-          source:
-            'BINANCE',
-
-          candles:
-            rows
-        };
-      }
-
-    } catch (
-      error
-    ) {
-
-      errors.push(
-        `BINANCE=${error.message}`
-      );
-    }
+      `BINANCE_KLINES_NOT_READY ${symbol} ${interval}`
+    );
   }
 
 
-  // 2. BYBIT
-  if (
-    exchangeAvailable(
-      'BYBIT'
-    )
-  ) {
+  return {
 
-    try {
+    source:
+      'BINANCE_TESTNET',
 
-      const rows =
-        await fetchBybitKlines(
-
-          symbol,
-
-          interval,
-
-          limit
-        );
-
-
-      if (
-        rows.length >=
-        30
-      ) {
-
-        return {
-
-          source:
-            'BYBIT',
-
-          candles:
-            rows
-        };
-      }
-
-    } catch (
-      error
-    ) {
-
-      errors.push(
-        `BYBIT=${error.message}`
-      );
-    }
-  }
-
-
-  // 3. OKX
-  if (
-    exchangeAvailable(
-      'OKX'
-    )
-  ) {
-
-    try {
-
-      const rows =
-        await fetchOkxKlines(
-
-          symbol,
-
-          interval,
-
-          limit
-        );
-
-
-      if (
-        rows.length >=
-        30
-      ) {
-
-        return {
-
-          source:
-            'OKX',
-
-          candles:
-            rows
-        };
-      }
-
-    } catch (
-      error
-    ) {
-
-      errors.push(
-        `OKX=${error.message}`
-      );
-    }
-  }
-
-
-  throw new Error(
-
-    `NO_KLINE_SOURCE ${symbol} ${interval} | ` +
-
-    errors.join(
-      ' | '
-    )
-  );
+    candles:
+      rows
+  };
 }
 
 
 // ============================================================
-// UNIVERSE - BINANCE
+// UNIVERSE
 // ============================================================
 
 async function universeFromBinance() {
 
   const rows =
+
     await binanceGet(
       '/api/v3/ticker/24hr'
     );
 
 
   return rows
+
     .filter(
       row =>
-        row.symbol.endsWith(
-          'USDT'
-        )
+        row.symbol
+          ?.endsWith(
+            'USDT'
+          )
     )
+
     .filter(
       row =>
         !IGNORED.has(
           row.symbol
         )
     )
+
     .map(
       row => ({
 
@@ -1903,213 +1468,43 @@ async function universeFromBinance() {
 }
 
 
-// ============================================================
-// UNIVERSE - BYBIT
-// ============================================================
-
-async function universeFromBybit() {
-
-  const data =
-    await bybitGet(
-
-      '/v5/market/tickers',
-
-      {
-        category:
-          'spot'
-      }
-    );
-
-
-  return (
-    data.result?.list ||
-    []
-  )
-    .filter(
-      row =>
-        row.symbol?.endsWith(
-          'USDT'
-        )
-    )
-    .filter(
-      row =>
-        !IGNORED.has(
-          row.symbol
-        )
-    )
-    .map(
-      row => ({
-
-        symbol:
-          row.symbol,
-
-        quoteVolume:
-          n(
-            row.turnover24h
-          )
-      })
-    );
-}
-
-
-// ============================================================
-// UNIVERSE - OKX
-// ============================================================
-
-async function universeFromOkx() {
-
-  const data =
-    await okxGet(
-
-      '/api/v5/market/tickers',
-
-      {
-        instType:
-          'SPOT'
-      }
-    );
-
-
-  return (
-    data.data ||
-    []
-  )
-    .filter(
-      row =>
-        row.instId?.endsWith(
-          '-USDT'
-        )
-    )
-    .map(
-      row => {
-
-        const symbol =
-          row.instId.replace(
-            '-',
-            ''
-          );
-
-
-        return {
-
-          symbol,
-
-          quoteVolume:
-            n(
-              row.volCcy24h
-            )
-        };
-      }
-    )
-    .filter(
-      row =>
-        !IGNORED.has(
-          row.symbol
-        )
-    );
-}
-
-
-// ============================================================
-// MULTI SOURCE UNIVERSE
-// ============================================================
-
 async function refreshUniverse(
   force = false
 ) {
 
   if (
-    !force &&
-    universe.length &&
+
+    !force
+
+    &&
+
+    universe.length
+
+    &&
+
     Date.now() -
       universeUpdatedAt <
       C.universeRefreshMs
+
   ) {
 
     return universe;
   }
 
 
-  let rows =
-    null;
-
-  let source =
-    null;
-
-
-  if (
-    exchangeAvailable(
-      'BINANCE'
-    )
-  ) {
-
-    try {
-
-      rows =
-        await universeFromBinance();
-
-      source =
-        'BINANCE';
-
-    } catch {}
-  }
-
-
-  if (
-    !rows &&
-    exchangeAvailable(
-      'BYBIT'
-    )
-  ) {
-
-    try {
-
-      rows =
-        await universeFromBybit();
-
-      source =
-        'BYBIT';
-
-    } catch {}
-  }
-
-
-  if (
-    !rows &&
-    exchangeAvailable(
-      'OKX'
-    )
-  ) {
-
-    try {
-
-      rows =
-        await universeFromOkx();
-
-      source =
-        'OKX';
-
-    } catch {}
-  }
-
-
-  if (
-    !rows
-  ) {
-
-    throw new Error(
-      'ALL_UNIVERSE_SOURCES_FAILED'
-    );
-  }
+  const rows =
+    await universeFromBinance();
 
 
   universe =
+
     rows
       .filter(
         row =>
           row.quoteVolume >=
           C.minQuoteVolume
       )
+
       .sort(
         (
           a,
@@ -2118,10 +1513,12 @@ async function refreshUniverse(
           b.quoteVolume -
           a.quoteVolume
       )
+
       .slice(
         0,
         C.universeSize
       )
+
       .map(
         row =>
           row.symbol
@@ -2133,12 +1530,12 @@ async function refreshUniverse(
 
 
   cycle.lastUniverseSource =
-    source;
+    'BINANCE_TESTNET';
 
 
   console.log(
 
-    `UNIVERSE ${source} | ` +
+    `UNIVERSE BINANCE_TESTNET | ` +
 
     `${universe.length} symbols`
   );
@@ -2149,7 +1546,7 @@ async function refreshUniverse(
 
 
 // ============================================================
-// PRICE - BINANCE
+// PRICE
 // ============================================================
 
 async function priceFromBinance(
@@ -2157,6 +1554,7 @@ async function priceFromBinance(
 ) {
 
   const row =
+
     await binanceGet(
 
       '/api/v3/ticker/price',
@@ -2187,209 +1585,1256 @@ async function priceFromBinance(
 }
 
 
-// ============================================================
-// PRICE - BYBIT
-// ============================================================
-
-async function priceFromBybit(
-  symbol
-) {
-
-  const data =
-    await bybitGet(
-
-      '/v5/market/tickers',
-
-      {
-        category:
-          'spot',
-
-        symbol
-      }
-    );
-
-
-  const price =
-    n(
-      data.result?.list?.[
-        0
-      ]?.lastPrice
-    );
-
-
-  if (
-    !price
-  ) {
-
-    throw new Error(
-      'BYBIT_INVALID_PRICE'
-    );
-  }
-
-
-  return price;
-}
-
-
-// ============================================================
-// PRICE - OKX
-// ============================================================
-
-async function priceFromOkx(
-  symbol
-) {
-
-  const data =
-    await okxGet(
-
-      '/api/v5/market/ticker',
-
-      {
-        instId:
-          okxSymbol(
-            symbol
-          )
-      }
-    );
-
-
-  const price =
-    n(
-      data.data?.[
-        0
-      ]?.last
-    );
-
-
-  if (
-    !price
-  ) {
-
-    throw new Error(
-      'OKX_INVALID_PRICE'
-    );
-  }
-
-
-  return price;
-}
-
-
-// ============================================================
-// MULTI SOURCE PRICE
-// ============================================================
-
 async function getCurrentPrice(
   symbol
 ) {
 
-  const errors =
-    [];
+  return {
+
+    price:
+      await priceFromBinance(
+        symbol
+      ),
+
+    source:
+      'BINANCE_TESTNET'
+  };
+}
+
+
+// ============================================================
+// MICROSTRUCTURE
+// ============================================================
+
+async function fetchDepth(
+  symbol
+) {
+
+  const data =
+
+    await binanceGet(
+
+      '/api/v3/depth',
+
+      {
+
+        symbol,
+
+        limit:
+          C.depthLimit
+      }
+    );
+
+
+  return {
+
+    bids:
+
+      (
+        data.bids ||
+        []
+      )
+
+        .map(
+          row => [
+
+            n(
+              row[0]
+            ),
+
+            n(
+              row[1]
+            )
+          ]
+        )
+
+        .filter(
+          row =>
+            row[0] >
+              0 &&
+            row[1] >
+              0
+        ),
+
+
+    asks:
+
+      (
+        data.asks ||
+        []
+      )
+
+        .map(
+          row => [
+
+            n(
+              row[0]
+            ),
+
+            n(
+              row[1]
+            )
+          ]
+        )
+
+        .filter(
+          row =>
+            row[0] >
+              0 &&
+            row[1] >
+              0
+        ),
+
+
+    lastUpdateId:
+      n(
+        data.lastUpdateId
+      )
+  };
+}
+
+
+async function fetchAggTrades(
+  symbol
+) {
+
+  const rows =
+
+    await binanceGet(
+
+      '/api/v3/aggTrades',
+
+      {
+
+        symbol,
+
+        limit:
+          C.aggTradeLimit
+      }
+    );
+
+
+  const cutoff =
+
+    Date.now() -
+
+    C.microFlowWindowMs;
+
+
+  return (
+
+    rows ||
+    []
+
+  )
+
+    .map(
+      row => ({
+
+        price:
+          n(
+            row.p
+          ),
+
+        qty:
+          n(
+            row.q
+          ),
+
+        time:
+          n(
+            row.T
+          ),
+
+        buyerMaker:
+          !!row.m
+      })
+    )
+
+    .filter(
+      row =>
+
+        row.price >
+          0
+
+        &&
+
+        row.qty >
+          0
+
+        &&
+
+        row.time >=
+          cutoff
+    );
+}
+
+
+function depthMetrics(
+  book
+) {
+
+  const bids =
+
+    book.bids.slice(
+      0,
+      C.microTopLevels
+    );
+
+
+  const asks =
+
+    book.asks.slice(
+      0,
+      C.microTopLevels
+    );
 
 
   if (
-    exchangeAvailable(
-      'BINANCE'
-    )
+
+    !bids.length ||
+
+    !asks.length
+
   ) {
 
-    try {
+    return {
 
-      return {
+      ok:
+        false,
 
-        price:
-          await priceFromBinance(
-            symbol
-          ),
+      reason:
+        'EMPTY_BOOK'
+    };
+  }
 
-        source:
-          'BINANCE'
-      };
 
-    } catch (
-      error
+  const bestBid =
+    bids[0][0];
+
+
+  const bestAsk =
+    asks[0][0];
+
+
+  const mid =
+
+    (
+      bestBid +
+      bestAsk
+    ) /
+    2;
+
+
+  const spreadBps =
+
+    mid >
+    0
+
+      ? (
+          (
+            bestAsk -
+            bestBid
+          ) /
+          mid
+        ) *
+        10000
+
+      : 99999;
+
+
+  const bidDepthUSDT =
+
+    bids.reduce(
+      (
+        sum,
+        [
+          price,
+          qty
+        ],
+        index
+      ) =>
+
+        sum +
+
+        price *
+        qty *
+
+        (
+          1 /
+          (
+            1 +
+            index *
+            0.12
+          )
+        ),
+
+      0
+    );
+
+
+  const askDepthUSDT =
+
+    asks.reduce(
+      (
+        sum,
+        [
+          price,
+          qty
+        ],
+        index
+      ) =>
+
+        sum +
+
+        price *
+        qty *
+
+        (
+          1 /
+          (
+            1 +
+            index *
+            0.12
+          )
+        ),
+
+      0
+    );
+
+
+  const totalDepth =
+
+    bidDepthUSDT +
+    askDepthUSDT;
+
+
+  const imbalance =
+
+    totalDepth >
+    0
+
+      ? (
+          bidDepthUSDT -
+          askDepthUSDT
+        ) /
+        totalDepth
+
+      : 0;
+
+
+  const bestBidQty =
+    bids[0][1];
+
+
+  const bestAskQty =
+    asks[0][1];
+
+
+  const micropriceDen =
+
+    bestBidQty +
+    bestAskQty;
+
+
+  const microprice =
+
+    micropriceDen >
+    0
+
+      ? (
+
+          bestAsk *
+          bestBidQty
+
+          +
+
+          bestBid *
+          bestAskQty
+
+        ) /
+        micropriceDen
+
+      : mid;
+
+
+  const micropriceEdgeBps =
+
+    mid >
+    0
+
+      ? (
+          (
+            microprice -
+            mid
+          ) /
+          mid
+        ) *
+        10000
+
+      : 0;
+
+
+  const minSideDepth =
+
+    Math.min(
+
+      bidDepthUSDT,
+
+      askDepthUSDT
+    );
+
+
+  let state =
+    'NORMAL';
+
+
+  if (
+
+    spreadBps >=
+      C.stressedSpreadBps
+
+    ||
+
+    minSideDepth <
+      C.stressedMinSideDepthUSDT
+
+  ) {
+
+    state =
+      'STRESSED';
+
+  } else if (
+
+    spreadBps <=
+      5
+
+    &&
+
+    minSideDepth >=
+      C.stressedMinSideDepthUSDT *
+      5
+
+  ) {
+
+    state =
+      'CALM';
+  }
+
+
+  return {
+
+    ok:
+      true,
+
+    state,
+
+    bestBid,
+
+    bestAsk,
+
+    mid,
+
+    spreadBps,
+
+    bidDepthUSDT,
+
+    askDepthUSDT,
+
+    imbalance,
+
+    microprice,
+
+    micropriceEdgeBps
+  };
+}
+
+
+function depthDynamics(
+  first,
+  second
+) {
+
+  const firstMetrics =
+    depthMetrics(
+      first
+    );
+
+
+  const secondMetrics =
+    depthMetrics(
+      second
+    );
+
+
+  if (
+
+    !firstMetrics.ok ||
+
+    !secondMetrics.ok
+
+  ) {
+
+    return {
+
+      bidRefillPct:
+        0,
+
+      askPullPct:
+        0
+    };
+  }
+
+
+  const bidRefillPct =
+
+    firstMetrics.bidDepthUSDT >
+    0
+
+      ? (
+          (
+            secondMetrics.bidDepthUSDT -
+            firstMetrics.bidDepthUSDT
+          ) /
+          firstMetrics.bidDepthUSDT
+        ) *
+        100
+
+      : 0;
+
+
+  const askPullPct =
+
+    firstMetrics.askDepthUSDT >
+    0
+
+      ? (
+          (
+            firstMetrics.askDepthUSDT -
+            secondMetrics.askDepthUSDT
+          ) /
+          firstMetrics.askDepthUSDT
+        ) *
+        100
+
+      : 0;
+
+
+  return {
+
+    bidRefillPct,
+
+    askPullPct
+  };
+}
+
+
+function aggressiveFlow(
+  trades
+) {
+
+  if (
+
+    !Array.isArray(
+      trades
+    )
+
+    ||
+
+    trades.length <
+      C.microMinRecentTrades
+
+  ) {
+
+    return {
+
+      sufficient:
+        false,
+
+      tradeCount:
+        Array.isArray(
+          trades
+        )
+          ? trades.length
+          : 0,
+
+      buyUSDT:
+        0,
+
+      sellUSDT:
+        0,
+
+      imbalance:
+        0
+    };
+  }
+
+
+  let buyUSDT =
+    0;
+
+
+  let sellUSDT =
+    0;
+
+
+  for (
+    const trade
+    of trades
+  ) {
+
+    const value =
+
+      trade.price *
+      trade.qty;
+
+
+    /*
+      Binance aggTrade:
+      m=true => buyer is maker,
+      therefore seller was aggressive.
+    */
+
+    if (
+      trade.buyerMaker
     ) {
 
-      errors.push(
-        `BINANCE=${error.message}`
+      sellUSDT +=
+        value;
+
+    } else {
+
+      buyUSDT +=
+        value;
+    }
+  }
+
+
+  const total =
+
+    buyUSDT +
+    sellUSDT;
+
+
+  return {
+
+    sufficient:
+      true,
+
+    tradeCount:
+      trades.length,
+
+    buyUSDT,
+
+    sellUSDT,
+
+    imbalance:
+
+      total >
+      0
+
+        ? (
+            buyUSDT -
+            sellUSDT
+          ) /
+          total
+
+        : 0
+  };
+}
+
+
+function slippageAtRisk(
+  asks,
+  quoteAmount
+) {
+
+  if (
+
+    !Array.isArray(
+      asks
+    )
+
+    ||
+
+    !asks.length
+
+    ||
+
+    quoteAmount <=
+    0
+
+  ) {
+
+    return {
+
+      ok:
+        false,
+
+      reason:
+        'NO_ASK_LIQUIDITY',
+
+      bps:
+        99999,
+
+      scale:
+        0
+    };
+  }
+
+
+  let remaining =
+    quoteAmount;
+
+
+  let acquiredQty =
+    0;
+
+
+  let spent =
+    0;
+
+
+  const bestAsk =
+    asks[0][0];
+
+
+  for (
+    const [
+      price,
+      qty
+    ]
+    of asks
+  ) {
+
+    const levelQuote =
+
+      price *
+      qty;
+
+
+    const takeQuote =
+
+      Math.min(
+
+        remaining,
+
+        levelQuote
       );
+
+
+    const takeQty =
+
+      price >
+      0
+
+        ? takeQuote /
+          price
+
+        : 0;
+
+
+    spent +=
+      takeQuote;
+
+
+    acquiredQty +=
+      takeQty;
+
+
+    remaining -=
+      takeQuote;
+
+
+    if (
+      remaining <=
+      1e-8
+    ) {
+
+      break;
     }
   }
 
 
   if (
-    exchangeAvailable(
-      'BYBIT'
-    )
+
+    remaining >
+
+      Math.max(
+
+        0.01,
+
+        quoteAmount *
+        0.001
+      )
+
+    ||
+
+    acquiredQty <=
+    0
+
   ) {
 
-    try {
+    return {
 
-      return {
+      ok:
+        false,
 
-        price:
-          await priceFromBybit(
-            symbol
-          ),
+      reason:
+        'INSUFFICIENT_DEPTH',
 
-        source:
-          'BYBIT'
-      };
+      bps:
+        99999,
 
-    } catch (
-      error
-    ) {
-
-      errors.push(
-        `BYBIT=${error.message}`
-      );
-    }
+      scale:
+        0
+    };
   }
+
+
+  const vwap =
+
+    spent /
+    acquiredQty;
+
+
+  const bps =
+
+    bestAsk >
+    0
+
+      ? (
+          (
+            vwap -
+            bestAsk
+          ) /
+          bestAsk
+        ) *
+        10000
+
+      : 99999;
 
 
   if (
-    exchangeAvailable(
-      'OKX'
-    )
+    bps >
+    C.sarRejectBps
   ) {
 
-    try {
+    return {
 
-      return {
+      ok:
+        false,
 
-        price:
-          await priceFromOkx(
-            symbol
-          ),
+      reason:
+        'SAR_TOO_HIGH',
 
-        source:
-          'OKX'
-      };
+      bps,
 
-    } catch (
-      error
-    ) {
+      vwap,
 
-      errors.push(
-        `OKX=${error.message}`
-      );
-    }
+      scale:
+        0
+    };
   }
 
 
-  throw new Error(
+  let scale =
+    1;
 
-    `NO_PRICE_SOURCE ${symbol} | ` +
 
-    errors.join(
-      ' | '
-    )
+  if (
+    bps >
+    C.sarReduceFromBps
+  ) {
+
+    const span =
+
+      C.sarRejectBps -
+
+      C.sarReduceFromBps;
+
+
+    const fraction =
+
+      span >
+      0
+
+        ? (
+            bps -
+            C.sarReduceFromBps
+          ) /
+          span
+
+        : 1;
+
+
+    scale =
+
+      clamp(
+
+        1 -
+
+        fraction *
+
+        (
+          1 -
+          C.sarMinSizeScale
+        ),
+
+        C.sarMinSizeScale,
+
+        1
+      );
+  }
+
+
+  return {
+
+    ok:
+      true,
+
+    bps,
+
+    vwap,
+
+    scale
+  };
+}
+
+
+async function stateFirstMicrostructureGate(
+  symbol,
+  quoteAmount
+) {
+
+  const [
+    firstBook,
+    flowRows
+  ] =
+
+    await Promise.all([
+
+      fetchDepth(
+        symbol
+      ),
+
+      fetchAggTrades(
+        symbol
+      )
+    ]);
+
+
+  await sleep(
+    C.microSecondSnapshotDelayMs
   );
+
+
+  const secondBook =
+
+    await fetchDepth(
+      symbol
+    );
+
+
+  const book =
+    depthMetrics(
+      secondBook
+    );
+
+
+  const dynamics =
+    depthDynamics(
+
+      firstBook,
+
+      secondBook
+    );
+
+
+  const flow =
+    aggressiveFlow(
+      flowRows
+    );
+
+
+  const sar =
+    slippageAtRisk(
+
+      secondBook.asks,
+
+      quoteAmount
+    );
+
+
+  // ==========================================================
+  // STATE FIRST
+  // ==========================================================
+
+  if (
+    !book.ok
+  ) {
+
+    return {
+
+      pass:
+        false,
+
+      reason:
+        book.reason,
+
+      book,
+
+      dynamics,
+
+      flow,
+
+      sar
+    };
+  }
+
+
+  if (
+    book.state ===
+    'STRESSED'
+  ) {
+
+    return {
+
+      pass:
+        false,
+
+      reason:
+        'LIQUIDITY_STRESSED',
+
+      book,
+
+      dynamics,
+
+      flow,
+
+      sar
+    };
+  }
+
+
+  // ==========================================================
+  // SLIPPAGE-AT-RISK
+  // ==========================================================
+
+  if (
+    !sar.ok
+  ) {
+
+    return {
+
+      pass:
+        false,
+
+      reason:
+        sar.reason,
+
+      book,
+
+      dynamics,
+
+      flow,
+
+      sar
+    };
+  }
+
+
+  // ==========================================================
+  // SEVERE ADVERSE BOOK
+  // ==========================================================
+
+  const severeAdverseBook =
+
+    book.imbalance <=
+      C.severeSellBookImbalance
+
+    &&
+
+    book.micropriceEdgeBps <=
+      C.severeMicropriceEdgeBps;
+
+
+  if (
+    severeAdverseBook
+  ) {
+
+    return {
+
+      pass:
+        false,
+
+      reason:
+        'SEVERE_ADVERSE_BOOK',
+
+      book,
+
+      dynamics,
+
+      flow,
+
+      sar
+    };
+  }
+
+
+  // ==========================================================
+  // ORDER FLOW CONFIRMATIONS
+  // ==========================================================
+
+  const flowPositive =
+
+    flow.sufficient
+
+    &&
+
+    flow.imbalance >=
+    0.08;
+
+
+  const bookPositive =
+
+    book.imbalance >=
+      0.08
+
+    &&
+
+    book.micropriceEdgeBps >=
+      0;
+
+
+  const refillPositive =
+
+    dynamics.bidRefillPct >=
+    5;
+
+
+  const askPullPositive =
+
+    dynamics.askPullPct >=
+    5;
+
+
+  /*
+    Sell absorption proxy:
+    aggressive selling exists,
+    but bids refill and microprice
+    is not materially below mid.
+  */
+
+  const sellAbsorption =
+
+    flow.sufficient
+
+    &&
+
+    flow.imbalance <=
+      -0.10
+
+    &&
+
+    dynamics.bidRefillPct >=
+      3
+
+    &&
+
+    book.micropriceEdgeBps >=
+      -1;
+
+
+  const confirmations =
+
+    [
+
+      flowPositive,
+
+      bookPositive,
+
+      refillPositive,
+
+      askPullPositive,
+
+      sellAbsorption
+
+    ].filter(
+      Boolean
+    ).length;
+
+
+  /*
+    Testnet can sometimes have low recent trade count.
+
+    We do NOT destroy the strategy because aggTrades
+    happened to be sparse.
+
+    If flow is insufficient but the book is healthy
+    and not adverse, allow the original strategy signal.
+  */
+
+  const neutralFallback =
+
+    !flow.sufficient
+
+    &&
+
+    book.imbalance >
+      -0.15
+
+    &&
+
+    book.micropriceEdgeBps >
+      -3;
+
+
+  const pass =
+
+    confirmations >=
+      1
+
+    ||
+
+    neutralFallback
+
+    ||
+
+    book.state ===
+      'CALM';
+
+
+  return {
+
+    pass,
+
+    reason:
+
+      pass
+
+        ? 'MICRO_OK'
+
+        : 'MICRO_NO_CONFIRMATION',
+
+    confirmations,
+
+    book,
+
+    dynamics,
+
+    flow,
+
+    sellAbsorption,
+
+    sar
+  };
 }
 
 
 // ============================================================
 // 1H CONTEXT
+// SAME STRATEGY
 // ============================================================
 
 function analyze1h(
@@ -2413,6 +2858,7 @@ function analyze1h(
 
 
   const closes =
+
     candles.map(
       candle =>
         candle.close
@@ -2420,6 +2866,7 @@ function analyze1h(
 
 
   const ema9 =
+
     ema(
       closes,
       C.emaFast
@@ -2427,6 +2874,7 @@ function analyze1h(
 
 
   const ema21 =
+
     ema(
       closes,
       C.emaSlow
@@ -2434,6 +2882,7 @@ function analyze1h(
 
 
   const current =
+
     candles.at(
       -1
     );
@@ -2468,7 +2917,8 @@ function analyze1h(
 
 
 // ============================================================
-// RETEST BREAKOUT DETECTOR
+// RETEST BREAKOUT
+// SAME STRATEGY
 // ============================================================
 
 function detectRecentBreakout(
@@ -2477,6 +2927,7 @@ function detectRecentBreakout(
 ) {
 
   const recent =
+
     candles.slice(
 
       -(
@@ -2489,28 +2940,34 @@ function detectRecentBreakout(
 
 
   for (
+
     let i =
       recent.length -
       1;
+
     i >=
-    0;
+      0;
+
     i--
+
   ) {
 
     const candle =
-      recent[
-        i
-      ];
+      recent[i];
 
 
     if (
+
       candle.close >
+
       resistance *
-        (
-          1 +
-          C.breakoutBufferPct /
-          100
-        )
+
+      (
+        1 +
+        C.breakoutBufferPct /
+        100
+      )
+
     ) {
 
       return {
@@ -2538,6 +2995,7 @@ function detectRecentBreakout(
 
 // ============================================================
 // 15M ENTRY ENGINE
+// SAME STRATEGY
 // ============================================================
 
 function analyze15m(
@@ -2573,6 +3031,7 @@ function analyze15m(
 
 
   const closes =
+
     candles.map(
       candle =>
         candle.close
@@ -2580,6 +3039,7 @@ function analyze15m(
 
 
   const ema9 =
+
     ema(
       closes,
       C.emaFast
@@ -2587,6 +3047,7 @@ function analyze15m(
 
 
   const ema21 =
+
     ema(
       closes,
       C.emaSlow
@@ -2594,6 +3055,7 @@ function analyze15m(
 
 
   const momentum =
+
     cmo(
       closes,
       C.cmoLength
@@ -2601,6 +3063,7 @@ function analyze15m(
 
 
   const atrValue =
+
     atr(
       candles,
       14
@@ -2608,6 +3071,7 @@ function analyze15m(
 
 
   const averageVolume =
+
     smaVolume(
 
       candles,
@@ -2617,20 +3081,25 @@ function analyze15m(
 
 
   const volumeRatio =
+
     averageVolume >
     0
+
       ? current.volume /
         averageVolume
+
       : 0;
 
 
   const bodyRatio =
+
     candleBodyRatio(
       current
     );
 
 
   const prior =
+
     candles.slice(
 
       -(
@@ -2643,6 +3112,7 @@ function analyze15m(
 
 
   const resistance =
+
     Math.max(
 
       ...prior.map(
@@ -2653,6 +3123,7 @@ function analyze15m(
 
 
   const swingLow =
+
     Math.min(
 
       ...candles
@@ -2667,15 +3138,17 @@ function analyze15m(
 
 
   // ==========================================================
-  // ULTRA FAST CORE - HARD CONDITIONS
+  // HARD CORE
   // ==========================================================
 
   const trendOk =
+
     ema9 >
     ema21;
 
 
   const cmoOk =
+
     momentum >
     C.cmoBuyMin;
 
@@ -2696,47 +3169,65 @@ function analyze15m(
   // ==========================================================
 
   const cleanBreakout =
+
     current.close >
+
     resistance *
-      (
-        1 +
-        C.breakoutBufferPct /
-        100
-      );
+
+    (
+      1 +
+      C.breakoutBufferPct /
+      100
+    );
 
 
   const breakoutDistanceAtr =
+
     atrValue >
     0
+
       ? (
           current.close -
           resistance
         ) /
         atrValue
+
       : 999;
 
 
   const notExtended =
+
     breakoutDistanceAtr <=
     C.maxMomentumExtensionAtr;
 
 
   const momentumVolumeOk =
+
     volumeRatio >=
     C.momentumVolumeMultiplier;
 
 
   const momentumEntry =
 
-    trendOk &&
+    trendOk
 
-    cmoOk &&
+    &&
 
-    candleOk &&
+    cmoOk
 
-    momentumVolumeOk &&
+    &&
 
-    cleanBreakout &&
+    candleOk
+
+    &&
+
+    momentumVolumeOk
+
+    &&
+
+    cleanBreakout
+
+    &&
 
     notExtended;
 
@@ -2746,6 +3237,7 @@ function analyze15m(
   // ==========================================================
 
   const recentBreakout =
+
     detectRecentBreakout(
 
       candles,
@@ -2757,7 +3249,9 @@ function analyze15m(
   const touchedRetest =
 
     current.low <=
+
       resistance *
+
       (
         1 +
         C.retestTolerancePct /
@@ -2767,7 +3261,9 @@ function analyze15m(
     &&
 
     current.low >=
+
       resistance *
+
       (
         1 -
         C.retestTolerancePct /
@@ -2789,22 +3285,34 @@ function analyze15m(
   const retestVolumeOk =
 
     volumeRatio >=
-      C.retestMinVolumeRatio;
+    C.retestMinVolumeRatio;
 
 
   const retestEntry =
 
-    trendOk &&
+    trendOk
 
-    cmoOk &&
+    &&
 
-    candleOk &&
+    cmoOk
 
-    recentBreakout.found &&
+    &&
 
-    touchedRetest &&
+    candleOk
 
-    heldRetest &&
+    &&
+
+    recentBreakout.found
+
+    &&
+
+    touchedRetest
+
+    &&
+
+    heldRetest
+
+    &&
 
     retestVolumeOk;
 
@@ -2829,48 +3337,61 @@ function analyze15m(
   }
 
 
-  // Ranking only.
-  // Ranking NEVER makes an invalid setup valid.
+  /*
+    Ranking only.
+    Score does NOT turn an invalid setup into a valid trade.
+  */
 
   const rankScore =
 
     (
       entryType !==
       'NONE'
+
         ? 40
+
         : 0
     )
 
     +
 
     clamp(
+
       (
         momentum -
         30
       ) *
       0.8,
+
       0,
+
       20
     )
 
     +
 
     clamp(
+
       (
         volumeRatio -
         1
       ) *
       10,
+
       0,
+
       20
     )
 
     +
 
     clamp(
+
       bodyRatio *
       15,
+
       0,
+
       15
     )
 
@@ -2908,6 +3429,7 @@ function analyze15m(
       atrValue,
 
     atrPct:
+
       pct(
         atrValue,
         current.close
@@ -2956,7 +3478,7 @@ function analyze15m(
 
 
 // ============================================================
-// FRESH SYMBOL ANALYSIS
+// FRESH ANALYSIS
 // ============================================================
 
 async function analyzeSymbolFresh(
@@ -2974,6 +3496,7 @@ async function analyzeSymbolFresh(
 
 
   const lastLoss =
+
     n(
       lastLossBySymbol[
         symbol
@@ -2982,10 +3505,15 @@ async function analyzeSymbolFresh(
 
 
   if (
-    lastLoss &&
+
+    lastLoss
+
+    &&
+
     Date.now() -
       lastLoss <
       C.symbolLossCooldownMs
+
   ) {
 
     return null;
@@ -2996,6 +3524,7 @@ async function analyzeSymbolFresh(
     entryResult,
     contextResult
   ] =
+
     await Promise.all([
 
       fetchClosedKlines(
@@ -3019,6 +3548,7 @@ async function analyzeSymbolFresh(
 
 
   const context =
+
     analyze1h(
       contextResult.candles
     );
@@ -3033,6 +3563,7 @@ async function analyzeSymbolFresh(
 
 
   const signal =
+
     analyze15m(
       entryResult.candles
     );
@@ -3070,7 +3601,7 @@ async function analyzeSymbolFresh(
 
 
 // ============================================================
-// LIMITED CONCURRENCY
+// CONCURRENCY
 // ============================================================
 
 async function mapLimit(
@@ -3081,6 +3612,7 @@ async function mapLimit(
 
   const results =
     [];
+
 
   let index =
     0;
@@ -3108,6 +3640,7 @@ async function mapLimit(
       try {
 
         const result =
+
           await worker(
             items[i]
           );
@@ -3147,9 +3680,13 @@ async function mapLimit(
     Array.from(
 
       {
+
         length:
+
           Math.min(
+
             limit,
+
             items.length
           )
       },
@@ -3165,6 +3702,7 @@ async function mapLimit(
 
 // ============================================================
 // EMERGENCY STOP
+// SAME STRATEGY
 // ============================================================
 
 function emergencyStopFrom(
@@ -3173,33 +3711,43 @@ function emergencyStopFrom(
 ) {
 
   const atrStop =
+
     entryPrice -
+
     signal.atr *
-      C.atrStopMultiplier;
+    C.atrStopMultiplier;
 
 
   const structureStop =
+
     signal.swingLow -
+
     signal.atr *
-      C.structureBufferAtr;
+    C.structureBufferAtr;
 
 
   let stop =
+
     Math.min(
+
       atrStop,
+
       structureStop
     );
 
 
   let stopPct =
+
     (
       entryPrice -
       stop
     ) /
+
     entryPrice;
 
 
   stopPct =
+
     clamp(
 
       stopPct,
@@ -3211,7 +3759,9 @@ function emergencyStopFrom(
 
 
   stop =
+
     entryPrice *
+
     (
       1 -
       stopPct
@@ -3229,6 +3779,7 @@ function emergencyStopFrom(
 
 // ============================================================
 // POSITION SIZE
+// SAME STRATEGY
 // ============================================================
 
 function positionSize(
@@ -3240,24 +3791,30 @@ function positionSize(
 
 
   const riskBudget =
+
     eq *
     C.riskPerTradePct;
 
 
   const byRisk =
+
     stopPct >
     0
+
       ? riskBudget /
         stopPct
+
       : 0;
 
 
   const maxAllocation =
+
     eq *
     C.maxAllocationPct;
 
 
   const allocation =
+
     Math.min(
 
       byRisk,
@@ -3271,7 +3828,9 @@ function positionSize(
 
   return allocation >=
     10
+
       ? allocation
+
       : null;
 }
 
@@ -3295,21 +3854,25 @@ async function connectCloud() {
 
 
   mongoClient =
+
     new MongoClient(
 
       MONGODB_URI,
 
       {
+
         maxPoolSize:
           8
       }
     );
 
 
-  await mongoClient.connect();
+  await mongoClient
+    .connect();
 
 
   db =
+
     mongoClient.db(
       MONGODB_DB
     );
@@ -3376,10 +3939,6 @@ async function connectCloud() {
 }
 
 
-// ============================================================
-// JOURNAL
-// ============================================================
-
 async function cloudJournal(
   row
 ) {
@@ -3417,16 +3976,14 @@ async function cloudJournal(
   ) {
 
     console.error(
+
       'Journal:',
+
       error.message
     );
   }
 }
 
-
-// ============================================================
-// SAVE TRADE
-// ============================================================
 
 async function saveTrade(
   row
@@ -3462,7 +4019,9 @@ async function saveTrade(
   ) {
 
     console.error(
+
       'Trade save:',
+
       error.message
     );
   }
@@ -3488,6 +4047,7 @@ async function loadState() {
 
 
   const state =
+
     await db
       .collection(
         'state'
@@ -3504,15 +4064,13 @@ async function loadState() {
   ) {
 
     console.log(
-      'FRESH V6.1.1 PAPER ACCOUNT | $10000 | Cycle 1 | 0/20'
+
+      'FRESH V6.2.1 PAPER ACCOUNT | $10000 | Cycle 1 | 0/20'
     );
 
     return;
   }
 
-
-  // Extra protection:
-  // never restore another version.
 
   if (
     state.version !==
@@ -3520,6 +4078,7 @@ async function loadState() {
   ) {
 
     console.warn(
+
       'STATE VERSION MISMATCH - IGNORED'
     );
 
@@ -3528,13 +4087,17 @@ async function loadState() {
 
 
   cash =
+
     n(
+
       state.cash,
+
       C.startingBalance
     );
 
 
   positions =
+
     state.positions ||
     {};
 
@@ -3551,11 +4114,14 @@ async function loadState() {
 
 
   currentDay =
+
     state.currentDay ||
+
     utcDay();
 
 
   dailyStartEquity =
+
     n(
 
       state.dailyStartEquity,
@@ -3565,12 +4131,14 @@ async function loadState() {
 
 
   dailyPnL =
+
     n(
       state.dailyPnL
     );
 
 
   peakEquity =
+
     n(
 
       state.peakEquity,
@@ -3607,7 +4175,7 @@ async function loadState() {
     lastLossBySymbol,
 
     state.lastLossBySymbol ||
-      {}
+    {}
   );
 
 
@@ -3650,6 +4218,7 @@ async function saveState() {
         },
 
         {
+
           $set: {
 
             version:
@@ -3695,7 +4264,9 @@ async function saveState() {
   ) {
 
     console.error(
+
       'State save:',
+
       error.message
     );
   }
@@ -3718,8 +4289,13 @@ function tg(
 ) {
 
   if (
-    TELEGRAM_TOKEN &&
+
+    TELEGRAM_TOKEN
+
+    &&
+
     TELEGRAM_CHAT_ID
+
   ) {
 
     tgQueue.push(
@@ -3736,8 +4312,13 @@ setInterval(
   async () => {
 
     if (
-      tgBusy ||
+
+      tgBusy
+
+      ||
+
       !tgQueue.length
+
     ) {
 
       return;
@@ -3770,6 +4351,7 @@ setInterval(
         },
 
         {
+
           timeout:
             10000
         }
@@ -3780,7 +4362,9 @@ setInterval(
     ) {
 
       console.error(
+
         'Telegram:',
+
         error.message
       );
 
@@ -3822,10 +4406,12 @@ async function openPaperTrade(
 
 
   if (
+
     Object.keys(
       positions
     ).length >=
     C.maxPositions
+
   ) {
 
     return false;
@@ -3843,18 +4429,24 @@ async function openPaperTrade(
 
 
   // ==========================================================
-  // FRESH REVALIDATION - OLD RESEARCH NOT ACCEPTED
+  // FRESH REVALIDATION
   // ==========================================================
 
   const fresh =
+
     await analyzeSymbolFresh(
       candidate.symbol
     );
 
 
   if (
-    !fresh ||
+
+    !fresh
+
+    ||
+
     !fresh.signal.eligible
+
   ) {
 
     return false;
@@ -3891,6 +4483,7 @@ async function openPaperTrade(
 
 
   const priceData =
+
     await getCurrentPrice(
       candidate.symbol
     );
@@ -3901,12 +4494,13 @@ async function openPaperTrade(
 
 
   const drift =
+
     Math.abs(
 
       pct(
 
         livePrice -
-          fresh.signal.signalPrice,
+        fresh.signal.signalPrice,
 
         fresh.signal.signalPrice
       )
@@ -3938,7 +4532,9 @@ async function openPaperTrade(
 
 
   const entryPrice =
+
     livePrice *
+
     (
       1 +
       C.slippagePct
@@ -3946,6 +4542,7 @@ async function openPaperTrade(
 
 
   const stop =
+
     emergencyStopFrom(
 
       fresh.signal,
@@ -3954,7 +4551,8 @@ async function openPaperTrade(
     );
 
 
-  const allocation =
+  let allocation =
+
     positionSize(
       stop.stopPct
     );
@@ -3968,17 +4566,79 @@ async function openPaperTrade(
   }
 
 
+  // ==========================================================
+  // STATE-FIRST MICROSTRUCTURE GATE
+  // Strategy already passed before reaching here.
+  // ==========================================================
+
+  const micro =
+
+    await stateFirstMicrostructureGate(
+
+      candidate.symbol,
+
+      allocation
+    );
+
+
+  await cloudJournal({
+
+    type:
+
+      micro.pass
+
+        ? 'MICRO_PASS'
+
+        : 'MICRO_REJECT',
+
+    symbol:
+      candidate.symbol,
+
+    reason:
+      micro.reason,
+
+    micro
+  });
+
+
+  if (
+    !micro.pass
+  ) {
+
+    return false;
+  }
+
+
+  // SaR can reduce position size.
+  // It cannot increase original risk.
+
+  allocation *=
+    micro.sar.scale;
+
+
+  if (
+    allocation <
+    10
+  ) {
+
+    return false;
+  }
+
+
   const buyFee =
+
     allocation *
     C.feePct;
 
 
   const netAssetValue =
+
     allocation -
     buyFee;
 
 
   const qty =
+
     netAssetValue /
     entryPrice;
 
@@ -4062,7 +4722,10 @@ async function openPaperTrade(
       fresh.signal.atrPct,
 
     snapshot:
-      fresh
+      fresh,
+
+    microstructure:
+      micro
   };
 
 
@@ -4090,7 +4753,10 @@ async function openPaperTrade(
     allocation,
 
     snapshot:
-      fresh
+      fresh,
+
+    microstructure:
+      micro
   });
 
 
@@ -4107,6 +4773,12 @@ async function openPaperTrade(
     `15m CMO: ${fresh.signal.cmo.toFixed(1)}\n` +
 
     `Volume: ${fresh.signal.volumeRatio.toFixed(2)}x\n` +
+
+    `Micro: ${micro.book.state} | ` +
+
+    `Imb ${(micro.book.imbalance * 100).toFixed(1)}% | ` +
+
+    `SaR ${micro.sar.bps.toFixed(2)}bps\n` +
 
     `Cycle: ${cycle.entries}/20`
   );
@@ -4127,6 +4799,7 @@ async function openPaperTrade(
         'CYCLE_FULL',
 
       openPositions:
+
         Object.keys(
           positions
         ).length
@@ -4147,7 +4820,7 @@ async function openPaperTrade(
 
 
 // ============================================================
-// CLOSE PAPER TRADE
+// CLOSE TRADE
 // ============================================================
 
 async function closePaperTrade(
@@ -4172,7 +4845,9 @@ async function closePaperTrade(
 
 
   const exitPrice =
+
     rawExitPrice *
+
     (
       1 -
       C.slippagePct
@@ -4180,33 +4855,40 @@ async function closePaperTrade(
 
 
   const grossValue =
+
     position.qty *
     exitPrice;
 
 
   const sellFee =
+
     grossValue *
     C.feePct;
 
 
   const netValue =
+
     grossValue -
     sellFee;
 
 
   const profit =
+
     netValue -
     position.investedUSDT;
 
 
   const profitPct =
+
     position.investedUSDT >
     0
+
       ? (
           profit /
           position.investedUSDT
         ) *
         100
+
       : 0;
 
 
@@ -4226,6 +4908,7 @@ async function closePaperTrade(
 
 
   stats.fees +=
+
     position.buyFee +
     sellFee;
 
@@ -4237,6 +4920,7 @@ async function closePaperTrade(
 
     stats.wins++;
 
+
     stats.grossProfit +=
       profit;
 
@@ -4244,10 +4928,13 @@ async function closePaperTrade(
 
     stats.losses++;
 
+
     stats.grossLoss +=
+
       Math.abs(
         profit
       );
+
 
     lastLossBySymbol[
       symbol
@@ -4268,6 +4955,7 @@ async function closePaperTrade(
     sellFee,
 
     totalFees:
+
       position.buyFee +
       sellFee,
 
@@ -4278,6 +4966,7 @@ async function closePaperTrade(
     reason,
 
     holdingMinutes:
+
       (
         Date.now() -
         position.entryTime
@@ -4328,13 +5017,17 @@ async function closePaperTrade(
 
   tg(
 
-    `${profit >= 0 ? '✅' : '🔴'} <b>${symbol} CLOSED</b>\n` +
+    `${profit >= 0 ? '✅' : '🔴'} ` +
+
+    `<b>${symbol} CLOSED</b>\n` +
 
     `${reason}\n` +
 
     `Source: ${source}\n` +
 
-    `PnL: $${profit.toFixed(2)} (${profitPct.toFixed(2)}%)`
+    `PnL: $${profit.toFixed(2)} ` +
+
+    `(${profitPct.toFixed(2)}%)`
   );
 
 
@@ -4351,303 +5044,368 @@ async function closePaperTrade(
 
 async function managePositions() {
 
-  const symbols =
-    Object.keys(
-      positions
-    );
-
-
   if (
-    !symbols.length
-  ) {
 
-    await maybeStartNewCycle();
+    positionManagerRunning
+
+    ||
+
+    shuttingDown
+
+  ) {
 
     return;
   }
+
+
+  positionManagerRunning =
+    true;
 
 
   const prices =
     {};
 
 
-  for (
-    const symbol
-    of symbols
-  ) {
+  try {
 
-    try {
+    /*
+      Daily guard now runs even when
+      there are zero open positions.
+    */
 
-      const priceData =
-        await getCurrentPrice(
-          symbol
-        );
+    resetDailyIfNeeded(
+      prices
+    );
 
 
-      prices[
-        symbol
-      ] =
-        priceData.price;
+    updateAccountGuards(
+      prices
+    );
 
 
-      const position =
-        positions[
-          symbol
-        ];
+    const symbols =
 
+      Object.keys(
+        positions
+      );
 
-      position.lastPrice =
-        priceData.price;
 
-
-      position.lastPriceSource =
-        priceData.source;
-
-
-      position.highestPrice =
-        Math.max(
-
-          position.highestPrice,
-
-          priceData.price
-        );
-
-
-      const movePct =
-        pct(
-
-          priceData.price -
-            position.entryPrice,
-
-          position.entryPrice
-        );
-
-
-      position.mfePct =
-        Math.max(
-
-          position.mfePct,
-
-          movePct
-        );
-
-
-      position.maePct =
-        Math.min(
-
-          position.maePct,
-
-          movePct
-        );
-
-
-      // ======================================================
-      // +0.5% CAPITAL PROTECTION
-      // ======================================================
-
-      if (
-
-        !position.breakEvenActive
-
-        &&
-
-        movePct >=
-          C.breakEvenTriggerPct
-
-      ) {
-
-        const protectPct =
-          roundTripCostPct() +
-          C.breakEvenExtraPct;
-
-
-        position.protectionStop =
-
-          position.entryPrice *
-
-          (
-            1 +
-            protectPct /
-            100
-          );
-
-
-        position.breakEvenActive =
-          true;
-
-
-        stats.breakEvenMoves++;
-
-
-        await cloudJournal({
-
-          type:
-            'CAPITAL_PROTECTION',
-
-          tradeId:
-            position.tradeId,
-
-          symbol,
-
-          protectionStop:
-            position.protectionStop
-        });
-      }
-
-
-      // ======================================================
-      // +0.7% TRAILING
-      // ======================================================
-
-      if (
-
-        !position.trailingActive
-
-        &&
-
-        movePct >=
-          C.trailingStartPct
-
-      ) {
-
-        position.trailingActive =
-          true;
-
-
-        stats.trailingActivations++;
-
-
-        await cloudJournal({
-
-          type:
-            'TRAIL_ACTIVATED',
-
-          tradeId:
-            position.tradeId,
-
-          symbol
-        });
-      }
-
-
-      if (
-        position.trailingActive
-      ) {
-
-        const gapPct =
-          clamp(
-
-            position.atrPct *
-              C.trailingAtrMultiplier,
-
-            C.trailingGapMinPct,
-
-            C.trailingGapMaxPct
-          );
-
-
-        const trailingStop =
-
-          position.highestPrice *
-
-          (
-            1 -
-            gapPct /
-            100
-          );
-
-
-        position.protectionStop =
-          Math.max(
-
-            position.protectionStop ||
-              0,
-
-            trailingStop
-          );
-      }
-
-
-      let activeStop =
-        position.emergencyStop;
-
-
-      let exitReason =
-        'EMERGENCY_STOP';
-
-
-      if (
-        position.protectionStop
-      ) {
-
-        activeStop =
-          Math.max(
-
-            activeStop,
-
-            position.protectionStop
-          );
-
-
-        exitReason =
-          position.trailingActive
-
-            ? 'DYNAMIC_TRAIL'
-
-            : 'CAPITAL_PROTECTION_STOP';
-      }
-
-
-      if (
-        priceData.price <=
-        activeStop
-      ) {
-
-        await closePaperTrade(
-
-          symbol,
-
-          priceData.price,
-
-          exitReason,
-
-          priceData.source
-        );
-      }
-
-
-    } catch (
-      error
+    if (
+      !symbols.length
     ) {
 
-      console.error(
+      await maybeStartNewCycle();
 
-        `POSITION ${symbol}:`,
+      return;
+    }
 
-        error.message
+
+    for (
+      const symbol
+      of symbols
+    ) {
+
+      try {
+
+        const priceData =
+
+          await getCurrentPrice(
+            symbol
+          );
+
+
+        prices[
+          symbol
+        ] =
+          priceData.price;
+
+
+        const position =
+
+          positions[
+            symbol
+          ];
+
+
+        if (
+          !position
+        ) {
+
+          continue;
+        }
+
+
+        position.lastPrice =
+          priceData.price;
+
+
+        position.lastPriceSource =
+          priceData.source;
+
+
+        position.highestPrice =
+
+          Math.max(
+
+            position.highestPrice,
+
+            priceData.price
+          );
+
+
+        const movePct =
+
+          pct(
+
+            priceData.price -
+            position.entryPrice,
+
+            position.entryPrice
+          );
+
+
+        position.mfePct =
+
+          Math.max(
+
+            position.mfePct,
+
+            movePct
+          );
+
+
+        position.maePct =
+
+          Math.min(
+
+            position.maePct,
+
+            movePct
+          );
+
+
+        // ======================================================
+        // +0.5% CAPITAL PROTECTION
+        // SAME STRATEGY
+        // ======================================================
+
+        if (
+
+          !position.breakEvenActive
+
+          &&
+
+          movePct >=
+            C.breakEvenTriggerPct
+
+        ) {
+
+          const protectPct =
+
+            roundTripCostPct() +
+
+            C.breakEvenExtraPct;
+
+
+          position.protectionStop =
+
+            position.entryPrice *
+
+            (
+              1 +
+              protectPct /
+              100
+            );
+
+
+          position.breakEvenActive =
+            true;
+
+
+          stats.breakEvenMoves++;
+
+
+          await cloudJournal({
+
+            type:
+              'CAPITAL_PROTECTION',
+
+            tradeId:
+              position.tradeId,
+
+            symbol,
+
+            protectionStop:
+              position.protectionStop
+          });
+        }
+
+
+        // ======================================================
+        // +0.7% TRAILING
+        // SAME STRATEGY
+        // ======================================================
+
+        if (
+
+          !position.trailingActive
+
+          &&
+
+          movePct >=
+            C.trailingStartPct
+
+        ) {
+
+          position.trailingActive =
+            true;
+
+
+          stats.trailingActivations++;
+
+
+          await cloudJournal({
+
+            type:
+              'TRAIL_ACTIVATED',
+
+            tradeId:
+              position.tradeId,
+
+            symbol
+          });
+        }
+
+
+        if (
+          position.trailingActive
+        ) {
+
+          const gapPct =
+
+            clamp(
+
+              position.atrPct *
+              C.trailingAtrMultiplier,
+
+              C.trailingGapMinPct,
+
+              C.trailingGapMaxPct
+            );
+
+
+          const trailingStop =
+
+            position.highestPrice *
+
+            (
+              1 -
+              gapPct /
+              100
+            );
+
+
+          position.protectionStop =
+
+            Math.max(
+
+              position.protectionStop ||
+              0,
+
+              trailingStop
+            );
+        }
+
+
+        let activeStop =
+          position.emergencyStop;
+
+
+        let exitReason =
+          'EMERGENCY_STOP';
+
+
+        if (
+          position.protectionStop
+        ) {
+
+          activeStop =
+
+            Math.max(
+
+              activeStop,
+
+              position.protectionStop
+            );
+
+
+          exitReason =
+
+            position.trailingActive
+
+              ? 'DYNAMIC_TRAIL'
+
+              : 'CAPITAL_PROTECTION_STOP';
+        }
+
+
+        if (
+
+          priceData.price <=
+          activeStop
+
+        ) {
+
+          await closePaperTrade(
+
+            symbol,
+
+            priceData.price,
+
+            exitReason,
+
+            priceData.source
+          );
+        }
+
+      } catch (
+        error
+      ) {
+
+        console.error(
+
+          `POSITION ${symbol}:`,
+
+          error.message
+        );
+      }
+
+
+      await sleep(
+        80
       );
     }
 
 
-    await sleep(
-      80
+    resetDailyIfNeeded(
+      prices
     );
+
+
+    updateAccountGuards(
+      prices
+    );
+
+  } finally {
+
+    positionManagerRunning =
+      false;
   }
-
-
-  resetDailyIfNeeded(
-    prices
-  );
-
-
-  updateAccountGuards(
-    prices
-  );
 }
 
 
 // ============================================================
-// NEW CYCLE
+// CYCLE
 // ============================================================
 
 async function startNewCycle(
@@ -4688,7 +5446,9 @@ async function startNewCycle(
   stats.cycleCount++;
 
 
-  // Explicitly destroy old research.
+  /*
+    Delete old research.
+  */
 
   universe =
     [];
@@ -4718,7 +5478,9 @@ async function startNewCycle(
 
 
   setTimeout(
+
     runFreshScan,
+
     1000
   );
 }
@@ -4752,9 +5514,17 @@ async function maybeStartNewCycle() {
 async function runFreshScan() {
 
   if (
-    scanning ||
-    shuttingDown ||
+
+    scanning
+
+    ||
+
+    shuttingDown
+
+    ||
+
     entryBlocked()
+
   ) {
 
     return;
@@ -4762,8 +5532,10 @@ async function runFreshScan() {
 
 
   if (
+
     cycle.entries >=
     C.maxEntriesPerCycle
+
   ) {
 
     cycle.state =
@@ -4784,20 +5556,37 @@ async function runFreshScan() {
   try {
 
     console.log(
-      `FRESH SCAN | Cycle ${cycle.id} | ${cycle.entries}/20`
+
+      `FRESH SCAN | ` +
+
+      `Cycle ${cycle.id} | ` +
+
+      `${cycle.entries}/20`
     );
 
 
-    // New research every scan.
-    // No persistent candidate pool.
+    /*
+      Universe is refreshed according to
+      universeRefreshMs, not forced every scan.
+    */
 
     const symbols =
+
       await refreshUniverse(
-        true
+        false
       );
 
 
+    /*
+      Strategy analysis.
+      No Microstructure REST calls yet.
+
+      Microstructure runs ONLY for candidates
+      that reach the final execution stage.
+    */
+
     const candidates =
+
       await mapLimit(
 
         symbols,
@@ -4814,7 +5603,9 @@ async function runFreshScan() {
         a,
         b
       ) =>
+
         b.signal.rankScore -
+
         a.signal.rankScore
     );
 
@@ -4838,6 +5629,7 @@ async function runFreshScan() {
         cycle.lastUniverseSource,
 
       top:
+
         candidates
           .slice(
             0,
@@ -4891,8 +5683,10 @@ async function runFreshScan() {
     ) {
 
       if (
+
         opened >=
         C.maxEntriesPerScan
+
       ) {
 
         break;
@@ -4900,8 +5694,10 @@ async function runFreshScan() {
 
 
       if (
+
         cycle.entries >=
         C.maxEntriesPerCycle
+
       ) {
 
         break;
@@ -4909,10 +5705,12 @@ async function runFreshScan() {
 
 
       if (
+
         Object.keys(
           positions
         ).length >=
         C.maxPositions
+
       ) {
 
         break;
@@ -4928,6 +5726,7 @@ async function runFreshScan() {
 
 
       const result =
+
         await openPaperTrade(
           candidate
         );
@@ -4941,13 +5740,14 @@ async function runFreshScan() {
       }
     }
 
-
   } catch (
     error
   ) {
 
     console.error(
+
       'FRESH SCAN:',
+
       error.message
     );
 
@@ -4960,7 +5760,7 @@ async function runFreshScan() {
 
 
 // ============================================================
-// DASHBOARD
+// DASHBOARD DATA
 // ============================================================
 
 function dashboardData() {
@@ -4970,24 +5770,32 @@ function dashboardData() {
 
 
   const winRate =
+
     stats.totalTrades >
     0
+
       ? (
           stats.wins /
           stats.totalTrades
         ) *
         100
+
       : 0;
 
 
   const profitFactor =
+
     stats.grossLoss >
     0
+
       ? stats.grossProfit /
         stats.grossLoss
+
       : stats.grossProfit >
         0
+
         ? 999
+
         : 0;
 
 
@@ -5035,11 +5843,10 @@ function dashboardData() {
       BINANCE: {
 
         available:
-          exchangeAvailable(
-            'BINANCE'
-          ),
+          exchangeAvailable(),
 
         blockedForSeconds:
+
           Math.max(
 
             0,
@@ -5047,39 +5854,28 @@ function dashboardData() {
             Math.ceil(
 
               (
-                exchangeHealth.BINANCE.blockedUntil -
+                exchangeHealth
+                  .BINANCE
+                  .blockedUntil -
+
                 Date.now()
+
               ) /
               1000
             )
           ),
 
         lastError:
-          exchangeHealth.BINANCE.lastError
-      },
 
+          exchangeHealth
+            .BINANCE
+            .lastError,
 
-      BYBIT: {
+        lastSuccess:
 
-        available:
-          exchangeAvailable(
-            'BYBIT'
-          ),
-
-        lastError:
-          exchangeHealth.BYBIT.lastError
-      },
-
-
-      OKX: {
-
-        available:
-          exchangeAvailable(
-            'OKX'
-          ),
-
-        lastError:
-          exchangeHealth.OKX.lastError
+          exchangeHealth
+            .BINANCE
+            .lastSuccess
       }
     },
 
@@ -5095,16 +5891,22 @@ function dashboardData() {
     config: {
 
       entryTimeframe:
-        '15m',
+        C.entryInterval,
 
       contextTimeframe:
-        '1h',
+        C.contextInterval,
 
       maxEntriesPerCycle:
-        20,
+        C.maxEntriesPerCycle,
 
       maxPositions:
-        C.maxPositions
+        C.maxPositions,
+
+      marketData:
+        'BINANCE_TESTNET_ONLY',
+
+      microstructure:
+        'STATE_FIRST + SAR'
     }
   };
 }
@@ -5142,9 +5944,12 @@ app.post(
     manualPause =
       true;
 
+
     await saveState();
 
+
     res.json({
+
       ok:
         true
     });
@@ -5164,9 +5969,12 @@ app.post(
     manualPause =
       false;
 
+
     await saveState();
 
+
     res.json({
+
       ok:
         true
     });
@@ -5184,11 +5992,15 @@ app.post(
   ) => {
 
     setTimeout(
+
       runFreshScan,
+
       0
     );
 
+
     res.json({
+
       ok:
         true
     });
@@ -5208,13 +6020,16 @@ app.post(
     try {
 
       for (
+
         const symbol
         of Object.keys(
           positions
         )
+
       ) {
 
         const priceData =
+
           await getCurrentPrice(
             symbol
           );
@@ -5234,6 +6049,7 @@ app.post(
 
 
       res.json({
+
         ok:
           true
       });
@@ -5260,7 +6076,7 @@ app.post(
 
 
 // ============================================================
-// SIMPLE DASHBOARD
+// DASHBOARD
 // ============================================================
 
 app.get(
@@ -5274,7 +6090,8 @@ app.get(
 
     res.type(
       'html'
-    ).send(`
+    )
+    .send(`
 
 <!doctype html>
 
@@ -5285,12 +6102,12 @@ app.get(
 <meta charset="utf-8">
 
 <meta
-name="viewport"
-content="width=device-width,initial-scale=1"
+  name="viewport"
+  content="width=device-width,initial-scale=1"
 >
 
 <title>
-LOMY V6.1.1
+LOMY V6.2.1
 </title>
 
 <style>
@@ -5300,10 +6117,6 @@ body {
   background: #111;
   color: #eee;
   margin: 18px;
-}
-
-h2 {
-  margin-bottom: 4px;
 }
 
 .grid {
@@ -5353,11 +6166,11 @@ pre {
 <body>
 
 <h2>
-LOMY V6.1.1
+LOMY V6.2.1
 </h2>
 
 <div>
-15M + 1H • Cycle20 • Binance / Bybit / OKX
+15M + 1H • Cycle20 • Binance Testnet Only • State-First Microstructure
 </div>
 
 <div>
@@ -5365,8 +6178,8 @@ PAPER ONLY
 </div>
 
 <div
-id="cards"
-class="grid"
+  id="cards"
+  class="grid"
 ></div>
 
 <p>
@@ -5391,20 +6204,28 @@ Close All
 
 <pre id="detail"></pre>
 
+
 <script>
 
-async function post(url) {
+async function post(
+  url
+) {
 
   await fetch(
+
     url,
+
     {
       method:
         'POST'
     }
   );
 
+
   setTimeout(
+
     load,
+
     500
   );
 }
@@ -5413,9 +6234,11 @@ async function post(url) {
 async function load() {
 
   const response =
+
     await fetch(
       '/api/data'
     );
+
 
   const d =
     await response.json();
@@ -5425,12 +6248,14 @@ async function load() {
 
     [
       'Equity',
-      '$' + d.equity
+      '$' +
+      d.equity
     ],
 
     [
       'Cash',
-      '$' + d.cash
+      '$' +
+      d.cash
     ],
 
     [
@@ -5440,7 +6265,8 @@ async function load() {
 
     [
       'Entries',
-      d.cycle.entries + '/20'
+      d.cycle.entries +
+      '/20'
     ],
 
     [
@@ -5450,7 +6276,9 @@ async function load() {
 
     [
       'Open',
-      Object.keys(d.positions).length
+      Object.keys(
+        d.positions
+      ).length
     ],
 
     [
@@ -5460,12 +6288,16 @@ async function load() {
 
     [
       'Win Rate',
-      d.winRate + '%'
+      d.winRate +
+      '%'
     ],
 
     [
       'Net P/L',
-      '$' + d.stats.netProfit.toFixed(2)
+      '$' +
+      d.stats.netProfit.toFixed(
+        2
+      )
     ],
 
     [
@@ -5480,7 +6312,8 @@ async function load() {
 
     [
       'Universe Source',
-      d.cycle.lastUniverseSource || '-'
+      d.cycle.lastUniverseSource ||
+      '-'
     ]
   ];
 
@@ -5498,16 +6331,22 @@ async function load() {
             '<div class="card">' +
 
             '<div class="label">' +
+
             item[0] +
+
             '</div>' +
 
             '<div class="value">' +
+
             item[1] +
+
             '</div>' +
 
             '</div>'
         )
-        .join('');
+        .join(
+          ''
+        );
 
 
   document
@@ -5517,7 +6356,9 @@ async function load() {
     .textContent =
 
       JSON.stringify(
+
         {
+
           exchanges:
             d.exchanges,
 
@@ -5526,8 +6367,11 @@ async function load() {
 
           positions:
             d.positions
+
         },
+
         null,
+
         2
       );
 }
@@ -5535,8 +6379,11 @@ async function load() {
 
 load();
 
+
 setInterval(
+
   load,
+
   5000
 );
 
@@ -5557,18 +6404,69 @@ setInterval(
 
 async function main() {
 
-  console.log('');
-  console.log('==============================================');
-  console.log(`LOMY ${C.version}`);
-  console.log('PAPER ONLY');
-  console.log('15M ENTRY + 1H CONTEXT');
-  console.log('ULTRA FAST CORE');
-  console.log('MOMENTUM ENTRY + RETEST ENTRY');
-  console.log('20 ENTRIES MAX PER CYCLE');
-  console.log('FRESH RESEARCH - NO OLD CANDIDATES');
-  console.log('BINANCE -> BYBIT -> OKX FAILOVER');
-  console.log('CAPITAL PROTECTION + DYNAMIC TRAIL');
-  console.log('==============================================');
+  console.log(
+    ''
+  );
+
+
+  console.log(
+    '=============================================='
+  );
+
+
+  console.log(
+    `LOMY ${C.version}`
+  );
+
+
+  console.log(
+    'PAPER ONLY'
+  );
+
+
+  console.log(
+    '15M ENTRY + 1H CONTEXT'
+  );
+
+
+  console.log(
+    'ULTRA FAST CORE'
+  );
+
+
+  console.log(
+    'MOMENTUM ENTRY + RETEST ENTRY'
+  );
+
+
+  console.log(
+    '20 ENTRIES MAX PER CYCLE'
+  );
+
+
+  console.log(
+    'FRESH RESEARCH - NO OLD CANDIDATES'
+  );
+
+
+  console.log(
+    'BINANCE SPOT TESTNET ONLY'
+  );
+
+
+  console.log(
+    'STATE-FIRST MICROSTRUCTURE + SAR'
+  );
+
+
+  console.log(
+    'CAPITAL PROTECTION + DYNAMIC TRAIL'
+  );
+
+
+  console.log(
+    '=============================================='
+  );
 
 
   await connectCloud();
@@ -5584,6 +6482,7 @@ async function main() {
     () => {
 
       console.log(
+
         `SERVER LISTENING ${PORT}`
       );
     }
@@ -5600,6 +6499,7 @@ async function main() {
       cash,
 
       openPositions:
+
         Object.keys(
           positions
         ).length,
@@ -5622,13 +6522,27 @@ async function main() {
       cycleLimit:
         20,
 
-      dataFailover: [
-        'BINANCE',
-        'BYBIT',
-        'OKX'
-      ]
+      marketData:
+        'BINANCE_TESTNET_ONLY',
+
+      microstructure:
+        'STATE_FIRST + SAR'
     }
   });
+
+
+  tg(
+
+    `🚀 <b>LOMY ${C.version}</b>\n` +
+
+    `PAPER ONLY\n` +
+
+    `Binance Spot Testnet Only\n` +
+
+    `15m + 1H | State-First Microstructure + SaR\n` +
+
+    `Cycle ${cycle.id}: ${cycle.entries}/20`
+  );
 
 
   if (
@@ -5652,7 +6566,9 @@ async function main() {
   } else {
 
     setTimeout(
+
       runFreshScan,
+
       1500
     );
   }
@@ -5704,6 +6620,7 @@ async function shutdown(
 
 
   console.log(
+
     `SHUTDOWN ${signal}`
   );
 
@@ -5792,9 +6709,12 @@ main()
     error => {
 
       console.error(
+
         'MAIN:',
+
         error
       );
+
 
       process.exit(
         1
