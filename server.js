@@ -8,39 +8,26 @@ const app = express();
 app.use(express.json());
 
 const PORT = Number(process.env.PORT || 5000);
-
-const TELEGRAM_TOKEN =
-  process.env.TELEGRAM_TOKEN || '';
-
-const TELEGRAM_CHAT_ID =
-  process.env.TELEGRAM_CHAT_ID || '';
-
-const MONGODB_URI =
-  process.env.MONGODB_URI || '';
-
-const MONGODB_DB =
-  process.env.MONGODB_DB || 'lomy';
-
+const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN || '';
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';
+const MONGODB_URI = process.env.MONGODB_URI || '';
+const MONGODB_DB = process.env.MONGODB_DB || 'lomy';
 
 // ============================================================
-// BINANCE SPOT TESTNET ONLY
+// LOMY V6.3
+// Public Binance market data + PAPER execution only.
+// Designed to stay light on Render Free.
 // ============================================================
 
-const BINANCE_REST =
-  'https://testnet.binance.vision';
-
-
-// ============================================================
-// CONFIG
-// ============================================================
+const BINANCE_PUBLIC_REST = 'https://api.binance.com';
 
 const C = Object.freeze({
 
   version:
-    '6.2.1-15M-CYCLE20-BINANCE-MICRO',
+    '6.3-5M-1H-PUBLICDATA-LIGHT-MICRO',
 
   stateKey:
-    'main-v621',
+    'main-v63',
 
   paperTrading:
     true,
@@ -50,34 +37,44 @@ const C = Object.freeze({
 
 
   // ==========================================================
-  // MARKET
+  // MARKET / RUNTIME
   // ==========================================================
 
   universeSize:
-    100,
+    140,
 
   minQuoteVolume:
-    500000,
+    1500000,
 
   scanEveryMs:
-    2 * 60 * 1000,
+    90 * 1000,
 
   scanConcurrency:
-    4,
+    5,
 
   maxEntriesPerScan:
-    2,
-
-
-  // ==========================================================
-  // CYCLE
-  // ==========================================================
+    3,
 
   maxEntriesPerCycle:
-    20,
+    120,
 
   maxPositions:
-    6,
+    8,
+
+  universeRefreshMs:
+    10 * 60 * 1000,
+
+  pricePollMs:
+    5000,
+
+  stateSaveMs:
+    45000,
+
+  requestTimeoutMs:
+    10000,
+
+  requestGapMs:
+    45,
 
 
   // ==========================================================
@@ -85,20 +82,20 @@ const C = Object.freeze({
   // ==========================================================
 
   entryInterval:
-    '15m',
+    '5m',
 
   contextInterval:
     '1h',
 
-  klineLimit15m:
-    80,
+  klineLimitEntry:
+    90,
 
-  klineLimit1h:
-    80,
+  klineLimitContext:
+    70,
 
 
   // ==========================================================
-  // ULTRA FAST CORE
+  // CORE
   // ==========================================================
 
   emaFast:
@@ -111,46 +108,75 @@ const C = Object.freeze({
     9,
 
   cmoBuyMin:
-    30,
+    28,
+
+  cmoBuyMax:
+    88,
 
   volumeSmaLength:
-    10,
+    12,
 
-  momentumVolumeMultiplier:
-    1.30,
+  momentumVolumeMin:
+    1.20,
+
+  momentumVolumeMax:
+    7.50,
 
   minBodyRatio:
-    0.50,
+    0.48,
 
 
   // ==========================================================
-  // ENTRY
+  // BREAKOUT / RETEST / PULLBACK
   // ==========================================================
 
   breakoutLookback:
     20,
 
   breakoutBufferPct:
-    0.03,
+    0.02,
 
-  maxMomentumExtensionAtr:
-    0.85,
+  minBreakoutDistanceAtr:
+    0.08,
 
-  retestTolerancePct:
-    0.20,
+  maxBreakoutDistanceAtr:
+    0.78,
 
   retestLookbackBars:
-    3,
+    4,
+
+  retestTolerancePct:
+    0.22,
 
   retestMinVolumeRatio:
-    1.00,
+    0.90,
 
-  maxEntryDriftPct:
-    0.18,
+  pullbackMaxDistanceEmaAtr:
+    0.45,
+
+  pullbackMinVolumeRatio:
+    1.00,
 
 
   // ==========================================================
-  // RISK
+  // ENTRY QUALITY
+  // ==========================================================
+
+  maxChasePct:
+    0.16,
+
+  maxNegativeDriftPct:
+    0.45,
+
+  minContextEmaGapPct:
+    0.05,
+
+  maxContextExtensionPct:
+    3.5,
+
+
+  // ==========================================================
+  // PAPER COSTS / RISK
   // ==========================================================
 
   feePct:
@@ -160,22 +186,22 @@ const C = Object.freeze({
     0.0005,
 
   riskPerTradePct:
-    0.0045,
+    0.0035,
 
   maxAllocationPct:
-    0.22,
+    0.16,
 
   minEmergencyStopPct:
-    0.0065,
+    0.0060,
 
   maxEmergencyStopPct:
-    0.018,
+    0.0135,
 
   atrStopMultiplier:
-    1.65,
+    1.45,
 
   structureBufferAtr:
-    0.20,
+    0.15,
 
 
   // ==========================================================
@@ -183,13 +209,13 @@ const C = Object.freeze({
   // ==========================================================
 
   breakEvenTriggerPct:
-    0.50,
+    0.48,
 
   breakEvenExtraPct:
-    0.02,
+    0.03,
 
   trailingStartPct:
-    0.70,
+    0.72,
 
   trailingAtrMultiplier:
     0.90,
@@ -198,53 +224,78 @@ const C = Object.freeze({
     0.22,
 
   trailingGapMaxPct:
-    0.55,
+    0.52,
 
 
   // ==========================================================
-  // STATE-FIRST MICROSTRUCTURE GATE
-  // Does NOT create entry signals.
-  // It only confirms/rejects execution.
+  // FOLLOW THROUGH MANAGER
+  // ==========================================================
+
+  followThroughCheck1Min:
+    18,
+
+  followThroughMinMfe1:
+    0.22,
+
+  followThroughCurrentFloor1:
+    -0.10,
+
+  followThroughCheck2Min:
+    35,
+
+  followThroughMinMfe2:
+    0.45,
+
+  followThroughCurrentFloor2:
+    0.05,
+
+
+  // ==========================================================
+  // MICROSTRUCTURE
+  // Only final entry candidates reach this stage.
   // ==========================================================
 
   depthLimit:
-    100,
+    50,
 
   aggTradeLimit:
-    150,
-
-  microSecondSnapshotDelayMs:
-    650,
+    100,
 
   microTopLevels:
-    20,
+    12,
 
   microFlowWindowMs:
-    30 * 1000,
+    45 * 1000,
 
   microMinRecentTrades:
-    8,
+    6,
+
+  maxEntrySpreadBps:
+    7.0,
 
   stressedSpreadBps:
-    18,
+    14,
 
   stressedMinSideDepthUSDT:
-    1200,
+    5000,
 
   severeSellBookImbalance:
     -0.35,
 
   severeMicropriceEdgeBps:
-    -6,
+    -4,
+
+  minFlowImbalance:
+    -0.18,
 
   sarReduceFromBps:
-    12,
+    10,
 
   sarRejectBps:
-    25,
+    20,
 
   sarMinSizeScale:
-    0.40,
+    0.50,
 
 
   // ==========================================================
@@ -260,6 +311,9 @@ const C = Object.freeze({
   symbolLossCooldownMs:
     45 * 60 * 1000,
 
+  emergencyLossCooldownMs:
+    90 * 60 * 1000,
+
 
   // ==========================================================
   // BINANCE HEALTH
@@ -269,30 +323,9 @@ const C = Object.freeze({
     5 * 60 * 1000,
 
   binance418PauseMs:
-    30 * 60 * 1000,
-
-  requestTimeoutMs:
-    12000,
-
-
-  // ==========================================================
-  // RUNTIME
-  // ==========================================================
-
-  pricePollMs:
-    5000,
-
-  stateSaveMs:
-    30000,
-
-  universeRefreshMs:
-    10 * 60 * 1000
+    30 * 60 * 1000
 });
 
-
-// ============================================================
-// IGNORE
-// ============================================================
 
 const IGNORED =
   new Set([
@@ -304,13 +337,14 @@ const IGNORED =
     'BUSDUSDT',
     'DAIUSDT',
     'USDEUSDT',
-    'USD1USDT'
+    'USD1USDT',
+    'EURUSDT',
+    'AEURUSDT',
+    'TRYUSDT',
+    'BRLUSDT'
+
   ]);
 
-
-// ============================================================
-// HELPERS
-// ============================================================
 
 const sleep =
   ms =>
@@ -395,7 +429,7 @@ function roundTripCostPct() {
 
 
 // ============================================================
-// ACCOUNT
+// ACCOUNT STATE
 // ============================================================
 
 let cash =
@@ -436,6 +470,12 @@ let stats = {
   trailingActivations:
     0,
 
+  earlyCuts:
+    0,
+
+  setupStats:
+    {},
+
   cycleCount:
     1
 };
@@ -463,10 +503,6 @@ let drawdownPause =
   false;
 
 
-// ============================================================
-// CYCLE
-// ============================================================
-
 let cycle = {
 
   id:
@@ -488,17 +524,22 @@ let cycle = {
     0,
 
   lastUniverseSource:
-    null
+    null,
+
+  scanned:
+    0
 };
 
 
 const lastLossBySymbol =
   {};
 
+const lastEmergencyLossBySymbol =
+  {};
 
-// ============================================================
-// MARKET STATE
-// ============================================================
+const lastClosedSignalBySymbol =
+  {};
+
 
 let universe =
   [];
@@ -515,10 +556,6 @@ let positionManagerRunning =
 let shuttingDown =
   false;
 
-
-// ============================================================
-// BINANCE HEALTH
-// ============================================================
 
 const exchangeHealth = {
 
@@ -539,10 +576,6 @@ const exchangeHealth = {
 };
 
 
-// ============================================================
-// DATABASE
-// ============================================================
-
 let mongoClient =
   null;
 
@@ -554,7 +587,7 @@ let cloudConnected =
 
 
 // ============================================================
-// EQUITY
+// EQUITY / GUARDS
 // ============================================================
 
 function equity(
@@ -563,7 +596,6 @@ function equity(
 
   let value =
     cash;
-
 
   for (
     const position
@@ -574,29 +606,21 @@ function equity(
 
     const price =
       n(
-
         prices[
           position.symbol
         ],
-
         position.lastPrice ||
         position.entryPrice
       );
-
 
     value +=
       position.qty *
       price;
   }
 
-
   return value;
 }
 
-
-// ============================================================
-// ACCOUNT GUARDS
-// ============================================================
 
 function resetDailyIfNeeded(
   prices = {}
@@ -604,7 +628,6 @@ function resetDailyIfNeeded(
 
   const today =
     utcDay();
-
 
   if (
     today ===
@@ -614,20 +637,16 @@ function resetDailyIfNeeded(
     return;
   }
 
-
   currentDay =
     today;
-
 
   dailyStartEquity =
     equity(
       prices
     );
 
-
   dailyPnL =
     0;
-
 
   dailyPause =
     false;
@@ -643,13 +662,11 @@ function updateAccountGuards(
       prices
     );
 
-
   peakEquity =
     Math.max(
       peakEquity,
       eq
     );
-
 
   const ddPct =
 
@@ -667,13 +684,11 @@ function updateAccountGuards(
 
       : 0;
 
-
   stats.maxDrawdown =
     Math.max(
       stats.maxDrawdown,
       ddPct
     );
-
 
   if (
 
@@ -691,7 +706,6 @@ function updateAccountGuards(
     dailyPause =
       true;
   }
-
 
   if (
 
@@ -719,6 +733,7 @@ function entryBlocked() {
 
     cycle.state !==
       'SCANNING'
+
   );
 }
 
@@ -947,12 +962,10 @@ function atr(
     const current =
       candles[i];
 
-
     const previous =
       candles[
         i - 1
       ];
-
 
     values.push(
 
@@ -1074,7 +1087,7 @@ function smaVolume(
 
 
 // ============================================================
-// BINANCE REST
+// BINANCE PUBLIC REST
 // ============================================================
 
 function exchangeAvailable() {
@@ -1097,12 +1110,10 @@ function markExchangeSuccess() {
     .failures =
       0;
 
-
   exchangeHealth
     .BINANCE
     .lastError =
       null;
-
 
   exchangeHealth
     .BINANCE
@@ -1118,9 +1129,7 @@ function markBinanceFailure(
   const health =
     exchangeHealth.BINANCE;
 
-
   health.failures++;
-
 
   health.lastError =
 
@@ -1133,7 +1142,6 @@ function markBinanceFailure(
 
   const status =
     error.response?.status;
-
 
   const retryAfter =
 
@@ -1195,7 +1203,7 @@ function markBinanceFailure(
     !status ||
 
     status >=
-    500
+      500
 
   ) {
 
@@ -1204,12 +1212,6 @@ function markBinanceFailure(
       1000;
   }
 
-
-  /*
-    IMPORTANT:
-    Ordinary 4xx symbol/request errors
-    do NOT globally disable Binance.
-  */
 
   if (
     pause >
@@ -1225,19 +1227,6 @@ function markBinanceFailure(
         Date.now() +
         pause
       );
-
-
-    console.warn(
-
-      `BINANCE paused ` +
-
-      `${Math.ceil(
-        pause /
-        1000
-      )}s | ` +
-
-      `${status || error.message}`
-    );
   }
 }
 
@@ -1263,7 +1252,7 @@ async function binanceGet(
 
       await axios.get(
 
-        `${BINANCE_REST}${path}`,
+        `${BINANCE_PUBLIC_REST}${path}`,
 
         {
 
@@ -1295,10 +1284,10 @@ async function binanceGet(
 
 
 // ============================================================
-// BINANCE KLINES
+// MARKET DATA
 // ============================================================
 
-async function fetchBinanceKlines(
+async function fetchClosedKlines(
   symbol,
   interval,
   limit
@@ -1325,79 +1314,62 @@ async function fetchBinanceKlines(
     Date.now();
 
 
-  return data
-    .map(
-      row => ({
-
-        openTime:
-          n(
-            row[0]
-          ),
-
-        open:
-          n(
-            row[1]
-          ),
-
-        high:
-          n(
-            row[2]
-          ),
-
-        low:
-          n(
-            row[3]
-          ),
-
-        close:
-          n(
-            row[4]
-          ),
-
-        volume:
-          n(
-            row[5]
-          ),
-
-        closeTime:
-          n(
-            row[6]
-          ),
-
-        quoteVolume:
-          n(
-            row[7]
-          ),
-
-        source:
-          'BINANCE_TESTNET'
-      })
-    )
-
-    .filter(
-      candle =>
-        candle.closeTime <
-        now
-    );
-}
-
-
-async function fetchClosedKlines(
-  symbol,
-  interval,
-  limit
-) {
-
   const rows =
 
-    await fetchBinanceKlines(
+    data
+      .map(
+        row => ({
 
-      symbol,
+          openTime:
+            n(
+              row[0]
+            ),
 
-      interval,
+          open:
+            n(
+              row[1]
+            ),
 
-      limit
-    );
+          high:
+            n(
+              row[2]
+            ),
+
+          low:
+            n(
+              row[3]
+            ),
+
+          close:
+            n(
+              row[4]
+            ),
+
+          volume:
+            n(
+              row[5]
+            ),
+
+          closeTime:
+            n(
+              row[6]
+            ),
+
+          quoteVolume:
+            n(
+              row[7]
+            ),
+
+          source:
+            'BINANCE_PUBLIC'
+        })
+      )
+
+      .filter(
+        candle =>
+          candle.closeTime <
+          now
+      );
 
 
   if (
@@ -1407,7 +1379,7 @@ async function fetchClosedKlines(
 
     throw new Error(
 
-      `BINANCE_KLINES_NOT_READY ${symbol} ${interval}`
+      `KLINES_NOT_READY ${symbol} ${interval}`
     );
   }
 
@@ -1415,17 +1387,13 @@ async function fetchClosedKlines(
   return {
 
     source:
-      'BINANCE_TESTNET',
+      'BINANCE_PUBLIC',
 
     candles:
       rows
   };
 }
 
-
-// ============================================================
-// UNIVERSE
-// ============================================================
 
 async function universeFromBinance() {
 
@@ -1462,8 +1430,44 @@ async function universeFromBinance() {
         quoteVolume:
           n(
             row.quoteVolume
+          ),
+
+        count:
+          n(
+            row.count
           )
       })
+    )
+
+    .filter(
+      row =>
+
+        row.quoteVolume >=
+          C.minQuoteVolume
+
+        &&
+
+        row.count >
+          500
+    )
+
+    .sort(
+      (
+        a,
+        b
+      ) =>
+        b.quoteVolume -
+        a.quoteVolume
+    )
+
+    .slice(
+      0,
+      C.universeSize
+    )
+
+    .map(
+      row =>
+        row.symbol
     );
 }
 
@@ -1492,37 +1496,8 @@ async function refreshUniverse(
   }
 
 
-  const rows =
-    await universeFromBinance();
-
-
   universe =
-
-    rows
-      .filter(
-        row =>
-          row.quoteVolume >=
-          C.minQuoteVolume
-      )
-
-      .sort(
-        (
-          a,
-          b
-        ) =>
-          b.quoteVolume -
-          a.quoteVolume
-      )
-
-      .slice(
-        0,
-        C.universeSize
-      )
-
-      .map(
-        row =>
-          row.symbol
-      );
+    await universeFromBinance();
 
 
   universeUpdatedAt =
@@ -1530,14 +1505,12 @@ async function refreshUniverse(
 
 
   cycle.lastUniverseSource =
-    'BINANCE_TESTNET';
+    'BINANCE_PUBLIC';
 
 
   console.log(
 
-    `UNIVERSE BINANCE_TESTNET | ` +
-
-    `${universe.length} symbols`
+    `UNIVERSE PUBLIC | ${universe.length} symbols`
   );
 
 
@@ -1545,11 +1518,7 @@ async function refreshUniverse(
 }
 
 
-// ============================================================
-// PRICE
-// ============================================================
-
-async function priceFromBinance(
+async function getCurrentPrice(
   symbol
 ) {
 
@@ -1576,29 +1545,1151 @@ async function priceFromBinance(
   ) {
 
     throw new Error(
-      'BINANCE_INVALID_PRICE'
+      'INVALID_PRICE'
     );
   }
 
 
-  return price;
+  return {
+
+    price,
+
+    source:
+      'BINANCE_PUBLIC'
+  };
 }
 
 
-async function getCurrentPrice(
-  symbol
+// ============================================================
+// 1H CONTEXT
+// ============================================================
+
+function analyze1h(
+  candles
 ) {
+
+  if (
+    candles.length <
+    30
+  ) {
+
+    return {
+
+      ok:
+        false,
+
+      reason:
+        '1H_NOT_READY'
+    };
+  }
+
+
+  const closes =
+
+    candles.map(
+      candle =>
+        candle.close
+    );
+
+
+  const ema9 =
+
+    ema(
+      closes,
+      C.emaFast
+    );
+
+
+  const ema21 =
+
+    ema(
+      closes,
+      C.emaSlow
+    );
+
+
+  const current =
+
+    candles.at(
+      -1
+    );
+
+
+  const gapPct =
+
+    pct(
+      ema9 -
+      ema21,
+      ema21
+    );
+
+
+  const extensionPct =
+
+    pct(
+      current.close -
+      ema9,
+      ema9
+    );
+
+
+  const bullish =
+
+    ema9 >
+      ema21
+
+    &&
+
+    current.close >=
+      ema9
+
+    &&
+
+    gapPct >=
+      C.minContextEmaGapPct
+
+    &&
+
+    extensionPct <=
+      C.maxContextExtensionPct;
+
 
   return {
 
-    price:
-      await priceFromBinance(
-        symbol
+    ok:
+      bullish,
+
+    bullish,
+
+    ema9,
+
+    ema21,
+
+    close:
+      current.close,
+
+    gapPct,
+
+    extensionPct
+  };
+}
+
+
+// ============================================================
+// RECENT BREAKOUT
+// ============================================================
+
+function detectRecentBreakout(
+  candles,
+  resistance
+) {
+
+  const recent =
+
+    candles.slice(
+
+      -(
+        C.retestLookbackBars +
+        1
       ),
 
-    source:
-      'BINANCE_TESTNET'
+      -1
+    );
+
+
+  for (
+
+    let i =
+      recent.length -
+      1;
+
+    i >=
+      0;
+
+    i--
+
+  ) {
+
+    const candle =
+      recent[i];
+
+
+    if (
+
+      candle.close >
+
+      resistance *
+
+      (
+        1 +
+        C.breakoutBufferPct /
+        100
+      )
+
+    ) {
+
+      return {
+
+        found:
+          true,
+
+        candle,
+
+        barsAgo:
+          recent.length -
+          i
+      };
+    }
+  }
+
+
+  return {
+
+    found:
+      false
   };
+}
+
+
+// ============================================================
+// ENTRY ENGINE
+// MOMENTUM + RETEST + PULLBACK CONTINUATION
+// ============================================================
+
+function analyzeEntry(
+  candles
+) {
+
+  if (
+    candles.length <
+    40
+  ) {
+
+    return {
+
+      eligible:
+        false,
+
+      reason:
+        'ENTRY_NOT_READY'
+    };
+  }
+
+
+  const current =
+    candles.at(
+      -1
+    );
+
+
+  const previous =
+    candles.at(
+      -2
+    );
+
+
+  const closes =
+
+    candles.map(
+      candle =>
+        candle.close
+    );
+
+
+  const ema9 =
+
+    ema(
+      closes,
+      C.emaFast
+    );
+
+
+  const ema21 =
+
+    ema(
+      closes,
+      C.emaSlow
+    );
+
+
+  const momentum =
+
+    cmo(
+      closes,
+      C.cmoLength
+    );
+
+
+  const atrValue =
+
+    atr(
+      candles,
+      14
+    );
+
+
+  const averageVolume =
+
+    smaVolume(
+      candles,
+      C.volumeSmaLength
+    );
+
+
+  const volumeRatio =
+
+    averageVolume >
+    0
+
+      ? current.volume /
+        averageVolume
+
+      : 0;
+
+
+  const bodyRatio =
+
+    candleBodyRatio(
+      current
+    );
+
+
+  const prior =
+
+    candles.slice(
+
+      -(
+        C.breakoutLookback +
+        2
+      ),
+
+      -2
+    );
+
+
+  const resistance =
+
+    Math.max(
+
+      ...prior.map(
+        candle =>
+          candle.high
+      )
+    );
+
+
+  const swingLow =
+
+    Math.min(
+
+      ...candles
+        .slice(
+          -8
+        )
+        .map(
+          candle =>
+            candle.low
+        )
+    );
+
+
+  // ==========================================================
+  // BASE QUALITY
+  // ==========================================================
+
+  const trendOk =
+
+    ema9 >
+    ema21;
+
+
+  const cmoOk =
+
+    momentum >=
+      C.cmoBuyMin
+
+    &&
+
+    momentum <=
+      C.cmoBuyMax;
+
+
+  const candleOk =
+
+    current.close >
+      current.open
+
+    &&
+
+    bodyRatio >=
+      C.minBodyRatio;
+
+
+  /*
+    Very high volume was not automatically better
+    in the V6.2.1 results.
+
+    Extreme spike can be exhaustion.
+  */
+
+  const volumeNotExhausted =
+
+    volumeRatio <=
+      C.momentumVolumeMax;
+
+
+  // ==========================================================
+  // MOMENTUM CONTINUATION
+  // ==========================================================
+
+  const cleanBreakout =
+
+    current.close >
+
+    resistance *
+
+    (
+      1 +
+      C.breakoutBufferPct /
+      100
+    );
+
+
+  const breakoutDistanceAtr =
+
+    atrValue >
+    0
+
+      ? (
+          current.close -
+          resistance
+        ) /
+        atrValue
+
+      : 999;
+
+
+  const breakoutLocationOk =
+
+    breakoutDistanceAtr >=
+      C.minBreakoutDistanceAtr
+
+    &&
+
+    breakoutDistanceAtr <=
+      C.maxBreakoutDistanceAtr;
+
+
+  const momentumVolumeOk =
+
+    volumeRatio >=
+      C.momentumVolumeMin
+
+    &&
+
+    volumeNotExhausted;
+
+
+  const momentumEntry =
+
+    trendOk
+
+    &&
+
+    cmoOk
+
+    &&
+
+    candleOk
+
+    &&
+
+    momentumVolumeOk
+
+    &&
+
+    cleanBreakout
+
+    &&
+
+    breakoutLocationOk;
+
+
+  // ==========================================================
+  // RETEST
+  // ==========================================================
+
+  const recentBreakout =
+
+    detectRecentBreakout(
+      candles,
+      resistance
+    );
+
+
+  const touchedRetest =
+
+    current.low <=
+
+      resistance *
+
+      (
+        1 +
+        C.retestTolerancePct /
+        100
+      )
+
+    &&
+
+    current.low >=
+
+      resistance *
+
+      (
+        1 -
+        C.retestTolerancePct /
+        100
+      );
+
+
+  const heldRetest =
+
+    current.close >
+      resistance
+
+    &&
+
+    current.close >
+      previous.close;
+
+
+  const retestVolumeOk =
+
+    volumeRatio >=
+      C.retestMinVolumeRatio
+
+    &&
+
+    volumeNotExhausted;
+
+
+  const retestEntry =
+
+    trendOk
+
+    &&
+
+    cmoOk
+
+    &&
+
+    current.close >
+      current.open
+
+    &&
+
+    recentBreakout.found
+
+    &&
+
+    touchedRetest
+
+    &&
+
+    heldRetest
+
+    &&
+
+    retestVolumeOk;
+
+
+  // ==========================================================
+  // PULLBACK CONTINUATION
+  // Adds frequency without allowing random counter-trend trades.
+  // ==========================================================
+
+  const distanceFromEmaAtr =
+
+    atrValue >
+    0
+
+      ? Math.abs(
+          current.low -
+          ema9
+        ) /
+        atrValue
+
+      : 999;
+
+
+  const pullbackTouched =
+
+    distanceFromEmaAtr <=
+      C.pullbackMaxDistanceEmaAtr;
+
+
+  const reclaim =
+
+    current.close >
+      ema9
+
+    &&
+
+    current.close >
+      previous.close
+
+    &&
+
+    current.close >
+      current.open;
+
+
+  const pullbackVolumeOk =
+
+    volumeRatio >=
+      C.pullbackMinVolumeRatio
+
+    &&
+
+    volumeNotExhausted;
+
+
+  const pullbackContinuation =
+
+    trendOk
+
+    &&
+
+    cmoOk
+
+    &&
+
+    candleOk
+
+    &&
+
+    pullbackTouched
+
+    &&
+
+    reclaim
+
+    &&
+
+    pullbackVolumeOk
+
+    &&
+
+    !cleanBreakout;
+
+
+  // ==========================================================
+  // ENTRY TYPE
+  // ==========================================================
+
+  let entryType =
+    'NONE';
+
+
+  /*
+    Retest receives priority because if the current candle
+    qualifies as a true retest we want it classified correctly.
+  */
+
+  if (
+    retestEntry
+  ) {
+
+    entryType =
+      'RETEST_ENTRY';
+
+  } else if (
+    momentumEntry
+  ) {
+
+    entryType =
+      'MOMENTUM_CONTINUATION';
+
+  } else if (
+    pullbackContinuation
+  ) {
+
+    entryType =
+      'PULLBACK_CONTINUATION';
+  }
+
+
+  /*
+    Ranking does not turn an invalid setup
+    into a valid trade.
+  */
+
+  const rankScore =
+
+    (
+      entryType !==
+      'NONE'
+
+        ? 40
+
+        : 0
+    )
+
+    +
+
+    clamp(
+
+      (
+        momentum -
+        C.cmoBuyMin
+      ) *
+      0.45,
+
+      0,
+
+      16
+    )
+
+    +
+
+    clamp(
+
+      (
+        Math.min(
+          volumeRatio,
+          4
+        ) -
+        1
+      ) *
+      7,
+
+      0,
+
+      18
+    )
+
+    +
+
+    clamp(
+
+      bodyRatio *
+      14,
+
+      0,
+
+      14
+    )
+
+    +
+
+    (
+      trendOk
+        ? 7
+        : 0
+    )
+
+    +
+
+    (
+      entryType ===
+      'RETEST_ENTRY'
+        ? 5
+        : 0
+    );
+
+
+  return {
+
+    eligible:
+      entryType !==
+      'NONE',
+
+    entryType,
+
+    signalTime:
+      current.closeTime,
+
+    signalPrice:
+      current.close,
+
+    ema9,
+
+    ema21,
+
+    cmo:
+      momentum,
+
+    atr:
+      atrValue,
+
+    atrPct:
+
+      pct(
+        atrValue,
+        current.close
+      ),
+
+    volumeRatio,
+
+    bodyRatio,
+
+    resistance,
+
+    swingLow,
+
+    breakoutDistanceAtr,
+
+    distanceFromEmaAtr,
+
+    rankScore:
+      +rankScore.toFixed(
+        2
+      ),
+
+    checks: {
+
+      trendOk,
+
+      cmoOk,
+
+      candleOk,
+
+      volumeNotExhausted,
+
+      cleanBreakout,
+
+      breakoutLocationOk,
+
+      recentBreakout:
+        recentBreakout.found,
+
+      touchedRetest,
+
+      heldRetest,
+
+      pullbackTouched,
+
+      reclaim
+    }
+  };
+}
+
+
+// ============================================================
+// STAGED ANALYSIS
+// ============================================================
+
+async function analyzeEntryOnly(
+  symbol
+) {
+
+  if (
+    positions[
+      symbol
+    ]
+  ) {
+
+    return null;
+  }
+
+
+  const lastLoss =
+
+    n(
+      lastLossBySymbol[
+        symbol
+      ]
+    );
+
+
+  const lastEmergency =
+
+    n(
+      lastEmergencyLossBySymbol[
+        symbol
+      ]
+    );
+
+
+  if (
+
+    lastEmergency
+
+    &&
+
+    Date.now() -
+      lastEmergency <
+      C.emergencyLossCooldownMs
+
+  ) {
+
+    return null;
+  }
+
+
+  if (
+
+    lastLoss
+
+    &&
+
+    Date.now() -
+      lastLoss <
+      C.symbolLossCooldownMs
+
+  ) {
+
+    return null;
+  }
+
+
+  const entryResult =
+
+    await fetchClosedKlines(
+
+      symbol,
+
+      C.entryInterval,
+
+      C.klineLimitEntry
+    );
+
+
+  const signal =
+
+    analyzeEntry(
+      entryResult.candles
+    );
+
+
+  if (
+    !signal.eligible
+  ) {
+
+    return null;
+  }
+
+
+  /*
+    Never reopen the exact same closed signal.
+  */
+
+  if (
+
+    lastClosedSignalBySymbol[
+      symbol
+    ]
+
+    &&
+
+    lastClosedSignalBySymbol[
+      symbol
+    ] ===
+      signal.signalTime
+
+  ) {
+
+    return null;
+  }
+
+
+  return {
+
+    symbol,
+
+    analyzedAt:
+      Date.now(),
+
+    sources: {
+
+      entry:
+        entryResult.source
+    },
+
+    signal
+  };
+}
+
+
+async function addContext(
+  candidate
+) {
+
+  const contextResult =
+
+    await fetchClosedKlines(
+
+      candidate.symbol,
+
+      C.contextInterval,
+
+      C.klineLimitContext
+    );
+
+
+  const context =
+
+    analyze1h(
+      contextResult.candles
+    );
+
+
+  if (
+    !context.ok
+  ) {
+
+    return null;
+  }
+
+
+  return {
+
+    ...candidate,
+
+    sources: {
+
+      ...candidate.sources,
+
+      context:
+        contextResult.source
+    },
+
+    context
+  };
+}
+
+
+async function analyzeSymbolFresh(
+  symbol
+) {
+
+  const base =
+
+    await analyzeEntryOnly(
+      symbol
+    );
+
+
+  if (
+    !base
+  ) {
+
+    return null;
+  }
+
+
+  return addContext(
+    base
+  );
+}
+
+
+// ============================================================
+// CONCURRENCY
+// ============================================================
+
+async function mapLimit(
+  items,
+  limit,
+  worker
+) {
+
+  const results =
+    [];
+
+
+  let index =
+    0;
+
+
+  async function runner() {
+
+    while (
+      true
+    ) {
+
+      const i =
+        index++;
+
+
+      if (
+        i >=
+        items.length
+      ) {
+
+        return;
+      }
+
+
+      try {
+
+        const result =
+
+          await worker(
+            items[i]
+          );
+
+
+        if (
+          result
+        ) {
+
+          results.push(
+            result
+          );
+        }
+
+      } catch (
+        error
+      ) {
+
+        if (
+
+          !String(
+            error.message
+          ).includes(
+            'TEMP_BLOCKED'
+          )
+
+        ) {
+
+          console.warn(
+
+            `SCAN ${items[i]} | ${error.message}`
+          );
+        }
+      }
+
+
+      await sleep(
+        C.requestGapMs
+      );
+    }
+  }
+
+
+  await Promise.all(
+
+    Array.from(
+
+      {
+
+        length:
+
+          Math.min(
+
+            limit,
+
+            items.length
+          )
+      },
+
+      runner
+    )
+  );
+
+
+  return results;
 }
 
 
@@ -1683,13 +2774,7 @@ async function fetchDepth(
               0 &&
             row[1] >
               0
-        ),
-
-
-    lastUpdateId:
-      n(
-        data.lastUpdateId
-      )
+        )
   };
 }
 
@@ -1717,7 +2802,6 @@ async function fetchAggTrades(
   const cutoff =
 
     Date.now() -
-
     C.microFlowWindowMs;
 
 
@@ -1843,63 +2927,46 @@ function depthMetrics(
       : 99999;
 
 
-  const bidDepthUSDT =
+  const weighted =
+    rows =>
 
-    bids.reduce(
-      (
-        sum,
-        [
-          price,
-          qty
-        ],
-        index
-      ) =>
-
-        sum +
-
-        price *
-        qty *
-
+      rows.reduce(
         (
-          1 /
-          (
-            1 +
-            index *
-            0.12
-          )
-        ),
+          sum,
+          [
+            price,
+            qty
+          ],
+          index
+        ) =>
 
-      0
+          sum +
+
+          price *
+          qty *
+
+          (
+            1 /
+            (
+              1 +
+              index *
+              0.15
+            )
+          ),
+
+        0
+      );
+
+
+  const bidDepthUSDT =
+    weighted(
+      bids
     );
 
 
   const askDepthUSDT =
-
-    asks.reduce(
-      (
-        sum,
-        [
-          price,
-          qty
-        ],
-        index
-      ) =>
-
-        sum +
-
-        price *
-        qty *
-
-        (
-          1 /
-          (
-            1 +
-            index *
-            0.12
-          )
-        ),
-
-      0
+    weighted(
+      asks
     );
 
 
@@ -2007,13 +3074,13 @@ function depthMetrics(
   } else if (
 
     spreadBps <=
-      5
+      4.5
 
     &&
 
     minSideDepth >=
       C.stressedMinSideDepthUSDT *
-      5
+      4
 
   ) {
 
@@ -2046,85 +3113,6 @@ function depthMetrics(
     microprice,
 
     micropriceEdgeBps
-  };
-}
-
-
-function depthDynamics(
-  first,
-  second
-) {
-
-  const firstMetrics =
-    depthMetrics(
-      first
-    );
-
-
-  const secondMetrics =
-    depthMetrics(
-      second
-    );
-
-
-  if (
-
-    !firstMetrics.ok ||
-
-    !secondMetrics.ok
-
-  ) {
-
-    return {
-
-      bidRefillPct:
-        0,
-
-      askPullPct:
-        0
-    };
-  }
-
-
-  const bidRefillPct =
-
-    firstMetrics.bidDepthUSDT >
-    0
-
-      ? (
-          (
-            secondMetrics.bidDepthUSDT -
-            firstMetrics.bidDepthUSDT
-          ) /
-          firstMetrics.bidDepthUSDT
-        ) *
-        100
-
-      : 0;
-
-
-  const askPullPct =
-
-    firstMetrics.askDepthUSDT >
-    0
-
-      ? (
-          (
-            firstMetrics.askDepthUSDT -
-            secondMetrics.askDepthUSDT
-          ) /
-          firstMetrics.askDepthUSDT
-        ) *
-        100
-
-      : 0;
-
-
-  return {
-
-    bidRefillPct,
-
-    askPullPct
   };
 }
 
@@ -2190,9 +3178,8 @@ function aggressiveFlow(
 
 
     /*
-      Binance aggTrade:
-      m=true => buyer is maker,
-      therefore seller was aggressive.
+      Binance:
+      buyerMaker=true means seller was aggressive.
     */
 
     if (
@@ -2286,10 +3273,8 @@ function slippageAtRisk(
   let remaining =
     quoteAmount;
 
-
   let acquiredQty =
     0;
-
 
   let spent =
     0;
@@ -2447,25 +3432,17 @@ function slippageAtRisk(
     C.sarReduceFromBps
   ) {
 
-    const span =
-
-      C.sarRejectBps -
-
-      C.sarReduceFromBps;
-
-
     const fraction =
 
-      span >
-      0
+      (
+        bps -
+        C.sarReduceFromBps
+      ) /
 
-        ? (
-            bps -
-            C.sarReduceFromBps
-          ) /
-          span
-
-        : 1;
+      (
+        C.sarRejectBps -
+        C.sarReduceFromBps
+      );
 
 
     scale =
@@ -2508,7 +3485,7 @@ async function stateFirstMicrostructureGate(
 ) {
 
   const [
-    firstBook,
+    bookRaw,
     flowRows
   ] =
 
@@ -2524,30 +3501,9 @@ async function stateFirstMicrostructureGate(
     ]);
 
 
-  await sleep(
-    C.microSecondSnapshotDelayMs
-  );
-
-
-  const secondBook =
-
-    await fetchDepth(
-      symbol
-    );
-
-
   const book =
     depthMetrics(
-      secondBook
-    );
-
-
-  const dynamics =
-    depthDynamics(
-
-      firstBook,
-
-      secondBook
+      bookRaw
     );
 
 
@@ -2560,14 +3516,14 @@ async function stateFirstMicrostructureGate(
   const sar =
     slippageAtRisk(
 
-      secondBook.asks,
+      bookRaw.asks,
 
       quoteAmount
     );
 
 
   // ==========================================================
-  // STATE FIRST
+  // BOOK VALIDITY
   // ==========================================================
 
   if (
@@ -2584,14 +3540,16 @@ async function stateFirstMicrostructureGate(
 
       book,
 
-      dynamics,
-
       flow,
 
       sar
     };
   }
 
+
+  // ==========================================================
+  // STRESSED LIQUIDITY
+  // ==========================================================
 
   if (
     book.state ===
@@ -2608,7 +3566,31 @@ async function stateFirstMicrostructureGate(
 
       book,
 
-      dynamics,
+      flow,
+
+      sar
+    };
+  }
+
+
+  // ==========================================================
+  // SPREAD
+  // ==========================================================
+
+  if (
+    book.spreadBps >
+    C.maxEntrySpreadBps
+  ) {
+
+    return {
+
+      pass:
+        false,
+
+      reason:
+        'SPREAD_TOO_WIDE',
+
+      book,
 
       flow,
 
@@ -2618,7 +3600,7 @@ async function stateFirstMicrostructureGate(
 
 
   // ==========================================================
-  // SLIPPAGE-AT-RISK
+  // SAR
   // ==========================================================
 
   if (
@@ -2635,8 +3617,6 @@ async function stateFirstMicrostructureGate(
 
       book,
 
-      dynamics,
-
       flow,
 
       sar
@@ -2648,7 +3628,7 @@ async function stateFirstMicrostructureGate(
   // SEVERE ADVERSE BOOK
   // ==========================================================
 
-  const severeAdverseBook =
+  if (
 
     book.imbalance <=
       C.severeSellBookImbalance
@@ -2656,11 +3636,8 @@ async function stateFirstMicrostructureGate(
     &&
 
     book.micropriceEdgeBps <=
-      C.severeMicropriceEdgeBps;
+      C.severeMicropriceEdgeBps
 
-
-  if (
-    severeAdverseBook
   ) {
 
     return {
@@ -2673,7 +3650,43 @@ async function stateFirstMicrostructureGate(
 
       book,
 
-      dynamics,
+      flow,
+
+      sar
+    };
+  }
+
+
+  /*
+    IMPORTANT V6.3 FIX:
+
+    CALM does NOT automatically mean BUY confirmation.
+
+    This fixes the old condition where:
+    book.state === CALM
+    could make MICRO pass by itself.
+  */
+
+  if (
+
+    flow.sufficient
+
+    &&
+
+    flow.imbalance <
+      C.minFlowImbalance
+
+  ) {
+
+    return {
+
+      pass:
+        false,
+
+      reason:
+        'NEGATIVE_AGGRESSIVE_FLOW',
+
+      book,
 
       flow,
 
@@ -2682,83 +3695,28 @@ async function stateFirstMicrostructureGate(
   }
 
 
-  // ==========================================================
-  // ORDER FLOW CONFIRMATIONS
-  // ==========================================================
-
-  const flowPositive =
-
-    flow.sufficient
-
-    &&
-
-    flow.imbalance >=
-    0.08;
-
-
-  const bookPositive =
-
-    book.imbalance >=
-      0.08
-
-    &&
-
-    book.micropriceEdgeBps >=
-      0;
-
-
-  const refillPositive =
-
-    dynamics.bidRefillPct >=
-    5;
-
-
-  const askPullPositive =
-
-    dynamics.askPullPct >=
-    5;
-
-
-  /*
-    Sell absorption proxy:
-    aggressive selling exists,
-    but bids refill and microprice
-    is not materially below mid.
-  */
-
-  const sellAbsorption =
-
-    flow.sufficient
-
-    &&
-
-    flow.imbalance <=
-      -0.10
-
-    &&
-
-    dynamics.bidRefillPct >=
-      3
-
-    &&
-
-    book.micropriceEdgeBps >=
-      -1;
-
-
-  const confirmations =
+  const directionalConfirmations =
 
     [
 
-      flowPositive,
+      (
+        flow.sufficient
 
-      bookPositive,
+        &&
 
-      refillPositive,
+        flow.imbalance >=
+          0.05
+      ),
 
-      askPullPositive,
+      (
+        book.imbalance >=
+          0.08
 
-      sellAbsorption
+        &&
+
+        book.micropriceEdgeBps >=
+          0
+      )
 
     ].filter(
       Boolean
@@ -2766,66 +3724,33 @@ async function stateFirstMicrostructureGate(
 
 
   /*
-    Testnet can sometimes have low recent trade count.
+    If actual aggressive flow is temporarily sparse,
+    do not call it directional confirmation.
 
-    We do NOT destroy the strategy because aggTrades
-    happened to be sparse.
-
-    If flow is insufficient but the book is healthy
-    and not adverse, allow the original strategy signal.
+    We only allow execution if spread/depth/SaR
+    are healthy, and record it explicitly as NEUTRAL.
   */
-
-  const neutralFallback =
-
-    !flow.sufficient
-
-    &&
-
-    book.imbalance >
-      -0.15
-
-    &&
-
-    book.micropriceEdgeBps >
-      -3;
-
-
-  const pass =
-
-    confirmations >=
-      1
-
-    ||
-
-    neutralFallback
-
-    ||
-
-    book.state ===
-      'CALM';
-
 
   return {
 
-    pass,
+    pass:
+      true,
 
     reason:
 
-      pass
+      directionalConfirmations >
+      0
 
-        ? 'MICRO_OK'
+        ? 'MICRO_CONFIRMED'
 
-        : 'MICRO_NO_CONFIRMATION',
+        : 'MICRO_EXECUTION_OK_FLOW_NEUTRAL',
 
-    confirmations,
+    confirmations:
+      directionalConfirmations,
 
     book,
 
-    dynamics,
-
     flow,
-
-    sellAbsorption,
 
     sar
   };
@@ -2833,876 +3758,7 @@ async function stateFirstMicrostructureGate(
 
 
 // ============================================================
-// 1H CONTEXT
-// SAME STRATEGY
-// ============================================================
-
-function analyze1h(
-  candles
-) {
-
-  if (
-    candles.length <
-    30
-  ) {
-
-    return {
-
-      ok:
-        false,
-
-      reason:
-        '1H_NOT_READY'
-    };
-  }
-
-
-  const closes =
-
-    candles.map(
-      candle =>
-        candle.close
-    );
-
-
-  const ema9 =
-
-    ema(
-      closes,
-      C.emaFast
-    );
-
-
-  const ema21 =
-
-    ema(
-      closes,
-      C.emaSlow
-    );
-
-
-  const current =
-
-    candles.at(
-      -1
-    );
-
-
-  const bullish =
-
-    ema9 >
-      ema21
-
-    &&
-
-    current.close >=
-      ema9;
-
-
-  return {
-
-    ok:
-      bullish,
-
-    ema9,
-
-    ema21,
-
-    close:
-      current.close,
-
-    bullish
-  };
-}
-
-
-// ============================================================
-// RETEST BREAKOUT
-// SAME STRATEGY
-// ============================================================
-
-function detectRecentBreakout(
-  candles,
-  resistance
-) {
-
-  const recent =
-
-    candles.slice(
-
-      -(
-        C.retestLookbackBars +
-        1
-      ),
-
-      -1
-    );
-
-
-  for (
-
-    let i =
-      recent.length -
-      1;
-
-    i >=
-      0;
-
-    i--
-
-  ) {
-
-    const candle =
-      recent[i];
-
-
-    if (
-
-      candle.close >
-
-      resistance *
-
-      (
-        1 +
-        C.breakoutBufferPct /
-        100
-      )
-
-    ) {
-
-      return {
-
-        found:
-          true,
-
-        candle,
-
-        barsAgo:
-          recent.length -
-          i
-      };
-    }
-  }
-
-
-  return {
-
-    found:
-      false
-  };
-}
-
-
-// ============================================================
-// 15M ENTRY ENGINE
-// SAME STRATEGY
-// ============================================================
-
-function analyze15m(
-  candles
-) {
-
-  if (
-    candles.length <
-    35
-  ) {
-
-    return {
-
-      eligible:
-        false,
-
-      reason:
-        '15M_NOT_READY'
-    };
-  }
-
-
-  const current =
-    candles.at(
-      -1
-    );
-
-
-  const previous =
-    candles.at(
-      -2
-    );
-
-
-  const closes =
-
-    candles.map(
-      candle =>
-        candle.close
-    );
-
-
-  const ema9 =
-
-    ema(
-      closes,
-      C.emaFast
-    );
-
-
-  const ema21 =
-
-    ema(
-      closes,
-      C.emaSlow
-    );
-
-
-  const momentum =
-
-    cmo(
-      closes,
-      C.cmoLength
-    );
-
-
-  const atrValue =
-
-    atr(
-      candles,
-      14
-    );
-
-
-  const averageVolume =
-
-    smaVolume(
-
-      candles,
-
-      C.volumeSmaLength
-    );
-
-
-  const volumeRatio =
-
-    averageVolume >
-    0
-
-      ? current.volume /
-        averageVolume
-
-      : 0;
-
-
-  const bodyRatio =
-
-    candleBodyRatio(
-      current
-    );
-
-
-  const prior =
-
-    candles.slice(
-
-      -(
-        C.breakoutLookback +
-        2
-      ),
-
-      -2
-    );
-
-
-  const resistance =
-
-    Math.max(
-
-      ...prior.map(
-        candle =>
-          candle.high
-      )
-    );
-
-
-  const swingLow =
-
-    Math.min(
-
-      ...candles
-        .slice(
-          -8
-        )
-        .map(
-          candle =>
-            candle.low
-        )
-    );
-
-
-  // ==========================================================
-  // HARD CORE
-  // ==========================================================
-
-  const trendOk =
-
-    ema9 >
-    ema21;
-
-
-  const cmoOk =
-
-    momentum >
-    C.cmoBuyMin;
-
-
-  const candleOk =
-
-    current.close >
-      current.open
-
-    &&
-
-    bodyRatio >=
-      C.minBodyRatio;
-
-
-  // ==========================================================
-  // MOMENTUM ENTRY
-  // ==========================================================
-
-  const cleanBreakout =
-
-    current.close >
-
-    resistance *
-
-    (
-      1 +
-      C.breakoutBufferPct /
-      100
-    );
-
-
-  const breakoutDistanceAtr =
-
-    atrValue >
-    0
-
-      ? (
-          current.close -
-          resistance
-        ) /
-        atrValue
-
-      : 999;
-
-
-  const notExtended =
-
-    breakoutDistanceAtr <=
-    C.maxMomentumExtensionAtr;
-
-
-  const momentumVolumeOk =
-
-    volumeRatio >=
-    C.momentumVolumeMultiplier;
-
-
-  const momentumEntry =
-
-    trendOk
-
-    &&
-
-    cmoOk
-
-    &&
-
-    candleOk
-
-    &&
-
-    momentumVolumeOk
-
-    &&
-
-    cleanBreakout
-
-    &&
-
-    notExtended;
-
-
-  // ==========================================================
-  // RETEST ENTRY
-  // ==========================================================
-
-  const recentBreakout =
-
-    detectRecentBreakout(
-
-      candles,
-
-      resistance
-    );
-
-
-  const touchedRetest =
-
-    current.low <=
-
-      resistance *
-
-      (
-        1 +
-        C.retestTolerancePct /
-        100
-      )
-
-    &&
-
-    current.low >=
-
-      resistance *
-
-      (
-        1 -
-        C.retestTolerancePct /
-        100
-      );
-
-
-  const heldRetest =
-
-    current.close >
-      resistance
-
-    &&
-
-    current.close >
-      previous.close;
-
-
-  const retestVolumeOk =
-
-    volumeRatio >=
-    C.retestMinVolumeRatio;
-
-
-  const retestEntry =
-
-    trendOk
-
-    &&
-
-    cmoOk
-
-    &&
-
-    candleOk
-
-    &&
-
-    recentBreakout.found
-
-    &&
-
-    touchedRetest
-
-    &&
-
-    heldRetest
-
-    &&
-
-    retestVolumeOk;
-
-
-  let entryType =
-    'NONE';
-
-
-  if (
-    momentumEntry
-  ) {
-
-    entryType =
-      'MOMENTUM_ENTRY';
-
-  } else if (
-    retestEntry
-  ) {
-
-    entryType =
-      'RETEST_ENTRY';
-  }
-
-
-  /*
-    Ranking only.
-    Score does NOT turn an invalid setup into a valid trade.
-  */
-
-  const rankScore =
-
-    (
-      entryType !==
-      'NONE'
-
-        ? 40
-
-        : 0
-    )
-
-    +
-
-    clamp(
-
-      (
-        momentum -
-        30
-      ) *
-      0.8,
-
-      0,
-
-      20
-    )
-
-    +
-
-    clamp(
-
-      (
-        volumeRatio -
-        1
-      ) *
-      10,
-
-      0,
-
-      20
-    )
-
-    +
-
-    clamp(
-
-      bodyRatio *
-      15,
-
-      0,
-
-      15
-    )
-
-    +
-
-    (
-      trendOk
-        ? 5
-        : 0
-    );
-
-
-  return {
-
-    eligible:
-      entryType !==
-      'NONE',
-
-    entryType,
-
-    signalTime:
-      current.closeTime,
-
-    signalPrice:
-      current.close,
-
-    ema9,
-
-    ema21,
-
-    cmo:
-      momentum,
-
-    atr:
-      atrValue,
-
-    atrPct:
-
-      pct(
-        atrValue,
-        current.close
-      ),
-
-    volumeRatio,
-
-    bodyRatio,
-
-    resistance,
-
-    swingLow,
-
-    breakoutDistanceAtr,
-
-    rankScore:
-      +rankScore.toFixed(
-        2
-      ),
-
-    checks: {
-
-      trendOk,
-
-      cmoOk,
-
-      candleOk,
-
-      momentumVolumeOk,
-
-      cleanBreakout,
-
-      notExtended,
-
-      recentBreakout:
-        recentBreakout.found,
-
-      touchedRetest,
-
-      heldRetest,
-
-      retestVolumeOk
-    }
-  };
-}
-
-
-// ============================================================
-// FRESH ANALYSIS
-// ============================================================
-
-async function analyzeSymbolFresh(
-  symbol
-) {
-
-  if (
-    positions[
-      symbol
-    ]
-  ) {
-
-    return null;
-  }
-
-
-  const lastLoss =
-
-    n(
-      lastLossBySymbol[
-        symbol
-      ]
-    );
-
-
-  if (
-
-    lastLoss
-
-    &&
-
-    Date.now() -
-      lastLoss <
-      C.symbolLossCooldownMs
-
-  ) {
-
-    return null;
-  }
-
-
-  const [
-    entryResult,
-    contextResult
-  ] =
-
-    await Promise.all([
-
-      fetchClosedKlines(
-
-        symbol,
-
-        C.entryInterval,
-
-        C.klineLimit15m
-      ),
-
-      fetchClosedKlines(
-
-        symbol,
-
-        C.contextInterval,
-
-        C.klineLimit1h
-      )
-    ]);
-
-
-  const context =
-
-    analyze1h(
-      contextResult.candles
-    );
-
-
-  if (
-    !context.ok
-  ) {
-
-    return null;
-  }
-
-
-  const signal =
-
-    analyze15m(
-      entryResult.candles
-    );
-
-
-  if (
-    !signal.eligible
-  ) {
-
-    return null;
-  }
-
-
-  return {
-
-    symbol,
-
-    analyzedAt:
-      Date.now(),
-
-    sources: {
-
-      entry:
-        entryResult.source,
-
-      context:
-        contextResult.source
-    },
-
-    context,
-
-    signal
-  };
-}
-
-
-// ============================================================
-// CONCURRENCY
-// ============================================================
-
-async function mapLimit(
-  items,
-  limit,
-  worker
-) {
-
-  const results =
-    [];
-
-
-  let index =
-    0;
-
-
-  async function runner() {
-
-    while (
-      true
-    ) {
-
-      const i =
-        index++;
-
-
-      if (
-        i >=
-        items.length
-      ) {
-
-        return;
-      }
-
-
-      try {
-
-        const result =
-
-          await worker(
-            items[i]
-          );
-
-
-        if (
-          result
-        ) {
-
-          results.push(
-            result
-          );
-        }
-
-      } catch (
-        error
-      ) {
-
-        console.warn(
-
-          `SCAN ${items[i]} | ` +
-
-          error.message
-        );
-      }
-
-
-      await sleep(
-        80
-      );
-    }
-  }
-
-
-  await Promise.all(
-
-    Array.from(
-
-      {
-
-        length:
-
-          Math.min(
-
-            limit,
-
-            items.length
-          )
-      },
-
-      runner
-    )
-  );
-
-
-  return results;
-}
-
-
-// ============================================================
-// EMERGENCY STOP
-// SAME STRATEGY
+// RISK
 // ============================================================
 
 function emergencyStopFrom(
@@ -3726,9 +3782,19 @@ function emergencyStopFrom(
     C.structureBufferAtr;
 
 
+  /*
+    V6.2.1 used Math.min() here.
+
+    That selected the farther stop,
+    frequently allowing losses to expand.
+
+    V6.3 selects the tighter valid defensive stop
+    and then applies min/max risk boundaries.
+  */
+
   let stop =
 
-    Math.min(
+    Math.max(
 
       atrStop,
 
@@ -3776,11 +3842,6 @@ function emergencyStopFrom(
   };
 }
 
-
-// ============================================================
-// POSITION SIZE
-// SAME STRATEGY
-// ============================================================
 
 function positionSize(
   stopPct
@@ -3836,7 +3897,7 @@ function positionSize(
 
 
 // ============================================================
-// MONGODB
+// DATABASE
 // ============================================================
 
 async function connectCloud() {
@@ -3862,7 +3923,7 @@ async function connectCloud() {
       {
 
         maxPoolSize:
-          8
+          4
       }
     );
 
@@ -3879,6 +3940,7 @@ async function connectCloud() {
 
 
   await db.command({
+
     ping:
       1
   });
@@ -3911,20 +3973,6 @@ async function connectCloud() {
       .createIndex({
 
         version:
-          1,
-
-        time:
-          -1
-      }),
-
-
-    db
-      .collection(
-        'journal'
-      )
-      .createIndex({
-
-        cycleId:
           1,
 
         time:
@@ -4038,10 +4086,6 @@ async function loadState() {
     !cloudConnected
   ) {
 
-    console.log(
-      'No MongoDB state. Fresh account.'
-    );
-
     return;
   }
 
@@ -4060,27 +4104,15 @@ async function loadState() {
 
 
   if (
+
     !state
-  ) {
 
-    console.log(
+    ||
 
-      'FRESH V6.2.1 PAPER ACCOUNT | $10000 | Cycle 1 | 0/20'
-    );
-
-    return;
-  }
-
-
-  if (
     state.version !==
-    C.version
+      C.version
+
   ) {
-
-    console.warn(
-
-      'STATE VERSION MISMATCH - IGNORED'
-    );
 
     return;
   }
@@ -4179,17 +4211,21 @@ async function loadState() {
   );
 
 
-  console.log(
+  Object.assign(
 
-    `STATE RESTORED | ` +
+    lastEmergencyLossBySymbol,
 
-    `Cash $${cash.toFixed(2)} | ` +
+    state.lastEmergencyLossBySymbol ||
+    {}
+  );
 
-    `Cycle ${cycle.id} | ` +
 
-    `${cycle.entries}/20 | ` +
+  Object.assign(
 
-    `Open ${Object.keys(positions).length}`
+    lastClosedSignalBySymbol,
+
+    state.lastClosedSignalBySymbol ||
+    {}
   );
 }
 
@@ -4224,9 +4260,6 @@ async function saveState() {
             version:
               C.version,
 
-            updatedAt:
-              Date.now(),
-
             cash,
 
             positions,
@@ -4249,7 +4282,14 @@ async function saveState() {
 
             cycle,
 
-            lastLossBySymbol
+            lastLossBySymbol,
+
+            lastEmergencyLossBySymbol,
+
+            lastClosedSignalBySymbol,
+
+            updatedAt:
+              Date.now()
           }
         },
 
@@ -4277,107 +4317,63 @@ async function saveState() {
 // TELEGRAM
 // ============================================================
 
-const tgQueue =
-  [];
-
-let tgBusy =
-  false;
-
-
-function tg(
+async function tg(
   text
 ) {
 
   if (
 
-    TELEGRAM_TOKEN
+    !TELEGRAM_TOKEN
 
-    &&
+    ||
 
-    TELEGRAM_CHAT_ID
+    !TELEGRAM_CHAT_ID
 
   ) {
 
-    tgQueue.push(
-      String(
-        text
-      )
+    return;
+  }
+
+
+  try {
+
+    await axios.post(
+
+      `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,
+
+      {
+
+        chat_id:
+          TELEGRAM_CHAT_ID,
+
+        text,
+
+        parse_mode:
+          'HTML',
+
+        disable_web_page_preview:
+          true
+      },
+
+      {
+
+        timeout:
+          8000
+      }
+    );
+
+  } catch (
+    error
+  ) {
+
+    console.warn(
+
+      'Telegram:',
+
+      error.message
     );
   }
 }
-
-
-setInterval(
-
-  async () => {
-
-    if (
-
-      tgBusy
-
-      ||
-
-      !tgQueue.length
-
-    ) {
-
-      return;
-    }
-
-
-    tgBusy =
-      true;
-
-
-    const text =
-      tgQueue.shift();
-
-
-    try {
-
-      await axios.post(
-
-        `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,
-
-        {
-
-          chat_id:
-            TELEGRAM_CHAT_ID,
-
-          text,
-
-          parse_mode:
-            'HTML'
-        },
-
-        {
-
-          timeout:
-            10000
-        }
-      );
-
-    } catch (
-      error
-    ) {
-
-      console.error(
-
-        'Telegram:',
-
-        error.message
-      );
-
-    } finally {
-
-      tgBusy =
-        false;
-    }
-
-  },
-
-  1200
-);
 
 
 // ============================================================
@@ -4493,23 +4489,33 @@ async function openPaperTrade(
     priceData.price;
 
 
+  /*
+    Positive drift means we're chasing upward.
+    Negative drift can be a better entry,
+    within reasonable limits.
+  */
+
   const drift =
 
-    Math.abs(
+    pct(
 
-      pct(
+      livePrice -
+      fresh.signal.signalPrice,
 
-        livePrice -
-        fresh.signal.signalPrice,
-
-        fresh.signal.signalPrice
-      )
+      fresh.signal.signalPrice
     );
 
 
   if (
+
     drift >
-    C.maxEntryDriftPct
+      C.maxChasePct
+
+    ||
+
+    drift <
+      -C.maxNegativeDriftPct
+
   ) {
 
     await cloudJournal({
@@ -4567,8 +4573,7 @@ async function openPaperTrade(
 
 
   // ==========================================================
-  // STATE-FIRST MICROSTRUCTURE GATE
-  // Strategy already passed before reaching here.
+  // MICROSTRUCTURE ONLY FOR FINAL ENTRY
   // ==========================================================
 
   const micro =
@@ -4608,9 +4613,6 @@ async function openPaperTrade(
     return false;
   }
 
-
-  // SaR can reduce position size.
-  // It cannot increase original risk.
 
   allocation *=
     micro.sar.scale;
@@ -4725,7 +4727,10 @@ async function openPaperTrade(
       fresh,
 
     microstructure:
-      micro
+      micro,
+
+    followThroughStage:
+      0
   };
 
 
@@ -4747,9 +4752,6 @@ async function openPaperTrade(
 
     entryPrice,
 
-    priceSource:
-      priceData.source,
-
     allocation,
 
     snapshot:
@@ -4762,57 +4764,34 @@ async function openPaperTrade(
 
   tg(
 
-    `🟢 <b>LOMY PAPER ENTRY</b>\n` +
+    `🟢 <b>LOMY V6.3 PAPER ENTRY</b>\n` +
 
     `${candidate.symbol}\n` +
 
-    `Type: ${fresh.signal.entryType}\n` +
+    `${fresh.signal.entryType}\n` +
 
-    `Price source: ${priceData.source}\n` +
+    `Rank ${fresh.signal.rankScore}\n` +
 
-    `15m CMO: ${fresh.signal.cmo.toFixed(1)}\n` +
+    `CMO ${fresh.signal.cmo.toFixed(1)} | ` +
 
-    `Volume: ${fresh.signal.volumeRatio.toFixed(2)}x\n` +
+    `Vol ${fresh.signal.volumeRatio.toFixed(2)}x\n` +
 
-    `Micro: ${micro.book.state} | ` +
+    `Spread ${micro.book.spreadBps.toFixed(2)}bps | ` +
 
-    `Imb ${(micro.book.imbalance * 100).toFixed(1)}% | ` +
+    `Flow ${
 
-    `SaR ${micro.sar.bps.toFixed(2)}bps\n` +
+      micro.flow.sufficient
 
-    `Cycle: ${cycle.entries}/20`
+        ? micro.flow.imbalance.toFixed(
+            2
+          )
+
+        : 'NEUTRAL'
+
+    }\n` +
+
+    `Cycle ${cycle.entries}/${C.maxEntriesPerCycle}`
   );
-
-
-  if (
-    cycle.entries >=
-    C.maxEntriesPerCycle
-  ) {
-
-    cycle.state =
-      'WAITING_CLOSE';
-
-
-    await cloudJournal({
-
-      type:
-        'CYCLE_FULL',
-
-      openPositions:
-
-        Object.keys(
-          positions
-        ).length
-    });
-
-
-    tg(
-
-      `⏳ Cycle ${cycle.id} reached 20 entries.\n` +
-
-      `Waiting for all positions to close.`
-    );
-  }
 
 
   return true;
@@ -4820,7 +4799,7 @@ async function openPaperTrade(
 
 
 // ============================================================
-// CLOSE TRADE
+// CLOSE PAPER TRADE
 // ============================================================
 
 async function closePaperTrade(
@@ -4831,6 +4810,7 @@ async function closePaperTrade(
 ) {
 
   const position =
+
     positions[
       symbol
     ];
@@ -4913,6 +4893,36 @@ async function closePaperTrade(
     sellFee;
 
 
+  const setup =
+
+    stats.setupStats[
+      position.entryType
+    ]
+
+    ||
+
+    {
+
+      trades:
+        0,
+
+      wins:
+        0,
+
+      losses:
+        0,
+
+      net:
+        0
+    };
+
+
+  setup.trades++;
+
+  setup.net +=
+    profit;
+
+
   if (
     profit >
     0
@@ -4920,27 +4930,67 @@ async function closePaperTrade(
 
     stats.wins++;
 
-
     stats.grossProfit +=
       profit;
+
+    setup.wins++;
 
   } else {
 
     stats.losses++;
 
-
     stats.grossLoss +=
-
       Math.abs(
         profit
       );
 
+    setup.losses++;
 
     lastLossBySymbol[
       symbol
     ] =
       Date.now();
   }
+
+
+  stats.setupStats[
+    position.entryType
+  ] =
+    setup;
+
+
+  if (
+    reason ===
+    'EMERGENCY_STOP'
+  ) {
+
+    lastEmergencyLossBySymbol[
+      symbol
+    ] =
+      Date.now();
+  }
+
+
+  if (
+
+    reason ===
+      'EARLY_NO_FOLLOW_THROUGH'
+
+    ||
+
+    reason ===
+      'STALE_MOMENTUM'
+
+  ) {
+
+    stats.earlyCuts++;
+  }
+
+
+  lastClosedSignalBySymbol[
+    symbol
+  ] =
+    position.signalTime;
 
 
   const record = {
@@ -5023,18 +5073,17 @@ async function closePaperTrade(
 
     `${reason}\n` +
 
-    `Source: ${source}\n` +
+    `PnL $${profit.toFixed(2)} ` +
 
-    `PnL: $${profit.toFixed(2)} ` +
+    `(${profitPct.toFixed(2)}%)\n` +
 
-    `(${profitPct.toFixed(2)}%)`
+    `MFE ${position.mfePct.toFixed(2)}% | ` +
+
+    `MAE ${position.maePct.toFixed(2)}%`
   );
 
 
   updateAccountGuards();
-
-
-  await maybeStartNewCycle();
 }
 
 
@@ -5068,11 +5117,6 @@ async function managePositions() {
 
   try {
 
-    /*
-      Daily guard now runs even when
-      there are zero open positions.
-    */
-
     resetDailyIfNeeded(
       prices
     );
@@ -5093,8 +5137,6 @@ async function managePositions() {
     if (
       !symbols.length
     ) {
-
-      await maybeStartNewCycle();
 
       return;
     }
@@ -5184,9 +5226,115 @@ async function managePositions() {
           );
 
 
+        const heldMinutes =
+
+          (
+            Date.now() -
+            position.entryTime
+          ) /
+          60000;
+
+
         // ======================================================
-        // +0.5% CAPITAL PROTECTION
-        // SAME STRATEGY
+        // FOLLOW THROUGH CHECK #1
+        // ======================================================
+
+        if (
+
+          heldMinutes >=
+            C.followThroughCheck1Min
+
+          &&
+
+          position.followThroughStage <
+            1
+
+        ) {
+
+          position.followThroughStage =
+            1;
+
+
+          if (
+
+            position.mfePct <
+              C.followThroughMinMfe1
+
+            &&
+
+            movePct <=
+              C.followThroughCurrentFloor1
+
+          ) {
+
+            await closePaperTrade(
+
+              symbol,
+
+              priceData.price,
+
+              'EARLY_NO_FOLLOW_THROUGH',
+
+              priceData.source
+            );
+
+
+            continue;
+          }
+        }
+
+
+        // ======================================================
+        // FOLLOW THROUGH CHECK #2
+        // ======================================================
+
+        if (
+
+          heldMinutes >=
+            C.followThroughCheck2Min
+
+          &&
+
+          position.followThroughStage <
+            2
+
+        ) {
+
+          position.followThroughStage =
+            2;
+
+
+          if (
+
+            position.mfePct <
+              C.followThroughMinMfe2
+
+            &&
+
+            movePct <=
+              C.followThroughCurrentFloor2
+
+          ) {
+
+            await closePaperTrade(
+
+              symbol,
+
+              priceData.price,
+
+              'STALE_MOMENTUM',
+
+              priceData.source
+            );
+
+
+            continue;
+          }
+        }
+
+
+        // ======================================================
+        // CAPITAL PROTECTION
         // ======================================================
 
         if (
@@ -5242,8 +5390,7 @@ async function managePositions() {
 
 
         // ======================================================
-        // +0.7% TRAILING
-        // SAME STRATEGY
+        // TRAIL ACTIVATION
         // ======================================================
 
         if (
@@ -5276,6 +5423,10 @@ async function managePositions() {
           });
         }
 
+
+        // ======================================================
+        // DYNAMIC TRAIL
+        // ======================================================
 
         if (
           position.trailingActive
@@ -5316,6 +5467,10 @@ async function managePositions() {
             );
         }
 
+
+        // ======================================================
+        // ACTIVE STOP
+        // ======================================================
 
         let activeStop =
           position.emergencyStop;
@@ -5382,7 +5537,7 @@ async function managePositions() {
 
 
       await sleep(
-        80
+        60
       );
     }
 
@@ -5400,109 +5555,6 @@ async function managePositions() {
 
     positionManagerRunning =
       false;
-  }
-}
-
-
-// ============================================================
-// CYCLE
-// ============================================================
-
-async function startNewCycle(
-  reason =
-    'PREVIOUS_CYCLE_COMPLETE'
-) {
-
-  const previousId =
-    cycle.id;
-
-
-  cycle = {
-
-    id:
-      previousId +
-      1,
-
-    state:
-      'SCANNING',
-
-    entries:
-      0,
-
-    startedAt:
-      Date.now(),
-
-    lastFreshScanAt:
-      0,
-
-    lastScanCandidates:
-      0,
-
-    lastUniverseSource:
-      null
-  };
-
-
-  stats.cycleCount++;
-
-
-  /*
-    Delete old research.
-  */
-
-  universe =
-    [];
-
-
-  universeUpdatedAt =
-    0;
-
-
-  await cloudJournal({
-
-    type:
-      'CYCLE_START',
-
-    reason
-  });
-
-
-  tg(
-
-    `🔄 <b>Cycle ${cycle.id}</b>\n` +
-
-    `Fresh research started.\n` +
-
-    `All previous candidates discarded.`
-  );
-
-
-  setTimeout(
-
-    runFreshScan,
-
-    1000
-  );
-}
-
-
-async function maybeStartNewCycle() {
-
-  if (
-
-    cycle.state ===
-      'WAITING_CLOSE'
-
-    &&
-
-    Object.keys(
-      positions
-    ).length ===
-      0
-
-  ) {
-
-    await startNewCycle();
   }
 }
 
@@ -5531,61 +5583,34 @@ async function runFreshScan() {
   }
 
 
-  if (
-
-    cycle.entries >=
-    C.maxEntriesPerCycle
-
-  ) {
-
-    cycle.state =
-      'WAITING_CLOSE';
-
-    return;
-  }
-
-
   scanning =
     true;
 
 
-  cycle.lastFreshScanAt =
-    Date.now();
-
-
   try {
-
-    console.log(
-
-      `FRESH SCAN | ` +
-
-      `Cycle ${cycle.id} | ` +
-
-      `${cycle.entries}/20`
-    );
-
-
-    /*
-      Universe is refreshed according to
-      universeRefreshMs, not forced every scan.
-    */
 
     const symbols =
 
-      await refreshUniverse(
-        false
-      );
+      await refreshUniverse();
+
+
+    cycle.lastFreshScanAt =
+      Date.now();
+
+
+    cycle.scanned =
+      symbols.length;
 
 
     /*
-      Strategy analysis.
-      No Microstructure REST calls yet.
+      STAGE 1:
+      Only fetch 5m data for the whole universe.
 
-      Microstructure runs ONLY for candidates
-      that reach the final execution stage.
+      This is much lighter than downloading
+      5m + 1h for every symbol.
     */
 
-    const candidates =
+    const rawCandidates =
 
       await mapLimit(
 
@@ -5593,7 +5618,53 @@ async function runFreshScan() {
 
         C.scanConcurrency,
 
-        analyzeSymbolFresh
+        analyzeEntryOnly
+      );
+
+
+    rawCandidates.sort(
+
+      (
+        a,
+        b
+      ) =>
+
+        b.signal.rankScore -
+
+        a.signal.rankScore
+    );
+
+
+    /*
+      STAGE 2:
+      Only the strongest potential candidates
+      get the 1H context request.
+    */
+
+    const contextPool =
+
+      rawCandidates.slice(
+
+        0,
+
+        Math.min(
+
+          30,
+
+          rawCandidates.length
+        )
+      );
+
+
+    const candidates =
+
+      await mapLimit(
+
+        contextPool,
+
+        3,
+
+        addContext
       );
 
 
@@ -5621,6 +5692,9 @@ async function runFreshScan() {
 
       scanned:
         symbols.length,
+
+      rawQualified:
+        rawCandidates.length,
 
       qualified:
         candidates.length,
@@ -5654,10 +5728,7 @@ async function runFreshScan() {
                 candidate.signal.volumeRatio,
 
               bodyRatio:
-                candidate.signal.bodyRatio,
-
-              sources:
-                candidate.sources
+                candidate.signal.bodyRatio
             })
           )
     });
@@ -5669,7 +5740,9 @@ async function runFreshScan() {
 
       `${symbols.length} checked | ` +
 
-      `${candidates.length} qualified`
+      `${rawCandidates.length} setup | ` +
+
+      `${candidates.length} context-pass`
     );
 
 
@@ -5683,21 +5756,8 @@ async function runFreshScan() {
     ) {
 
       if (
-
         opened >=
         C.maxEntriesPerScan
-
-      ) {
-
-        break;
-      }
-
-
-      if (
-
-        cycle.entries >=
-        C.maxEntriesPerCycle
-
       ) {
 
         break;
@@ -5738,6 +5798,11 @@ async function runFreshScan() {
 
         opened++;
       }
+
+
+      await sleep(
+        80
+      );
     }
 
   } catch (
@@ -5896,17 +5961,17 @@ function dashboardData() {
       contextTimeframe:
         C.contextInterval,
 
-      maxEntriesPerCycle:
-        C.maxEntriesPerCycle,
+      universeSize:
+        C.universeSize,
 
       maxPositions:
         C.maxPositions,
 
       marketData:
-        'BINANCE_TESTNET_ONLY',
+        'BINANCE_PUBLIC',
 
       microstructure:
-        'STATE_FIRST + SAR'
+        'LIGHT_EXECUTION_GATE + REAL_AGG_FLOW + SAR'
     }
   };
 }
@@ -5992,9 +6057,7 @@ app.post(
   ) => {
 
     setTimeout(
-
       runFreshScan,
-
       0
     );
 
@@ -6020,12 +6083,10 @@ app.post(
     try {
 
       for (
-
         const symbol
         of Object.keys(
           positions
         )
-
       ) {
 
         const priceData =
@@ -6107,7 +6168,7 @@ app.get(
 >
 
 <title>
-LOMY V6.2.1
+LOMY V6.3
 </title>
 
 <style>
@@ -6139,7 +6200,7 @@ body {
 }
 
 .value {
-  font-size: 23px;
+  font-size: 22px;
   font-weight: bold;
   margin-top: 4px;
 }
@@ -6166,15 +6227,11 @@ pre {
 <body>
 
 <h2>
-LOMY V6.2.1
+LOMY V6.3
 </h2>
 
 <div>
-15M + 1H • Cycle20 • Binance Testnet Only • State-First Microstructure
-</div>
-
-<div>
-PAPER ONLY
+5M Entry + 1H Context • Binance Public Data • PAPER ONLY • Light Micro + Real Flow + SaR
 </div>
 
 <div
@@ -6223,9 +6280,7 @@ async function post(
 
 
   setTimeout(
-
     load,
-
     500
   );
 }
@@ -6256,22 +6311,6 @@ async function load() {
       'Cash',
       '$' +
       d.cash
-    ],
-
-    [
-      'Cycle',
-      d.cycle.id
-    ],
-
-    [
-      'Entries',
-      d.cycle.entries +
-      '/20'
-    ],
-
-    [
-      'Cycle State',
-      d.cycle.state
     ],
 
     [
@@ -6311,9 +6350,20 @@ async function load() {
     ],
 
     [
-      'Universe Source',
+      'Scanned',
+      d.cycle.scanned
+    ],
+
+    [
+      'Universe',
       d.cycle.lastUniverseSource ||
       '-'
+    ],
+
+    [
+      'Early Cuts',
+      d.stats.earlyCuts ||
+      0
     ]
   ];
 
@@ -6331,15 +6381,11 @@ async function load() {
             '<div class="card">' +
 
             '<div class="label">' +
-
             item[0] +
-
             '</div>' +
 
             '<div class="value">' +
-
             item[1] +
-
             '</div>' +
 
             '</div>'
@@ -6359,15 +6405,17 @@ async function load() {
 
         {
 
-          exchanges:
-            d.exchanges,
-
           guards:
             d.guards,
 
-          positions:
-            d.positions
+          setupStats:
+            d.stats.setupStats,
 
+          positions:
+            d.positions,
+
+          exchange:
+            d.exchanges
         },
 
         null,
@@ -6381,9 +6429,7 @@ load();
 
 
 setInterval(
-
   load,
-
   5000
 );
 
@@ -6405,64 +6451,40 @@ setInterval(
 async function main() {
 
   console.log(
-    ''
-  );
-
-
-  console.log(
     '=============================================='
   );
-
 
   console.log(
     `LOMY ${C.version}`
   );
 
-
   console.log(
     'PAPER ONLY'
   );
 
-
   console.log(
-    '15M ENTRY + 1H CONTEXT'
+    'BINANCE PUBLIC MARKET DATA'
   );
 
-
   console.log(
-    'ULTRA FAST CORE'
+    '5M ENTRY + 1H CONTEXT'
   );
 
-
   console.log(
-    'MOMENTUM ENTRY + RETEST ENTRY'
+    'MOMENTUM + RETEST + PULLBACK CONTINUATION'
   );
 
-
   console.log(
-    '20 ENTRIES MAX PER CYCLE'
+    'LIGHT MICRO + REAL AGG FLOW + SAR'
   );
 
-
   console.log(
-    'FRESH RESEARCH - NO OLD CANDIDATES'
+    'FOLLOW-THROUGH LOSS CUTTER'
   );
 
-
   console.log(
-    'BINANCE SPOT TESTNET ONLY'
+    'RENDER-FREE FRIENDLY STAGED SCANNER'
   );
-
-
-  console.log(
-    'STATE-FIRST MICROSTRUCTURE + SAR'
-  );
-
-
-  console.log(
-    'CAPITAL PROTECTION + DYNAMIC TRAIL'
-  );
-
 
   console.log(
     '=============================================='
@@ -6494,39 +6516,22 @@ async function main() {
     type:
       'BOOT',
 
-    startingState: {
-
-      cash,
-
-      openPositions:
-
-        Object.keys(
-          positions
-        ).length,
-
-      cycle:
-        cycle.id,
-
-      cycleEntries:
-        cycle.entries
-    },
-
     architecture: {
 
       entryTimeframe:
-        '15m',
+        C.entryInterval,
 
       contextTimeframe:
-        '1h',
-
-      cycleLimit:
-        20,
+        C.contextInterval,
 
       marketData:
-        'BINANCE_TESTNET_ONLY',
+        'BINANCE_PUBLIC',
+
+      universeSize:
+        C.universeSize,
 
       microstructure:
-        'STATE_FIRST + SAR'
+        'LIGHT_REAL_FLOW_SAR'
     }
   });
 
@@ -6537,41 +6542,18 @@ async function main() {
 
     `PAPER ONLY\n` +
 
-    `Binance Spot Testnet Only\n` +
+    `Binance Public Market Data\n` +
 
-    `15m + 1H | State-First Microstructure + SaR\n` +
+    `5m + 1H\n` +
 
-    `Cycle ${cycle.id}: ${cycle.entries}/20`
+    `Light Micro + Real Flow + SaR`
   );
 
 
-  if (
-
-    cycle.state ===
-      'WAITING_CLOSE'
-
-    &&
-
-    Object.keys(
-      positions
-    ).length ===
-      0
-
-  ) {
-
-    await startNewCycle(
-      'RECOVERED_EMPTY_CYCLE'
-    );
-
-  } else {
-
-    setTimeout(
-
-      runFreshScan,
-
-      1500
-    );
-  }
+  setTimeout(
+    runFreshScan,
+    1500
+  );
 
 
   setInterval(
@@ -6600,12 +6582,10 @@ async function main() {
 
 
 // ============================================================
-// SHUTDOWN
+// SAFE SHUTDOWN
 // ============================================================
 
-async function shutdown(
-  signal
-) {
+async function shutdown() {
 
   if (
     shuttingDown
@@ -6619,24 +6599,30 @@ async function shutdown(
     true;
 
 
-  console.log(
+  try {
 
-    `SHUTDOWN ${signal}`
-  );
+    await saveState();
 
-
-  await saveState();
-
-
-  if (
-    mongoClient
+  } catch (
+    error
   ) {
 
-    await mongoClient
-      .close()
-      .catch(
-        () => {}
-      );
+  }
+
+
+  try {
+
+    if (
+      mongoClient
+    ) {
+
+      await mongoClient.close();
+    }
+
+  } catch (
+    error
+  ) {
+
   }
 
 
@@ -6646,63 +6632,17 @@ async function shutdown(
 }
 
 
-process.once(
-
+process.on(
   'SIGTERM',
-
-  () =>
-    shutdown(
-      'SIGTERM'
-    )
+  shutdown
 );
 
 
-process.once(
-
+process.on(
   'SIGINT',
-
-  () =>
-    shutdown(
-      'SIGINT'
-    )
+  shutdown
 );
 
-
-process.on(
-
-  'uncaughtException',
-
-  error => {
-
-    console.error(
-
-      'UNCAUGHT EXCEPTION:',
-
-      error
-    );
-  }
-);
-
-
-process.on(
-
-  'unhandledRejection',
-
-  error => {
-
-    console.error(
-
-      'UNHANDLED REJECTION:',
-
-      error
-    );
-  }
-);
-
-
-// ============================================================
-// START
-// ============================================================
 
 main()
   .catch(
@@ -6710,7 +6650,7 @@ main()
 
       console.error(
 
-        'MAIN:',
+        'FATAL:',
 
         error
       );
