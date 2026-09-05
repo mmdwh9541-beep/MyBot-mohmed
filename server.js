@@ -7,227 +7,340 @@ const axios = require('axios');
 const { MongoClient } = require('mongodb');
 
 const app = express();
-app.use(express.json());
 
-const PORT = Number(process.env.PORT || 5000);
-const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN || '';
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';
-const MONGODB_URI = process.env.MONGODB_URI || '';
-const MONGODB_DB = process.env.MONGODB_DB || 'lomy';
+app.use(
+  express.json()
+);
+
 
 // ============================================================
-// LOMY V6.3.2 — PROFIT MANAGER
-// ENTRY STRATEGY = V6.3.1 FROZEN / UNCHANGED
-// POST-ENTRY CHANGES ONLY:
-// 1) Cost-aware capital protection
-// 2) Staged dynamic trailing
-// 3) Conservative failed-follow-through stop
-// 4) Entry-candle + position-path telemetry
+// ENVIRONMENT
+// ============================================================
+
+const PORT =
+  Number(
+    process.env.PORT ||
+    5000
+  );
+
+
+const TELEGRAM_TOKEN =
+  process.env.TELEGRAM_TOKEN ||
+  '';
+
+
+const TELEGRAM_CHAT_ID =
+  process.env.TELEGRAM_CHAT_ID ||
+  '';
+
+
+const MONGODB_URI =
+  process.env.MONGODB_URI ||
+  '';
+
+
+const MONGODB_DB =
+  process.env.MONGODB_DB ||
+  'lomy';
+
+
+// ============================================================
+// BINANCE PUBLIC MARKET DATA
+// ============================================================
+
+const BINANCE_REST =
+  'https://data-api.binance.vision';
+
+
+// ============================================================
+// LOMY V6.4.1
+// FIXED STOP LOSS 2%
+// FIXED TAKE PROFIT 4%
+// NO TRAILING
+// NO BREAK EVEN
 // PAPER ONLY
 // ============================================================
 
-const BINANCE_REST = 'https://data-api.binance.vision';
+const C =
+Object.freeze({
 
-const C = Object.freeze({
-  version: '6.3.2-PROFIT-MANAGER',
-  stateKey: 'main-v632',
+  version:
+    '6.4.1-FIXED-SL2-TP4',
 
-  paperTrading: true,
+  stateKey:
+    'main-v641-fixed-sl2-tp4',
 
-  // ==========================================================
-  // STARTING CAPITAL
-  // ==========================================================
-  startingBalance: 1000,
+  strategyKey:
+    'V6.3.1_FROZEN_ENTRY',
 
-  // ==========================================================
-  // MARKET — SAME AS V6.3.1
-  // ==========================================================
-  universeSize: 140,
-  minQuoteVolume: 500000,
+  paperTrading:
+    true,
 
-  scanEveryMs: 2 * 60 * 1000,
-  scanConcurrency: 4,
-  maxEntriesPerScan: 2,
+  startingBalance:
+    1000,
 
-  universeRefreshMs: 10 * 60 * 1000,
-  requestTimeoutMs: 10000,
-  requestGapMs: 80,
 
   // ==========================================================
-  // CYCLE — SAME
-  // ==========================================================
-  maxEntriesPerCycle: 20,
-  maxPositions: 6,
-
-  // ==========================================================
-  // TIMEFRAMES — SAME
-  // ==========================================================
-  entryInterval: '15m',
-  contextInterval: '1h',
-
-  klineLimit15m: 80,
-  klineLimit1h: 80,
-
-  // ==========================================================
-  // FROZEN V6.3.1 ENTRY CORE — DO NOT CHANGE
-  // ==========================================================
-  emaFast: 9,
-  emaSlow: 21,
-
-  cmoLength: 9,
-  cmoBuyMin: 30,
-
-  volumeSmaLength: 10,
-  momentumVolumeMultiplier: 1.30,
-
-  minBodyRatio: 0.50,
-
-  breakoutLookback: 20,
-  breakoutBufferPct: 0.03,
-
-  maxMomentumExtensionAtr: 0.85,
-
-  retestTolerancePct: 0.20,
-  retestLookbackBars: 3,
-  retestMinVolumeRatio: 1.00,
-
-  maxEntryDriftPct: 0.18,
-
-  // ==========================================================
-  // ORIGINAL RISK MODEL
-  // HARD EMERGENCY STOP IS STILL AVAILABLE
-  // ==========================================================
-  feePct: 0.001,
-  slippagePct: 0.0005,
-
-  riskPerTradePct: 0.0045,
-  maxAllocationPct: 0.22,
-
-  minEmergencyStopPct: 0.0065,
-  maxEmergencyStopPct: 0.018,
-
-  atrStopMultiplier: 1.65,
-  structureBufferAtr: 0.20,
-
-  // ==========================================================
-  // V6.3.2 PROFIT MANAGER
+  // MARKET
   // ==========================================================
 
-  // CAPITAL PROTECTION
-  capitalProtectionTriggerPct: 0.60,
+  universeSize:
+    140,
 
-  // Target actual modeled net profit after fees/slippage.
-  capitalNetLockPct: 0.12,
+  minQuoteVolume:
+    500000,
 
-  // ==========================================================
-  // STAGED TRAILING
-  // ==========================================================
-  trailingStartPct: 0.85,
+  scanEveryMs:
+    2 *
+    60 *
+    1000,
 
-  trailingAtrMultiplier: 0.90,
+  scanConcurrency:
+    4,
 
-  trailingGapMinPct: 0.28,
-  trailingGapMaxPct: 0.55,
+  maxEntriesPerScan:
+    2,
 
-  // Stage thresholds based on MFE
-  trailStage2MfePct: 1.25,
-  trailStage3MfePct: 1.75,
-  trailStage4MfePct: 2.50,
-  trailStage5MfePct: 3.50,
+  universeRefreshMs:
+    10 *
+    60 *
+    1000,
 
-  // Maximum trail gap by stage
-  trailStage1MaxGapPct: 0.55,
-  trailStage2MaxGapPct: 0.48,
-  trailStage3MaxGapPct: 0.42,
-  trailStage4MaxGapPct: 0.36,
-  trailStage5MaxGapPct: 0.32,
+  requestTimeoutMs:
+    10000,
 
-  // Minimum fraction of MFE that must be protected
-  trailStage1LockFraction: 0.40,
-  trailStage2LockFraction: 0.50,
-  trailStage3LockFraction: 0.58,
-  trailStage4LockFraction: 0.65,
-  trailStage5LockFraction: 0.70,
+  requestGapMs:
+    80,
+
 
   // ==========================================================
-  // FAILED FOLLOW-THROUGH CONTROL
+  // POSITION MANAGER
   // ==========================================================
-  failureStopEnabled: true,
 
-  // Do not judge the trade too early
-  failureMinAgeMinutes: 60,
+  pricePollMs:
+    5000,
 
-  // Trade must have failed to make meaningful progress
-  failureMaxMfePct: 0.25,
+  stateSaveMs:
+    30000,
 
-  // Close before the original full emergency loss
-  failureDrawdownPct: 1.35,
 
   // ==========================================================
-  // TELEMETRY ONLY
+  // CYCLE
   // ==========================================================
-  positionTelemetryEveryMs: 5 * 60 * 1000,
 
-  // ==========================================================
-  // EXECUTION QUALITY — SAME AS V6.3.1
-  // ==========================================================
-  maxEntrySpreadBps: 7.0,
+  maxEntriesPerCycle:
+    20,
 
-  depthLimit: 50,
-  aggTradeLimit: 100,
-  microTopLevels: 12,
+  maxPositions:
+    6,
 
-  microFlowWindowMs: 45 * 1000,
-  microMinRecentTrades: 6,
-
-  stressedSpreadBps: 18,
-  stressedMinSideDepthUSDT: 1200,
-
-  severeSellBookImbalance: -0.35,
-  severeMicropriceEdgeBps: -6,
-
-  sarReduceFromBps: 12,
-  sarRejectBps: 25,
-  sarMinSizeScale: 0.40,
 
   // ==========================================================
-  // SHADOW ONLY — DOES NOT BLOCK ENTRY
+  // TIMEFRAMES
   // ==========================================================
-  atrPctShadowThreshold: 0.50,
+
+  entryInterval:
+    '15m',
+
+  contextInterval:
+    '1h',
+
+  klineLimit15m:
+    80,
+
+  klineLimit1h:
+    80,
+
 
   // ==========================================================
-  // ACCOUNT
+  // V6.3.1 FROZEN ENTRY CORE
+  // DO NOT CHANGE
   // ==========================================================
-  dailyLossLimitPct: 0.035,
-  maxAccountDrawdownPct: 0.07,
 
-  symbolLossCooldownMs: 45 * 60 * 1000,
+  emaFast:
+    9,
+
+  emaSlow:
+    21,
+
+  cmoLength:
+    9,
+
+  cmoBuyMin:
+    30,
+
+  volumeSmaLength:
+    10,
+
+  momentumVolumeMultiplier:
+    1.30,
+
+  minBodyRatio:
+    0.50,
+
+  breakoutLookback:
+    20,
+
+  breakoutBufferPct:
+    0.03,
+
+  maxMomentumExtensionAtr:
+    0.85,
+
+  retestTolerancePct:
+    0.20,
+
+  retestLookbackBars:
+    3,
+
+  retestMinVolumeRatio:
+    1.00,
+
+  maxEntryDriftPct:
+    0.18,
+
+
+  // ==========================================================
+  // COST MODEL
+  // ==========================================================
+
+  feePct:
+    0.001,
+
+  slippagePct:
+    0.0005,
+
+
+  // ==========================================================
+  // MONEY MANAGEMENT
+  // ==========================================================
+
+  riskPerTradePct:
+    0.0045,
+
+  maxAllocationPct:
+    0.22,
+
+
+  // ==========================================================
+  // FIXED EXIT
+  // USER RULE
+  // ==========================================================
+
+  fixedStopLossPct:
+    2.0,
+
+  fixedTakeProfitPct:
+    4.0,
+
+
+  // ==========================================================
+  // EXECUTION QUALITY
+  // ==========================================================
+
+  maxEntrySpreadBps:
+    7.0,
+
+  depthLimit:
+    50,
+
+  aggTradeLimit:
+    100,
+
+  microTopLevels:
+    12,
+
+  microFlowWindowMs:
+    45 *
+    1000,
+
+  microMinRecentTrades:
+    6,
+
+  stressedSpreadBps:
+    18,
+
+  stressedMinSideDepthUSDT:
+    1200,
+
+  severeSellBookImbalance:
+    -0.35,
+
+  severeMicropriceEdgeBps:
+    -6,
+
+  sarReduceFromBps:
+    12,
+
+  sarRejectBps:
+    25,
+
+  sarMinSizeScale:
+    0.40,
+
+
+  // ==========================================================
+  // ACCOUNT GUARDS
+  // ==========================================================
+
+  dailyLossLimitPct:
+    0.035,
+
+  maxAccountDrawdownPct:
+    0.07,
+
+  symbolLossCooldownMs:
+    45 *
+    60 *
+    1000,
+
 
   // ==========================================================
   // BINANCE HEALTH
   // ==========================================================
-  binance429PauseMs: 5 * 60 * 1000,
-  binance418PauseMs: 30 * 60 * 1000,
 
-  // ==========================================================
-  // RUNTIME
-  // ==========================================================
-  pricePollMs: 5000,
-  stateSaveMs: 30000
+  binance429PauseMs:
+    5 *
+    60 *
+    1000,
+
+  binance418PauseMs:
+    30 *
+    60 *
+    1000
+
 });
 
 
-const IGNORED = new Set([
+// ============================================================
+// IGNORED STABLE PAIRS
+// ============================================================
+
+const IGNORED =
+new Set([
+
   'USDCUSDT',
+
   'FDUSDUSDT',
+
   'TUSDUSDT',
+
   'USDPUSDT',
+
   'BUSDUSDT',
+
   'DAIUSDT',
+
   'USDEUSDT',
+
   'USD1USDT'
+
 ]);
 
+
+// ============================================================
+// HELPERS
+// ============================================================
 
 const sleep =
   ms =>
@@ -249,6 +362,7 @@ function n(
     Number(
       value
     );
+
 
   return Number.isFinite(
     x
@@ -301,102 +415,6 @@ function utcDay() {
 
 
 // ============================================================
-// MODELED TRADE COST
-// ============================================================
-
-function grossMoveNeededForNetPct(
-  targetNetPct
-) {
-
-  const target =
-    1 +
-    targetNetPct /
-    100;
-
-
-  const costFactor =
-
-    (
-      1 -
-      C.feePct
-    )
-
-    *
-
-    (
-      1 -
-      C.slippagePct
-    )
-
-    *
-
-    (
-      1 -
-      C.feePct
-    );
-
-
-  return (
-
-    (
-      target /
-      costFactor
-    )
-
-    -
-
-    1
-
-  ) *
-    100;
-}
-
-
-function modeledNetPctAtRawMove(
-  rawMovePct
-) {
-
-  const factor =
-
-    (
-      1 -
-      C.feePct
-    )
-
-    *
-
-    (
-      1 -
-      C.slippagePct
-    )
-
-    *
-
-    (
-      1 -
-      C.feePct
-    )
-
-    *
-
-    (
-      1 +
-      rawMovePct /
-      100
-    );
-
-
-  return (
-
-    factor -
-    1
-
-  ) *
-    100;
-}
-
-
-// ============================================================
 // ACCOUNT
 // ============================================================
 
@@ -434,23 +452,21 @@ let stats = {
   maxDrawdown:
     0,
 
-  breakEvenMoves:
-    0,
-
-  trailingActivations:
-    0,
-
-  failureStops:
-    0,
-
   cycleCount:
     1,
 
   setupStats:
     {},
 
-  exitStats:
-    {}
+  duplicateRejects:
+    0,
+
+  stopLossExits:
+    0,
+
+  takeProfitExits:
+    0
+
 };
 
 
@@ -511,11 +527,16 @@ let cycle = {
 
   lastScanned:
     0
+
 };
 
 
 const lastLossBySymbol =
   {};
+
+
+const claimedSignalKeys =
+  new Set();
 
 
 let universe =
@@ -539,7 +560,7 @@ let shuttingDown =
 
 
 // ============================================================
-// BINANCE HEALTH
+// EXCHANGE HEALTH
 // ============================================================
 
 const exchangeHealth = {
@@ -557,12 +578,14 @@ const exchangeHealth = {
 
     lastSuccess:
       0
+
   }
+
 };
 
 
 // ============================================================
-// DATABASE
+// MONGODB
 // ============================================================
 
 let mongoClient =
@@ -606,6 +629,7 @@ function equity(
 
         position.lastPrice ||
         position.entryPrice
+
       );
 
 
@@ -613,6 +637,7 @@ function equity(
 
       position.qty *
       price;
+
   }
 
 
@@ -621,7 +646,7 @@ function equity(
 
 
 // ============================================================
-// ACCOUNT GUARDS
+// DAILY RESET
 // ============================================================
 
 function resetDailyIfNeeded(
@@ -638,6 +663,7 @@ function resetDailyIfNeeded(
   ) {
 
     return;
+
   }
 
 
@@ -657,8 +683,13 @@ function resetDailyIfNeeded(
 
   dailyPause =
     false;
+
 }
 
+
+// ============================================================
+// ACCOUNT GUARDS
+// ============================================================
 
 function updateAccountGuards(
   prices = {}
@@ -677,6 +708,7 @@ function updateAccountGuards(
       peakEquity,
 
       eq
+
     );
 
 
@@ -686,11 +718,14 @@ function updateAccountGuards(
     0
 
       ? (
+
           (
             peakEquity -
             eq
           ) /
+
           peakEquity
+
         ) *
         100
 
@@ -704,6 +739,7 @@ function updateAccountGuards(
       stats.maxDrawdown,
 
       ddPct
+
     );
 
 
@@ -722,6 +758,7 @@ function updateAccountGuards(
 
     dailyPause =
       true;
+
   }
 
 
@@ -735,7 +772,9 @@ function updateAccountGuards(
 
     drawdownPause =
       true;
+
   }
+
 }
 
 
@@ -751,12 +790,14 @@ function entryBlocked() {
 
     cycle.state !==
       'SCANNING'
+
   );
+
 }
 
 
 // ============================================================
-// INDICATORS
+// EMA
 // ============================================================
 
 function ema(
@@ -778,6 +819,7 @@ function ema(
   ) {
 
     return null;
+
   }
 
 
@@ -831,12 +873,17 @@ function ema(
       multiplier +
 
       result;
+
   }
 
 
   return result;
 }
 
+
+// ============================================================
+// CMO
+// ============================================================
 
 function cmo(
   closes,
@@ -858,6 +905,7 @@ function cmo(
   ) {
 
     return null;
+
   }
 
 
@@ -906,7 +954,9 @@ function cmo(
         Math.abs(
           difference
         );
+
     }
+
   }
 
 
@@ -921,6 +971,7 @@ function cmo(
   ) {
 
     return 0;
+
   }
 
 
@@ -935,8 +986,13 @@ function cmo(
 
   ) *
     100;
+
 }
 
+
+// ============================================================
+// ATR
+// ============================================================
 
 function atr(
   candles,
@@ -958,6 +1014,7 @@ function atr(
   ) {
 
     return null;
+
   }
 
 
@@ -1005,8 +1062,11 @@ function atr(
           current.low -
           previous.close
         )
+
       )
+
     );
+
   }
 
 
@@ -1023,9 +1083,15 @@ function atr(
     ) /
 
     values.length
+
   );
+
 }
 
+
+// ============================================================
+// CANDLE BODY
+// ============================================================
 
 function candleBodyRatio(
   candle
@@ -1043,6 +1109,7 @@ function candleBodyRatio(
   ) {
 
     return 0;
+
   }
 
 
@@ -1056,9 +1123,15 @@ function candleBodyRatio(
     ) /
 
     range
+
   );
+
 }
 
+
+// ============================================================
+// VOLUME SMA
+// ============================================================
 
 function smaVolume(
   candles,
@@ -1079,6 +1152,7 @@ function smaVolume(
   ) {
 
     return null;
+
   }
 
 
@@ -1104,12 +1178,14 @@ function smaVolume(
     ) /
 
     rows.length
+
   );
+
 }
 
 
 // ============================================================
-// BINANCE PUBLIC REST
+// BINANCE HEALTH
 // ============================================================
 
 function exchangeAvailable() {
@@ -1121,7 +1197,9 @@ function exchangeAvailable() {
     exchangeHealth
       .BINANCE
       .blockedUntil
+
   );
+
 }
 
 
@@ -1143,6 +1221,7 @@ function markExchangeSuccess() {
     .BINANCE
     .lastSuccess =
       Date.now();
+
 }
 
 
@@ -1177,6 +1256,7 @@ function markBinanceFailure(
       error.response
         ?.headers
         ?.['retry-after']
+
     );
 
 
@@ -1205,7 +1285,10 @@ function markBinanceFailure(
 
         : C.binance418PauseMs;
 
-  } else if (
+  }
+
+
+  else if (
     status ===
     429
   ) {
@@ -1226,7 +1309,10 @@ function markBinanceFailure(
 
         : C.binance429PauseMs;
 
-  } else if (
+  }
+
+
+  else if (
 
     !status ||
 
@@ -1236,8 +1322,8 @@ function markBinanceFailure(
   ) {
 
     pause =
-      20 *
-      1000;
+      20000;
+
   }
 
 
@@ -1254,23 +1340,17 @@ function markBinanceFailure(
 
         Date.now() +
         pause
+
       );
 
-
-    console.warn(
-
-      `BINANCE paused ` +
-
-      `${Math.ceil(
-        pause /
-        1000
-      )}s | ` +
-
-      `${status || error.message}`
-    );
   }
+
 }
 
+
+// ============================================================
+// BINANCE GET
+// ============================================================
 
 async function binanceGet(
   path,
@@ -1284,6 +1364,7 @@ async function binanceGet(
     throw new Error(
       'BINANCE_TEMP_BLOCKED'
     );
+
   }
 
 
@@ -1301,7 +1382,9 @@ async function binanceGet(
 
           timeout:
             C.requestTimeoutMs
+
         }
+
       );
 
 
@@ -1310,7 +1393,10 @@ async function binanceGet(
 
     return response.data;
 
-  } catch (
+  }
+
+
+  catch (
     error
   ) {
 
@@ -1320,65 +1406,15 @@ async function binanceGet(
 
 
     throw error;
+
   }
+
 }
 
 
 // ============================================================
-// KLINES
+// CLOSED KLINES
 // ============================================================
-
-function mapKline(
-  row
-) {
-
-  return {
-
-    openTime:
-      n(
-        row[0]
-      ),
-
-    open:
-      n(
-        row[1]
-      ),
-
-    high:
-      n(
-        row[2]
-      ),
-
-    low:
-      n(
-        row[3]
-      ),
-
-    close:
-      n(
-        row[4]
-      ),
-
-    volume:
-      n(
-        row[5]
-      ),
-
-    closeTime:
-      n(
-        row[6]
-      ),
-
-    quoteVolume:
-      n(
-        row[7]
-      ),
-
-    source:
-      'BINANCE_PUBLIC'
-  };
-}
-
 
 async function fetchClosedKlines(
   symbol,
@@ -1399,7 +1435,9 @@ async function fetchClosedKlines(
         interval,
 
         limit
+
       }
+
     );
 
 
@@ -1407,12 +1445,59 @@ async function fetchClosedKlines(
     Date.now();
 
 
-  const rows =
+  const candles =
 
     data
+
       .map(
-        mapKline
+        row => ({
+
+          openTime:
+            n(
+              row[0]
+            ),
+
+          open:
+            n(
+              row[1]
+            ),
+
+          high:
+            n(
+              row[2]
+            ),
+
+          low:
+            n(
+              row[3]
+            ),
+
+          close:
+            n(
+              row[4]
+            ),
+
+          volume:
+            n(
+              row[5]
+            ),
+
+          closeTime:
+            n(
+              row[6]
+            ),
+
+          quoteVolume:
+            n(
+              row[7]
+            ),
+
+          source:
+            'BINANCE_PUBLIC'
+
+        })
       )
+
       .filter(
         candle =>
           candle.closeTime <
@@ -1421,14 +1506,16 @@ async function fetchClosedKlines(
 
 
   if (
-    rows.length <
+    candles.length <
     30
   ) {
 
     throw new Error(
 
       `BINANCE_KLINES_NOT_READY ${symbol} ${interval}`
+
     );
+
   }
 
 
@@ -1437,166 +1524,10 @@ async function fetchClosedKlines(
     source:
       'BINANCE_PUBLIC',
 
-    candles:
-      rows
+    candles
+
   };
-}
 
-
-// ============================================================
-// ENTRY CANDLE TELEMETRY
-// DOES NOT BLOCK OR CHANGE ENTRY
-// ============================================================
-
-async function fetchLiveEntryCandle(
-  symbol
-) {
-
-  const data =
-
-    await binanceGet(
-
-      '/api/v3/klines',
-
-      {
-
-        symbol,
-
-        interval:
-          C.entryInterval,
-
-        limit:
-          2
-      }
-    );
-
-
-  if (
-
-    !Array.isArray(
-      data
-    )
-
-    ||
-
-    !data.length
-
-  ) {
-
-    return null;
-  }
-
-
-  return mapKline(
-    data.at(
-      -1
-    )
-  );
-}
-
-
-function entryCandleTelemetry(
-  candle,
-  entryPrice
-) {
-
-  if (
-    !candle
-  ) {
-
-    return null;
-  }
-
-
-  const range =
-
-    candle.high -
-    candle.low;
-
-
-  const entryPositionPct =
-
-    range >
-    0
-
-      ? (
-          (
-            entryPrice -
-            candle.low
-          ) /
-          range
-        ) *
-        100
-
-      : null;
-
-
-  const moveFromOpenPct =
-
-    candle.open >
-    0
-
-      ? pct(
-
-          entryPrice -
-          candle.open,
-
-          candle.open
-        )
-
-      : null;
-
-
-  const distanceFromHighPct =
-
-    candle.high >
-    0
-
-      ? pct(
-
-          candle.high -
-          entryPrice,
-
-          candle.high
-        )
-
-      : null;
-
-
-  return {
-
-    observedAt:
-      Date.now(),
-
-    openTime:
-      candle.openTime,
-
-    closeTime:
-      candle.closeTime,
-
-    open:
-      candle.open,
-
-    highSoFar:
-      candle.high,
-
-    lowSoFar:
-      candle.low,
-
-    lastAtObservation:
-      candle.close,
-
-    entryPrice,
-
-    entryPositionPct,
-
-    moveFromOpenPct,
-
-    distanceFromHighPct,
-
-    note:
-      'LIVE_15M_SNAPSHOT_AFTER_ENTRY_NO_LOOKAHEAD'
-  };
 }
 
 
@@ -1640,6 +1571,7 @@ async function universeFromBinance() {
           n(
             row.quoteVolume
           )
+
       })
     )
 
@@ -1667,6 +1599,7 @@ async function universeFromBinance() {
       row =>
         row.symbol
     );
+
 }
 
 
@@ -1691,6 +1624,7 @@ async function refreshUniverse(
   ) {
 
     return universe;
+
   }
 
 
@@ -1709,18 +1643,18 @@ async function refreshUniverse(
 
   console.log(
 
-    `UNIVERSE BINANCE_PUBLIC | ` +
+    `UNIVERSE | ${universe.length}`
 
-    `${universe.length} symbols`
   );
 
 
   return universe;
+
 }
 
 
 // ============================================================
-// PRICE
+// CURRENT PRICE
 // ============================================================
 
 async function getCurrentPrice(
@@ -1736,6 +1670,7 @@ async function getCurrentPrice(
       {
         symbol
       }
+
     );
 
 
@@ -1753,6 +1688,7 @@ async function getCurrentPrice(
     throw new Error(
       'BINANCE_INVALID_PRICE'
     );
+
   }
 
 
@@ -1762,13 +1698,14 @@ async function getCurrentPrice(
 
     source:
       'BINANCE_PUBLIC'
+
   };
+
 }
 
 
 // ============================================================
-// MICROSTRUCTURE
-// EXECUTION SAFETY ONLY
+// ORDER BOOK
 // ============================================================
 
 async function fetchDepth(
@@ -1787,7 +1724,9 @@ async function fetchDepth(
 
         limit:
           C.depthLimit
+
       }
+
     );
 
 
@@ -1800,26 +1739,28 @@ async function fetchDepth(
         []
       )
 
-        .map(
-          row => [
+      .map(
+        row => [
 
-            n(
-              row[0]
-            ),
+          n(
+            row[0]
+          ),
 
-            n(
-              row[1]
-            )
-          ]
-        )
+          n(
+            row[1]
+          )
 
-        .filter(
-          row =>
-            row[0] >
-              0 &&
-            row[1] >
-              0
-        ),
+        ]
+      )
+
+      .filter(
+        row =>
+          row[0] >
+            0
+          &&
+          row[1] >
+            0
+      ),
 
 
     asks:
@@ -1829,29 +1770,37 @@ async function fetchDepth(
         []
       )
 
-        .map(
-          row => [
+      .map(
+        row => [
 
-            n(
-              row[0]
-            ),
+          n(
+            row[0]
+          ),
 
-            n(
-              row[1]
-            )
-          ]
-        )
+          n(
+            row[1]
+          )
 
-        .filter(
-          row =>
-            row[0] >
-              0 &&
-            row[1] >
-              0
-        )
+        ]
+      )
+
+      .filter(
+        row =>
+          row[0] >
+            0
+          &&
+          row[1] >
+            0
+      )
+
   };
+
 }
 
+
+// ============================================================
+// AGGRESSIVE TRADES
+// ============================================================
 
 async function fetchAggTrades(
   symbol
@@ -1869,7 +1818,9 @@ async function fetchAggTrades(
 
         limit:
           C.aggTradeLimit
+
       }
+
     );
 
 
@@ -1887,47 +1838,48 @@ async function fetchAggTrades(
 
   )
 
-    .map(
-      row => ({
+  .map(
+    row => ({
 
-        price:
-          n(
-            row.p
-          ),
+      price:
+        n(
+          row.p
+        ),
 
-        qty:
-          n(
-            row.q
-          ),
+      qty:
+        n(
+          row.q
+        ),
 
-        time:
-          n(
-            row.T
-          ),
+      time:
+        n(
+          row.T
+        ),
 
-        buyerMaker:
-          !!row.m
-      })
-    )
+      buyerMaker:
+        !!row.m
 
-    .filter(
-      row =>
+    })
+  )
 
-        row.price >
-          0
+  .filter(
+    row =>
+      row.price >
+        0
+      &&
+      row.qty >
+        0
+      &&
+      row.time >=
+        cutoff
+  );
 
-        &&
-
-        row.qty >
-          0
-
-        &&
-
-        row.time >=
-          cutoff
-    );
 }
 
+
+// ============================================================
+// DEPTH METRICS
+// ============================================================
 
 function depthMetrics(
   book
@@ -1964,7 +1916,9 @@ function depthMetrics(
 
       reason:
         'EMPTY_BOOK'
+
     };
+
   }
 
 
@@ -1991,11 +1945,14 @@ function depthMetrics(
     0
 
       ? (
+
           (
             bestAsk -
             bestBid
           ) /
+
           mid
+
         ) *
         10000
 
@@ -2031,6 +1988,7 @@ function depthMetrics(
           ),
 
         0
+
       );
 
 
@@ -2060,8 +2018,10 @@ function depthMetrics(
     0
 
       ? (
+
           bidDepthUSDT -
           askDepthUSDT
+
         ) /
         totalDepth
 
@@ -2109,11 +2069,14 @@ function depthMetrics(
     0
 
       ? (
+
           (
             microprice -
             mid
           ) /
+
           mid
+
         ) *
         10000
 
@@ -2127,6 +2090,7 @@ function depthMetrics(
       bidDepthUSDT,
 
       askDepthUSDT
+
     );
 
 
@@ -2149,7 +2113,10 @@ function depthMetrics(
     state =
       'STRESSED';
 
-  } else if (
+  }
+
+
+  else if (
 
     spreadBps <=
       5
@@ -2164,6 +2131,7 @@ function depthMetrics(
 
     state =
       'CALM';
+
   }
 
 
@@ -2191,9 +2159,15 @@ function depthMetrics(
     microprice,
 
     micropriceEdgeBps
+
   };
+
 }
 
+
+// ============================================================
+// AGGRESSIVE FLOW
+// ============================================================
 
 function aggressiveFlow(
   trades
@@ -2218,13 +2192,10 @@ function aggressiveFlow(
         false,
 
       tradeCount:
-
         Array.isArray(
           trades
         )
-
           ? trades.length
-
           : 0,
 
       buyUSDT:
@@ -2235,7 +2206,9 @@ function aggressiveFlow(
 
       imbalance:
         0
+
     };
+
   }
 
 
@@ -2265,11 +2238,15 @@ function aggressiveFlow(
       sellUSDT +=
         value;
 
-    } else {
+    }
+
+    else {
 
       buyUSDT +=
         value;
+
     }
+
   }
 
 
@@ -2297,15 +2274,23 @@ function aggressiveFlow(
       0
 
         ? (
+
             buyUSDT -
             sellUSDT
+
           ) /
           total
 
         : 0
+
   };
+
 }
 
+
+// ============================================================
+// SLIPPAGE AT RISK
+// ============================================================
 
 function slippageAtRisk(
   asks,
@@ -2342,7 +2327,9 @@ function slippageAtRisk(
 
       scale:
         0
+
     };
+
   }
 
 
@@ -2383,6 +2370,7 @@ function slippageAtRisk(
         remaining,
 
         levelQuote
+
       );
 
 
@@ -2415,7 +2403,9 @@ function slippageAtRisk(
     ) {
 
       break;
+
     }
+
   }
 
 
@@ -2429,6 +2419,7 @@ function slippageAtRisk(
 
         quoteAmount *
         0.001
+
       )
 
     ||
@@ -2451,7 +2442,9 @@ function slippageAtRisk(
 
       scale:
         0
+
     };
+
   }
 
 
@@ -2467,11 +2460,14 @@ function slippageAtRisk(
     0
 
       ? (
+
           (
             vwap -
             bestAsk
           ) /
+
           bestAsk
+
         ) *
         10000
 
@@ -2497,7 +2493,9 @@ function slippageAtRisk(
 
       scale:
         0
+
     };
+
   }
 
 
@@ -2523,8 +2521,10 @@ function slippageAtRisk(
       0
 
         ? (
+
             bps -
             C.sarReduceFromBps
+
           ) /
           span
 
@@ -2547,7 +2547,9 @@ function slippageAtRisk(
         C.sarMinSizeScale,
 
         1
+
       );
+
   }
 
 
@@ -2561,9 +2563,15 @@ function slippageAtRisk(
     vwap,
 
     scale
+
   };
+
 }
 
+
+// ============================================================
+// EXECUTION QUALITY GATE
+// ============================================================
 
 async function executionQualityGate(
   symbol,
@@ -2584,6 +2592,7 @@ async function executionQualityGate(
       fetchAggTrades(
         symbol
       )
+
     ]);
 
 
@@ -2608,6 +2617,7 @@ async function executionQualityGate(
       rawBook.asks,
 
       quoteAmount
+
     );
 
 
@@ -2628,7 +2638,9 @@ async function executionQualityGate(
       flow,
 
       sar
+
     };
+
   }
 
 
@@ -2650,7 +2662,9 @@ async function executionQualityGate(
       flow,
 
       sar
+
     };
+
   }
 
 
@@ -2672,7 +2686,9 @@ async function executionQualityGate(
       flow,
 
       sar
+
     };
+
   }
 
 
@@ -2693,7 +2709,9 @@ async function executionQualityGate(
       flow,
 
       sar
+
     };
+
   }
 
 
@@ -2725,7 +2743,9 @@ async function executionQualityGate(
       flow,
 
       sar
+
     };
+
   }
 
 
@@ -2742,7 +2762,9 @@ async function executionQualityGate(
     flow,
 
     sar
+
   };
+
 }
 
 
@@ -2766,7 +2788,9 @@ function analyze1h(
 
       reason:
         '1H_NOT_READY'
+
     };
+
   }
 
 
@@ -2825,7 +2849,9 @@ function analyze1h(
       current.close,
 
     bullish
+
   };
+
 }
 
 
@@ -2848,6 +2874,7 @@ function detectRecentBreakout(
       ),
 
       -1
+
     );
 
 
@@ -2892,8 +2919,11 @@ function detectRecentBreakout(
         barsAgo:
           recent.length -
           i
+
       };
+
     }
+
   }
 
 
@@ -2901,13 +2931,14 @@ function detectRecentBreakout(
 
     found:
       false
+
   };
+
 }
 
 
 // ============================================================
-// ORIGINAL V6.3.1 15M CORE
-// ENTRY LOGIC UNCHANGED
+// ORIGINAL V6.3.1 15M ENTRY CORE
 // ============================================================
 
 function analyze15m(
@@ -2926,7 +2957,9 @@ function analyze15m(
 
       reason:
         '15M_NOT_READY'
+
     };
+
   }
 
 
@@ -2989,6 +3022,7 @@ function analyze15m(
       candles,
 
       C.volumeSmaLength
+
     );
 
 
@@ -3020,6 +3054,7 @@ function analyze15m(
       ),
 
       -2
+
     );
 
 
@@ -3031,6 +3066,7 @@ function analyze15m(
         candle =>
           candle.high
       )
+
     );
 
 
@@ -3046,6 +3082,7 @@ function analyze15m(
           candle =>
             candle.low
         )
+
     );
 
 
@@ -3091,8 +3128,10 @@ function analyze15m(
     0
 
       ? (
+
           current.close -
           resistance
+
         ) /
         atrValue
 
@@ -3143,6 +3182,7 @@ function analyze15m(
       candles,
 
       resistance
+
     );
 
 
@@ -3228,12 +3268,16 @@ function analyze15m(
     entryType =
       'MOMENTUM_ENTRY';
 
-  } else if (
+  }
+
+
+  else if (
     retestEntry
   ) {
 
     entryType =
       'RETEST_ENTRY';
+
   }
 
 
@@ -3261,6 +3305,7 @@ function analyze15m(
       0,
 
       20
+
     )
 
     +
@@ -3276,6 +3321,7 @@ function analyze15m(
       0,
 
       20
+
     )
 
     +
@@ -3288,6 +3334,7 @@ function analyze15m(
       0,
 
       15
+
     )
 
     +
@@ -3296,14 +3343,6 @@ function analyze15m(
       trendOk
         ? 5
         : 0
-    );
-
-
-  const atrPct =
-
-    pct(
-      atrValue,
-      current.close
     );
 
 
@@ -3321,31 +3360,6 @@ function analyze15m(
     signalPrice:
       current.close,
 
-    // Telemetry only
-    signalCandle: {
-
-      openTime:
-        current.openTime,
-
-      closeTime:
-        current.closeTime,
-
-      open:
-        current.open,
-
-      high:
-        current.high,
-
-      low:
-        current.low,
-
-      close:
-        current.close,
-
-      volume:
-        current.volume
-    },
-
     ema9,
 
     ema21,
@@ -3356,12 +3370,11 @@ function analyze15m(
     atr:
       atrValue,
 
-    atrPct,
-
-    atrShadowPass:
-
-      atrPct >=
-      C.atrPctShadowThreshold,
+    atrPct:
+      pct(
+        atrValue,
+        current.close
+      ),
 
     volumeRatio,
 
@@ -3401,13 +3414,16 @@ function analyze15m(
       heldRetest,
 
       retestVolumeOk
+
     }
+
   };
+
 }
 
 
 // ============================================================
-// STAGED ANALYSIS
+// LOSS COOLDOWN
 // ============================================================
 
 function lossCooldownActive(
@@ -3432,9 +3448,15 @@ function lossCooldownActive(
     Date.now() -
       lastLoss <
       C.symbolLossCooldownMs
+
   );
+
 }
 
+
+// ============================================================
+// FRESH 15M ANALYSIS
+// ============================================================
 
 async function analyze15mFresh(
   symbol
@@ -3455,6 +3477,7 @@ async function analyze15mFresh(
   ) {
 
     return null;
+
   }
 
 
@@ -3467,6 +3490,7 @@ async function analyze15mFresh(
       C.entryInterval,
 
       C.klineLimit15m
+
     );
 
 
@@ -3482,6 +3506,7 @@ async function analyze15mFresh(
   ) {
 
     return null;
+
   }
 
 
@@ -3496,12 +3521,19 @@ async function analyze15mFresh(
 
       entry:
         entryResult.source
+
     },
 
     signal
+
   };
+
 }
 
+
+// ============================================================
+// ADD 1H CONTEXT
+// ============================================================
 
 async function add1hContext(
   candidate
@@ -3516,6 +3548,7 @@ async function add1hContext(
       C.contextInterval,
 
       C.klineLimit1h
+
     );
 
 
@@ -3531,6 +3564,7 @@ async function add1hContext(
   ) {
 
     return null;
+
   }
 
 
@@ -3544,10 +3578,13 @@ async function add1hContext(
 
       context:
         contextResult.source
+
     },
 
     context
+
   };
+
 }
 
 
@@ -3567,12 +3604,14 @@ async function analyzeSymbolFresh(
   ) {
 
     return null;
+
   }
 
 
   return add1hContext(
     base
   );
+
 }
 
 
@@ -3610,6 +3649,7 @@ async function mapLimit(
       ) {
 
         return;
+
       }
 
 
@@ -3629,9 +3669,13 @@ async function mapLimit(
           results.push(
             result
           );
+
         }
 
-      } catch (
+      }
+
+
+      catch (
         error
       ) {
 
@@ -3639,20 +3683,23 @@ async function mapLimit(
 
           `SCAN ${
 
-            items[i]
-              ?.symbol ||
+            items[i]?.symbol ||
 
             items[i]
 
           } | ${error.message}`
+
         );
+
       }
 
 
       await sleep(
         C.requestGapMs
       );
+
     }
+
   }
 
 
@@ -3669,101 +3716,29 @@ async function mapLimit(
             limit,
 
             items.length
+
           )
+
       },
 
       runner
+
     )
+
   );
 
 
   return results;
-}
 
-
-// ============================================================
-// ORIGINAL HARD EMERGENCY STOP
-// ============================================================
-
-function emergencyStopFrom(
-  signal,
-  entryPrice
-) {
-
-  const atrStop =
-
-    entryPrice -
-
-    signal.atr *
-    C.atrStopMultiplier;
-
-
-  const structureStop =
-
-    signal.swingLow -
-
-    signal.atr *
-    C.structureBufferAtr;
-
-
-  let stop =
-
-    Math.min(
-
-      atrStop,
-
-      structureStop
-    );
-
-
-  let stopPct =
-
-    (
-      entryPrice -
-      stop
-    ) /
-
-    entryPrice;
-
-
-  stopPct =
-
-    clamp(
-
-      stopPct,
-
-      C.minEmergencyStopPct,
-
-      C.maxEmergencyStopPct
-    );
-
-
-  stop =
-
-    entryPrice *
-
-    (
-      1 -
-      stopPct
-    );
-
-
-  return {
-
-    stop,
-
-    stopPct
-  };
 }
 
 
 // ============================================================
 // POSITION SIZE
+// FIXED 2% STOP
 // ============================================================
 
-function positionSize(
-  stopPct
-) {
+function positionSizeForFixedStop() {
 
   const eq =
     equity();
@@ -3775,13 +3750,19 @@ function positionSize(
     C.riskPerTradePct;
 
 
+  const stopFraction =
+
+    C.fixedStopLossPct /
+    100;
+
+
   const byRisk =
 
-    stopPct >
+    stopFraction >
     0
 
       ? riskBudget /
-        stopPct
+        stopFraction
 
       : 0;
 
@@ -3802,6 +3783,7 @@ function positionSize(
 
       cash *
       0.98
+
     );
 
 
@@ -3811,11 +3793,37 @@ function positionSize(
       ? allocation
 
       : null;
+
 }
 
 
 // ============================================================
-// DATABASE
+// SIGNAL KEY
+// ============================================================
+
+function signalKey(
+  symbol,
+  entryType,
+  signalTime
+) {
+
+  return (
+
+    `${C.strategyKey}:` +
+
+    `${symbol}:` +
+
+    `${entryType}:` +
+
+    `${signalTime}`
+
+  );
+
+}
+
+
+// ============================================================
+// MONGODB
 // ============================================================
 
 async function connectCloud() {
@@ -3825,11 +3833,14 @@ async function connectCloud() {
   ) {
 
     console.warn(
-      'MONGODB_URI missing.'
+
+      'MONGODB_URI missing: restart-safe dedup disabled.'
+
     );
 
 
     return;
+
   }
 
 
@@ -3842,8 +3853,13 @@ async function connectCloud() {
       {
 
         maxPoolSize:
-          4
+          4,
+
+        serverSelectionTimeoutMS:
+          10000
+
       }
+
     );
 
 
@@ -3862,6 +3878,7 @@ async function connectCloud() {
 
     ping:
       1
+
   });
 
 
@@ -3882,6 +3899,7 @@ async function connectCloud() {
 
         exitTime:
           -1
+
       }),
 
 
@@ -3896,29 +3914,57 @@ async function connectCloud() {
 
         time:
           -1
+
       }),
 
 
     db
       .collection(
-        'journal'
+        'signal_claims'
       )
-      .createIndex({
+      .createIndex(
 
-        cycleId:
-          1,
+        {
 
-        time:
-          -1
-      })
+          strategyKey:
+            1,
+
+          symbol:
+            1,
+
+          entryType:
+            1,
+
+          signalTime:
+            1
+
+        },
+
+        {
+
+          unique:
+            true,
+
+          name:
+            'uniq_signal_claim'
+
+        }
+
+      )
+
   ]);
 
 
   console.log(
     'MongoDB CONNECTED'
   );
+
 }
 
+
+// ============================================================
+// JOURNAL
+// ============================================================
 
 async function cloudJournal(
   row
@@ -3929,6 +3975,7 @@ async function cloudJournal(
   ) {
 
     return;
+
   }
 
 
@@ -3950,9 +3997,13 @@ async function cloudJournal(
           cycle.id,
 
         ...row
+
       });
 
-  } catch (
+  }
+
+
+  catch (
     error
   ) {
 
@@ -3961,10 +4012,17 @@ async function cloudJournal(
       'Journal:',
 
       error.message
+
     );
+
   }
+
 }
 
+
+// ============================================================
+// SAVE TRADE
+// ============================================================
 
 async function saveTrade(
   row
@@ -3975,6 +4033,7 @@ async function saveTrade(
   ) {
 
     return;
+
   }
 
 
@@ -3993,9 +4052,13 @@ async function saveTrade(
           row.cycleId,
 
         ...row
+
       });
 
-  } catch (
+  }
+
+
+  catch (
     error
   ) {
 
@@ -4004,13 +4067,151 @@ async function saveTrade(
       'Trade save:',
 
       error.message
+
     );
+
   }
+
 }
 
 
 // ============================================================
-// STATE
+// DUPLICATE SIGNAL PROTECTION
+// ============================================================
+
+async function claimSignalOnce(
+  signal,
+  symbol
+) {
+
+  const key =
+
+    signalKey(
+
+      symbol,
+
+      signal.entryType,
+
+      signal.signalTime
+
+    );
+
+
+  if (
+    claimedSignalKeys.has(
+      key
+    )
+  ) {
+
+    stats.duplicateRejects++;
+
+
+    return false;
+
+  }
+
+
+  if (
+    !cloudConnected
+  ) {
+
+    claimedSignalKeys.add(
+      key
+    );
+
+
+    return true;
+
+  }
+
+
+  try {
+
+    await db
+      .collection(
+        'signal_claims'
+      )
+      .insertOne({
+
+        strategyKey:
+          C.strategyKey,
+
+        version:
+          C.version,
+
+        symbol,
+
+        entryType:
+          signal.entryType,
+
+        signalTime:
+          signal.signalTime,
+
+        key,
+
+        claimedAt:
+          Date.now()
+
+      });
+
+
+    claimedSignalKeys.add(
+      key
+    );
+
+
+    return true;
+
+  }
+
+
+  catch (
+    error
+  ) {
+
+    if (
+      error?.code ===
+      11000
+    ) {
+
+      claimedSignalKeys.add(
+        key
+      );
+
+
+      stats.duplicateRejects++;
+
+
+      await cloudJournal({
+
+        type:
+          'DUPLICATE_SIGNAL_REJECT',
+
+        symbol,
+
+        entryType:
+          signal.entryType,
+
+        signalTime:
+          signal.signalTime
+
+      });
+
+
+      return false;
+
+    }
+
+
+    throw error;
+
+  }
+
+}
+
+
+// ============================================================
+// LOAD STATE
 // ============================================================
 
 async function loadState() {
@@ -4020,6 +4221,7 @@ async function loadState() {
   ) {
 
     return;
+
   }
 
 
@@ -4033,6 +4235,7 @@ async function loadState() {
 
         _id:
           C.stateKey
+
       });
 
 
@@ -4049,11 +4252,13 @@ async function loadState() {
 
     console.log(
 
-      'FRESH V6.3.2 PAPER ACCOUNT | $1000 | Cycle 1 | 0/20'
+      `FRESH ${C.version} PAPER ACCOUNT | $${C.startingBalance}`
+
     );
 
 
     return;
+
   }
 
 
@@ -4064,6 +4269,7 @@ async function loadState() {
       state.cash,
 
       C.startingBalance
+
     );
 
 
@@ -4081,6 +4287,7 @@ async function loadState() {
       state.stats ||
       {}
     )
+
   };
 
 
@@ -4098,6 +4305,7 @@ async function loadState() {
       state.dailyStartEquity,
 
       C.startingBalance
+
     );
 
 
@@ -4115,6 +4323,7 @@ async function loadState() {
       state.peakEquity,
 
       C.startingBalance
+
     );
 
 
@@ -4138,6 +4347,7 @@ async function loadState() {
       state.cycle ||
       {}
     )
+
   };
 
 
@@ -4147,9 +4357,15 @@ async function loadState() {
 
     state.lastLossBySymbol ||
     {}
+
   );
+
 }
 
+
+// ============================================================
+// SAVE STATE
+// ============================================================
 
 async function saveState() {
 
@@ -4158,6 +4374,7 @@ async function saveState() {
   ) {
 
     return;
+
   }
 
 
@@ -4173,6 +4390,7 @@ async function saveState() {
 
           _id:
             C.stateKey
+
         },
 
         {
@@ -4208,17 +4426,24 @@ async function saveState() {
 
             updatedAt:
               Date.now()
+
           }
+
         },
 
         {
 
           upsert:
             true
+
         }
+
       );
 
-  } catch (
+  }
+
+
+  catch (
     error
   ) {
 
@@ -4227,8 +4452,11 @@ async function saveState() {
       'State save:',
 
       error.message
+
     );
+
   }
+
 }
 
 
@@ -4251,6 +4479,7 @@ async function tg(
   ) {
 
     return;
+
   }
 
 
@@ -4272,16 +4501,22 @@ async function tg(
 
         disable_web_page_preview:
           true
+
       },
 
       {
 
         timeout:
           8000
+
       }
+
     );
 
-  } catch (
+  }
+
+
+  catch (
     error
   ) {
 
@@ -4290,8 +4525,11 @@ async function tg(
       'Telegram:',
 
       error.message
+
     );
+
   }
+
 }
 
 
@@ -4334,6 +4572,7 @@ async function startNewCycle(
 
     lastScanned:
       0
+
   };
 
 
@@ -4350,6 +4589,7 @@ async function startNewCycle(
 
     cycleId:
       cycle.id
+
   });
 
 
@@ -4360,7 +4600,9 @@ async function startNewCycle(
     `Cycle ${cycle.id}\n` +
 
     `Reason: ${reason}`
+
   );
+
 }
 
 
@@ -4381,13 +4623,14 @@ async function maybeStartNewCycle() {
   ) {
 
     await startNewCycle();
+
   }
+
 }
 
 
 // ============================================================
 // OPEN PAPER TRADE
-// ENTRY DECISION LOGIC UNCHANGED
 // ============================================================
 
 async function openPaperTrade(
@@ -4399,6 +4642,7 @@ async function openPaperTrade(
   ) {
 
     return false;
+
   }
 
 
@@ -4408,6 +4652,7 @@ async function openPaperTrade(
   ) {
 
     return false;
+
   }
 
 
@@ -4421,6 +4666,7 @@ async function openPaperTrade(
   ) {
 
     return false;
+
   }
 
 
@@ -4431,8 +4677,13 @@ async function openPaperTrade(
   ) {
 
     return false;
+
   }
 
+
+  // ==========================================================
+  // REVALIDATE SIGNAL
+  // ==========================================================
 
   const fresh =
 
@@ -4452,6 +4703,7 @@ async function openPaperTrade(
   ) {
 
     return false;
+
   }
 
 
@@ -4477,12 +4729,18 @@ async function openPaperTrade(
 
       reason:
         'SIGNAL_CHANGED'
+
     });
 
 
     return false;
+
   }
 
+
+  // ==========================================================
+  // LIVE PRICE
+  // ==========================================================
 
   const priceData =
 
@@ -4505,7 +4763,9 @@ async function openPaperTrade(
         fresh.signal.signalPrice,
 
         fresh.signal.signalPrice
+
       )
+
     );
 
 
@@ -4526,38 +4786,22 @@ async function openPaperTrade(
         'PRICE_DRIFT',
 
       drift
+
     });
 
 
     return false;
+
   }
 
 
-  const entryPrice =
-
-    livePrice *
-
-    (
-      1 +
-      C.slippagePct
-    );
-
-
-  const stop =
-
-    emergencyStopFrom(
-
-      fresh.signal,
-
-      entryPrice
-    );
-
+  // ==========================================================
+  // POSITION SIZE
+  // ==========================================================
 
   let allocation =
 
-    positionSize(
-      stop.stopPct
-    );
+    positionSizeForFixedStop();
 
 
   if (
@@ -4565,8 +4809,13 @@ async function openPaperTrade(
   ) {
 
     return false;
+
   }
 
+
+  // ==========================================================
+  // MICROSTRUCTURE GATE
+  // ==========================================================
 
   const micro =
 
@@ -4575,6 +4824,7 @@ async function openPaperTrade(
       candidate.symbol,
 
       allocation
+
     );
 
 
@@ -4595,6 +4845,7 @@ async function openPaperTrade(
       micro.reason,
 
     micro
+
   });
 
 
@@ -4603,6 +4854,7 @@ async function openPaperTrade(
   ) {
 
     return false;
+
   }
 
 
@@ -4616,7 +4868,76 @@ async function openPaperTrade(
   ) {
 
     return false;
+
   }
+
+
+  // ==========================================================
+  // CLAIM SIGNAL ONCE
+  // ==========================================================
+
+  const claimed =
+
+    await claimSignalOnce(
+
+      fresh.signal,
+
+      candidate.symbol
+
+    );
+
+
+  if (
+    !claimed
+  ) {
+
+    return false;
+
+  }
+
+
+  // ==========================================================
+  // ENTRY
+  // ==========================================================
+
+  const entryPrice =
+
+    livePrice *
+
+    (
+      1 +
+      C.slippagePct
+    );
+
+
+  // ==========================================================
+  // FIXED STOP LOSS = -2%
+  // ==========================================================
+
+  const stopLoss =
+
+    entryPrice *
+
+    (
+      1 -
+      C.fixedStopLossPct /
+      100
+    );
+
+
+  // ==========================================================
+  // FIXED TAKE PROFIT = +4%
+  // ==========================================================
+
+  const takeProfit =
+
+    entryPrice *
+
+    (
+      1 +
+      C.fixedTakeProfitPct /
+      100
+    );
 
 
   const buyFee =
@@ -4639,9 +4960,13 @@ async function openPaperTrade(
 
   const tradeId =
 
-    `${candidate.symbol}-${Date.now()}-${Math.random()
+    `${candidate.symbol}-` +
+
+    `${Date.now()}-` +
+
+    `${Math.random()
       .toString(36)
-      .slice(2, 8)}`;
+      .slice(2,8)}`;
 
 
   cash -=
@@ -4684,50 +5009,24 @@ async function openPaperTrade(
 
     buyFee,
 
-    emergencyStop:
-      stop.stop,
+
+    // ========================================================
+    // FIXED EXITS
+    // NEVER MOVE THESE
+    // ========================================================
+
+    stopLoss,
+
+    takeProfit,
 
     initialRiskPct:
-      stop.stopPct *
-      100,
+      C.fixedStopLossPct,
 
-    protectionStop:
-      null,
-
-    breakEvenActive:
-      false,
-
-    capitalProtectionGrossLockPct:
-      null,
-
-    capitalProtectionNetLockPct:
-      null,
-
-    capitalProtectionArmedAt:
-      null,
-
-    trailingActive:
-      false,
-
-    trailStage:
-      0,
-
-    trailGapPct:
-      null,
-
-    trailLockedMfeFraction:
-      null,
-
-    trailingActivatedAt:
-      null,
-
-    failureControlEligible:
-      true,
-
-    failureControlTriggered:
-      false,
 
     highestPrice:
+      entryPrice,
+
+    lowestPrice:
       entryPrice,
 
     lastPrice:
@@ -4739,23 +5038,12 @@ async function openPaperTrade(
     maePct:
       0,
 
-    atrPct:
-      fresh.signal.atrPct,
-
-    atrShadowPass:
-      fresh.signal.atrShadowPass,
-
-    lastTelemetryAt:
-      0,
-
-    entryCandleTelemetry:
-      null,
-
     snapshot:
       fresh,
 
     microstructure:
       micro
+
   };
 
 
@@ -4777,136 +5065,39 @@ async function openPaperTrade(
 
     entryPrice,
 
-    signalPrice:
-      fresh.signal.signalPrice,
+    stopLoss,
+
+    takeProfit,
+
+    allocation,
 
     signalTime:
       fresh.signal.signalTime,
 
-    priceSource:
-      priceData.source,
-
-    allocation,
-
-    initialRiskPct:
-      stop.stopPct *
-      100,
-
-    emergencyStop:
-      stop.stop,
-
-    atrPct:
-      fresh.signal.atrPct,
-
-    atrShadowPass:
-      fresh.signal.atrShadowPass,
-
-    snapshot:
-      fresh,
-
     microstructure:
       micro
+
   });
-
-
-  // ==========================================================
-  // ENTRY CANDLE TELEMETRY
-  // AFTER ENTRY ONLY
-  // ==========================================================
-
-  try {
-
-    const liveCandle =
-
-      await fetchLiveEntryCandle(
-        candidate.symbol
-      );
-
-
-    const telemetry =
-
-      entryCandleTelemetry(
-
-        liveCandle,
-
-        entryPrice
-      );
-
-
-    const p =
-
-      positions[
-        candidate.symbol
-      ];
-
-
-    if (
-      p
-    ) {
-
-      p.entryCandleTelemetry =
-        telemetry;
-    }
-
-
-    await cloudJournal({
-
-      type:
-        'ENTRY_CANDLE_TELEMETRY',
-
-      tradeId,
-
-      symbol:
-        candidate.symbol,
-
-      telemetry
-    });
-
-  } catch (
-    error
-  ) {
-
-    await cloudJournal({
-
-      type:
-        'ENTRY_CANDLE_TELEMETRY_ERROR',
-
-      tradeId,
-
-      symbol:
-        candidate.symbol,
-
-      error:
-        error.message
-    });
-  }
 
 
   tg(
 
-    `🟢 <b>LOMY V6.3.2 PAPER ENTRY</b>\n` +
+    `🟢 <b>LOMY PAPER ENTRY</b>\n` +
 
     `${candidate.symbol}\n` +
 
     `Type: ${fresh.signal.entryType}\n` +
 
-    `Price source: ${priceData.source}\n` +
+    `Entry: ${entryPrice.toFixed(8)}\n` +
 
-    `15m CMO: ${fresh.signal.cmo.toFixed(1)}\n` +
+    `SL: ${stopLoss.toFixed(8)} (-${C.fixedStopLossPct}%)\n` +
 
-    `Volume: ${fresh.signal.volumeRatio.toFixed(2)}x\n` +
+    `TP: ${takeProfit.toFixed(8)} (+${C.fixedTakeProfitPct}%)\n` +
 
-    `ATR%: ${fresh.signal.atrPct.toFixed(3)} ` +
-
-    `(${fresh.signal.atrShadowPass ? 'shadow-pass' : 'shadow-low'})\n` +
-
-    `Initial risk: ${(stop.stopPct * 100).toFixed(2)}%\n` +
-
-    `Spread: ${micro.book.spreadBps.toFixed(2)}bps | ` +
-
-    `SaR ${micro.sar.bps.toFixed(2)}bps\n` +
+    `Risk/Reward: 1:2\n` +
 
     `Cycle: ${cycle.entries}/${C.maxEntriesPerCycle}`
+
   );
 
 
@@ -4929,21 +5120,14 @@ async function openPaperTrade(
         Object.keys(
           positions
         ).length
+
     });
 
-
-    tg(
-
-      `⏳ Cycle ${cycle.id} reached ` +
-
-      `${C.maxEntriesPerCycle} entries.\n` +
-
-      `Waiting for all positions to close.`
-    );
   }
 
 
   return true;
+
 }
 
 
@@ -4970,6 +5154,7 @@ async function closePaperTrade(
   ) {
 
     return;
+
   }
 
 
@@ -5013,8 +5198,10 @@ async function closePaperTrade(
     0
 
       ? (
+
           profit /
           position.investedUSDT
+
         ) *
         100
 
@@ -5063,6 +5250,7 @@ async function closePaperTrade(
 
       net:
         0
+
     };
 
 
@@ -5070,37 +5258,6 @@ async function closePaperTrade(
 
 
   setup.net +=
-    profit;
-
-
-  const exitBucket =
-
-    stats.exitStats[
-      reason
-    ]
-
-    ||
-
-    {
-
-      trades:
-        0,
-
-      wins:
-        0,
-
-      losses:
-        0,
-
-      net:
-        0
-    };
-
-
-  exitBucket.trades++;
-
-
-  exitBucket.net +=
     profit;
 
 
@@ -5118,10 +5275,10 @@ async function closePaperTrade(
 
     setup.wins++;
 
+  }
 
-    exitBucket.wins++;
 
-  } else {
+  else {
 
     stats.losses++;
 
@@ -5136,13 +5293,31 @@ async function closePaperTrade(
     setup.losses++;
 
 
-    exitBucket.losses++;
-
-
     lastLossBySymbol[
       symbol
     ] =
       Date.now();
+
+  }
+
+
+  if (
+    reason ===
+    'FIXED_STOP_LOSS'
+  ) {
+
+    stats.stopLossExits++;
+
+  }
+
+
+  if (
+    reason ===
+    'FIXED_TAKE_PROFIT'
+  ) {
+
+    stats.takeProfitExits++;
+
   }
 
 
@@ -5152,17 +5327,9 @@ async function closePaperTrade(
     setup;
 
 
-  stats.exitStats[
-    reason
-  ] =
-    exitBucket;
-
-
   const record = {
 
     ...position,
-
-    rawExitPrice,
 
     exitPrice,
 
@@ -5192,6 +5359,7 @@ async function closePaperTrade(
 
     exitTime:
       Date.now()
+
   };
 
 
@@ -5221,10 +5389,6 @@ async function closePaperTrade(
 
     profitPct,
 
-    rawExitPrice,
-
-    exitPrice,
-
     exitSource:
       source,
 
@@ -5232,22 +5396,8 @@ async function closePaperTrade(
       position.mfePct,
 
     maePct:
-      position.maePct,
+      position.maePct
 
-    atrPct:
-      position.atrPct,
-
-    atrShadowPass:
-      position.atrShadowPass,
-
-    initialRiskPct:
-      position.initialRiskPct,
-
-    trailStage:
-      position.trailStage,
-
-    protectionStop:
-      position.protectionStop
   });
 
 
@@ -5259,8 +5409,6 @@ async function closePaperTrade(
 
     `${reason}\n` +
 
-    `Source: ${source}\n` +
-
     `PnL: $${profit.toFixed(2)} ` +
 
     `(${profitPct.toFixed(2)}%)\n` +
@@ -5268,6 +5416,7 @@ async function closePaperTrade(
     `MFE ${position.mfePct.toFixed(2)}% | ` +
 
     `MAE ${position.maePct.toFixed(2)}%`
+
   );
 
 
@@ -5275,330 +5424,7 @@ async function closePaperTrade(
 
 
   await maybeStartNewCycle();
-}
 
-
-// ============================================================
-// TRAIL PROFILE
-// ============================================================
-
-function trailProfile(
-  mfePct
-) {
-
-  if (
-    mfePct >=
-    C.trailStage5MfePct
-  ) {
-
-    return {
-
-      stage:
-        5,
-
-      maxGapPct:
-        C.trailStage5MaxGapPct,
-
-      lockFraction:
-        C.trailStage5LockFraction
-    };
-  }
-
-
-  if (
-    mfePct >=
-    C.trailStage4MfePct
-  ) {
-
-    return {
-
-      stage:
-        4,
-
-      maxGapPct:
-        C.trailStage4MaxGapPct,
-
-      lockFraction:
-        C.trailStage4LockFraction
-    };
-  }
-
-
-  if (
-    mfePct >=
-    C.trailStage3MfePct
-  ) {
-
-    return {
-
-      stage:
-        3,
-
-      maxGapPct:
-        C.trailStage3MaxGapPct,
-
-      lockFraction:
-        C.trailStage3LockFraction
-    };
-  }
-
-
-  if (
-    mfePct >=
-    C.trailStage2MfePct
-  ) {
-
-    return {
-
-      stage:
-        2,
-
-      maxGapPct:
-        C.trailStage2MaxGapPct,
-
-      lockFraction:
-        C.trailStage2LockFraction
-    };
-  }
-
-
-  return {
-
-    stage:
-      1,
-
-    maxGapPct:
-      C.trailStage1MaxGapPct,
-
-    lockFraction:
-      C.trailStage1LockFraction
-  };
-}
-
-
-// ============================================================
-// CAPITAL PROTECTION CALCULATION
-// ============================================================
-
-function capitalProtectionGrossLockPct() {
-
-  return grossMoveNeededForNetPct(
-
-    C.capitalNetLockPct
-  );
-}
-
-
-// ============================================================
-// ACTIVE STOP
-// ============================================================
-
-function activeStopInfo(
-  position
-) {
-
-  let activeStop =
-    position.emergencyStop;
-
-
-  let reason =
-    'EMERGENCY_STOP';
-
-
-  if (
-    position.protectionStop
-  ) {
-
-    activeStop =
-
-      Math.max(
-
-        activeStop,
-
-        position.protectionStop
-      );
-
-
-    reason =
-
-      position.trailingActive
-
-        ? 'DYNAMIC_TRAIL'
-
-        : 'CAPITAL_PROTECTION_STOP';
-  }
-
-
-  return {
-
-    activeStop,
-
-    reason
-  };
-}
-
-
-// ============================================================
-// FAILED FOLLOW-THROUGH RULE
-// ============================================================
-
-function failureControlTriggered(
-  position,
-  movePct,
-  ageMinutes
-) {
-
-  if (
-    !C.failureStopEnabled
-  ) {
-
-    return false;
-  }
-
-
-  if (
-
-    position.breakEvenActive
-
-    ||
-
-    position.trailingActive
-
-  ) {
-
-    return false;
-  }
-
-
-  return (
-
-    ageMinutes >=
-      C.failureMinAgeMinutes
-
-    &&
-
-    position.mfePct <
-      C.failureMaxMfePct
-
-    &&
-
-    movePct <=
-      -C.failureDrawdownPct
-  );
-}
-
-
-// ============================================================
-// POSITION TELEMETRY
-// ============================================================
-
-async function maybeJournalTelemetry(
-  position,
-  symbol,
-  movePct,
-  ageMinutes,
-  activeStop,
-  stopReason
-) {
-
-  const now =
-    Date.now();
-
-
-  if (
-
-    now -
-
-      n(
-        position.lastTelemetryAt
-      )
-
-    <
-
-    C.positionTelemetryEveryMs
-
-  ) {
-
-    return;
-  }
-
-
-  position.lastTelemetryAt =
-    now;
-
-
-  const stopDistancePct =
-
-    position.entryPrice >
-    0
-
-      ? pct(
-
-          activeStop -
-          position.entryPrice,
-
-          position.entryPrice
-        )
-
-      : null;
-
-
-  await cloudJournal({
-
-    type:
-      'POSITION_TELEMETRY',
-
-    tradeId:
-      position.tradeId,
-
-    symbol,
-
-    ageMinutes,
-
-    currentMovePct:
-      movePct,
-
-    mfePct:
-      position.mfePct,
-
-    maePct:
-      position.maePct,
-
-    highestPrice:
-      position.highestPrice,
-
-    lastPrice:
-      position.lastPrice,
-
-    emergencyStop:
-      position.emergencyStop,
-
-    protectionStop:
-      position.protectionStop,
-
-    activeStop,
-
-    activeStopReason:
-      stopReason,
-
-    stopDistanceFromEntryPct:
-      stopDistancePct,
-
-    breakEvenActive:
-      position.breakEvenActive,
-
-    trailingActive:
-      position.trailingActive,
-
-    trailStage:
-      position.trailStage,
-
-    trailGapPct:
-      position.trailGapPct,
-
-    initialRiskPct:
-      position.initialRiskPct
-  });
 }
 
 
@@ -5619,6 +5445,7 @@ async function managePositions() {
   ) {
 
     return;
+
   }
 
 
@@ -5657,6 +5484,7 @@ async function managePositions() {
 
 
       return;
+
     }
 
 
@@ -5692,6 +5520,7 @@ async function managePositions() {
         ) {
 
           continue;
+
         }
 
 
@@ -5710,6 +5539,18 @@ async function managePositions() {
             position.highestPrice,
 
             priceData.price
+
+          );
+
+
+        position.lowestPrice =
+
+          Math.min(
+
+            position.lowestPrice,
+
+            priceData.price
+
           );
 
 
@@ -5721,6 +5562,7 @@ async function managePositions() {
             position.entryPrice,
 
             position.entryPrice
+
           );
 
 
@@ -5731,6 +5573,7 @@ async function managePositions() {
             position.mfePct,
 
             movePct
+
           );
 
 
@@ -5741,403 +5584,26 @@ async function managePositions() {
             position.maePct,
 
             movePct
+
           );
 
 
-        const ageMinutes =
-
-          (
-            Date.now() -
-            position.entryTime
-          ) /
-          60000;
-
-
-        // ======================================================
-        // 1) COST-AWARE CAPITAL PROTECTION
-        // ======================================================
-
-        if (
-
-          !position.breakEvenActive
-
-          &&
-
-          movePct >=
-            C.capitalProtectionTriggerPct
-
-        ) {
-
-          const grossLockPct =
-
-            capitalProtectionGrossLockPct();
-
-
-          position.protectionStop =
-
-            position.entryPrice *
-
-            (
-              1 +
-              grossLockPct /
-              100
-            );
-
-
-          position.breakEvenActive =
-            true;
-
-
-          position.capitalProtectionGrossLockPct =
-            grossLockPct;
-
-
-          position.capitalProtectionNetLockPct =
-            C.capitalNetLockPct;
-
-
-          position.capitalProtectionArmedAt =
-            Date.now();
-
-
-          position.failureControlEligible =
-            false;
-
-
-          stats.breakEvenMoves++;
-
-
-          await cloudJournal({
-
-            type:
-              'CAPITAL_PROTECTION',
-
-            tradeId:
-              position.tradeId,
-
-            symbol,
-
-            triggerMovePct:
-              movePct,
-
-            protectionStop:
-              position.protectionStop,
-
-            grossLockPct,
-
-            modeledNetLockPct:
-
-              modeledNetPctAtRawMove(
-                grossLockPct
-              ),
-
-            targetNetLockPct:
-              C.capitalNetLockPct
-          });
-        }
-
-
-        // ======================================================
-        // 2) TRAILING ACTIVATION
-        // ======================================================
-
-        if (
-
-          !position.trailingActive
-
-          &&
-
-          movePct >=
-            C.trailingStartPct
-
-        ) {
-
-          position.trailingActive =
-            true;
-
-
-          position.trailingActivatedAt =
-            Date.now();
-
-
-          stats.trailingActivations++;
-
-
-          await cloudJournal({
-
-            type:
-              'TRAIL_ACTIVATED',
-
-            tradeId:
-              position.tradeId,
-
-            symbol,
-
-            triggerMovePct:
-              movePct,
-
-            mfePct:
-              position.mfePct
-          });
-        }
-
-
-        // ======================================================
-        // 3) STAGED DYNAMIC TRAIL
-        // ======================================================
-
-        if (
-          position.trailingActive
-        ) {
-
-          const profile =
-
-            trailProfile(
-              position.mfePct
-            );
-
-
-          const previousStage =
-
-            n(
-              position.trailStage
-            );
-
-
-          const atrGapPct =
-
-            clamp(
-
-              position.atrPct *
-
-              C.trailingAtrMultiplier,
-
-              C.trailingGapMinPct,
-
-              profile.maxGapPct
-            );
-
-
-          const atrTrailingStop =
-
-            position.highestPrice *
-
-            (
-              1 -
-              atrGapPct /
-              100
-            );
-
-
-          const mfeLockedPct =
-
-            Math.max(
-
-              capitalProtectionGrossLockPct(),
-
-              position.mfePct *
-              profile.lockFraction
-            );
-
-
-          const mfeLockStop =
-
-            position.entryPrice *
-
-            (
-              1 +
-              mfeLockedPct /
-              100
-            );
-
-
-          const newStop =
-
-            Math.max(
-
-              position.protectionStop ||
-              0,
-
-              atrTrailingStop,
-
-              mfeLockStop
-            );
-
-
-          position.protectionStop =
-            newStop;
-
-
-          position.trailStage =
-            profile.stage;
-
-
-          position.trailGapPct =
-            atrGapPct;
-
-
-          position.trailLockedMfeFraction =
-            profile.lockFraction;
-
-
-          if (
-
-            profile.stage >
-            previousStage
-
-          ) {
-
-            await cloudJournal({
-
-              type:
-                'TRAIL_STAGE_UP',
-
-              tradeId:
-                position.tradeId,
-
-              symbol,
-
-              fromStage:
-                previousStage,
-
-              toStage:
-                profile.stage,
-
-              mfePct:
-                position.mfePct,
-
-              gapPct:
-                atrGapPct,
-
-              lockFraction:
-                profile.lockFraction,
-
-              protectionStop:
-                position.protectionStop
-            });
-          }
-        }
-
-
-        // ======================================================
-        // 4) FAILED FOLLOW-THROUGH STOP
-        // ======================================================
-
-        if (
-
-          failureControlTriggered(
-
-            position,
-
-            movePct,
-
-            ageMinutes
-          )
-
-        ) {
-
-          position.failureControlTriggered =
-            true;
-
-
-          stats.failureStops++;
-
-
-          await cloudJournal({
-
-            type:
-              'FAILED_FOLLOW_THROUGH_TRIGGER',
-
-            tradeId:
-              position.tradeId,
-
-            symbol,
-
-            ageMinutes,
-
-            movePct,
-
-            mfePct:
-              position.mfePct,
-
-            maePct:
-              position.maePct,
-
-            originalEmergencyStop:
-              position.emergencyStop,
-
-            originalInitialRiskPct:
-              position.initialRiskPct,
-
-            rule: {
-
-              minAgeMinutes:
-                C.failureMinAgeMinutes,
-
-              maxMfePct:
-                C.failureMaxMfePct,
-
-              drawdownPct:
-                C.failureDrawdownPct
-            }
-          });
-
-
-          await closePaperTrade(
-
-            symbol,
-
-            priceData.price,
-
-            'FAILED_FOLLOW_THROUGH_STOP',
-
-            priceData.source
-          );
-
-
-          await sleep(
-            80
-          );
-
-
-          continue;
-        }
-
-
-        const {
-
-          activeStop,
-
-          reason:
-            stopReason
-
-        } =
-
-          activeStopInfo(
-            position
-          );
-
-
-        await maybeJournalTelemetry(
-
-          position,
-
-          symbol,
-
-          movePct,
-
-          ageMinutes,
-
-          activeStop,
-
-          stopReason
-        );
+        // ====================================================
+        // IMPORTANT
+        //
+        // NO TRAILING STOP
+        // NO BREAK EVEN
+        // NO MOVING STOP
+        //
+        // SL stays exactly -2%
+        // TP stays exactly +4%
+        // ====================================================
 
 
         if (
 
           priceData.price <=
-          activeStop
+          position.stopLoss
 
         ) {
 
@@ -6147,13 +5613,40 @@ async function managePositions() {
 
             priceData.price,
 
-            stopReason,
+            'FIXED_STOP_LOSS',
 
             priceData.source
+
           );
+
         }
 
-      } catch (
+
+        else if (
+
+          priceData.price >=
+          position.takeProfit
+
+        ) {
+
+          await closePaperTrade(
+
+            symbol,
+
+            priceData.price,
+
+            'FIXED_TAKE_PROFIT',
+
+            priceData.source
+
+          );
+
+        }
+
+      }
+
+
+      catch (
         error
       ) {
 
@@ -6162,13 +5655,16 @@ async function managePositions() {
           `POSITION ${symbol}:`,
 
           error.message
+
         );
+
       }
 
 
       await sleep(
         80
       );
+
     }
 
 
@@ -6181,11 +5677,16 @@ async function managePositions() {
       prices
     );
 
-  } finally {
+  }
+
+
+  finally {
 
     positionManagerRunning =
       false;
+
   }
+
 }
 
 
@@ -6210,6 +5711,7 @@ async function runFreshScan() {
   ) {
 
     return;
+
   }
 
 
@@ -6232,7 +5734,9 @@ async function runFreshScan() {
       symbols.length;
 
 
-    // STAGE 1 — 15M ONLY
+    // ========================================================
+    // STAGE 1 — 15M
+    // ========================================================
 
     const rawCandidates =
 
@@ -6243,6 +5747,7 @@ async function runFreshScan() {
         C.scanConcurrency,
 
         analyze15mFresh
+
       );
 
 
@@ -6256,10 +5761,13 @@ async function runFreshScan() {
         b.signal.rankScore -
 
         a.signal.rankScore
+
     );
 
 
+    // ========================================================
     // STAGE 2 — 1H CONTEXT
+    // ========================================================
 
     const candidates =
 
@@ -6273,6 +5781,7 @@ async function runFreshScan() {
         ),
 
         add1hContext
+
       );
 
 
@@ -6286,6 +5795,7 @@ async function runFreshScan() {
         b.signal.rankScore -
 
         a.signal.rankScore
+
     );
 
 
@@ -6306,9 +5816,6 @@ async function runFreshScan() {
 
       qualified:
         candidates.length,
-
-      universeSource:
-        cycle.lastUniverseSource,
 
       top:
 
@@ -6336,18 +5843,11 @@ async function runFreshScan() {
                 candidate.signal.volumeRatio,
 
               bodyRatio:
-                candidate.signal.bodyRatio,
+                candidate.signal.bodyRatio
 
-              atrPct:
-                candidate.signal.atrPct,
-
-              atrShadowPass:
-                candidate.signal.atrShadowPass,
-
-              sources:
-                candidate.sources
             })
           )
+
     });
 
 
@@ -6360,6 +5860,7 @@ async function runFreshScan() {
       `${rawCandidates.length} 15m setup | ` +
 
       `${candidates.length} context-pass`
+
     );
 
 
@@ -6378,6 +5879,7 @@ async function runFreshScan() {
       ) {
 
         break;
+
       }
 
 
@@ -6387,6 +5889,7 @@ async function runFreshScan() {
       ) {
 
         break;
+
       }
 
 
@@ -6400,6 +5903,7 @@ async function runFreshScan() {
       ) {
 
         break;
+
       }
 
 
@@ -6408,6 +5912,7 @@ async function runFreshScan() {
       ) {
 
         break;
+
       }
 
 
@@ -6423,10 +5928,15 @@ async function runFreshScan() {
       ) {
 
         opened++;
+
       }
+
     }
 
-  } catch (
+  }
+
+
+  catch (
     error
   ) {
 
@@ -6435,13 +5945,19 @@ async function runFreshScan() {
       'FRESH SCAN:',
 
       error.message
+
     );
 
-  } finally {
+  }
+
+
+  finally {
 
     scanning =
       false;
+
   }
+
 }
 
 
@@ -6461,8 +5977,10 @@ function dashboardData() {
     0
 
       ? (
+
           stats.wins /
           stats.totalTrades
+
         ) *
         100
 
@@ -6494,13 +6012,11 @@ function dashboardData() {
       'PAPER ONLY',
 
     cash:
-
       +cash.toFixed(
         2
       ),
 
     equity:
-
       +eq.toFixed(
         2
       ),
@@ -6510,65 +6026,21 @@ function dashboardData() {
     stats,
 
     dailyPnL:
-
       +dailyPnL.toFixed(
         2
       ),
 
     winRate:
-
       +winRate.toFixed(
         2
       ),
 
     profitFactor:
-
       +profitFactor.toFixed(
         2
       ),
 
     cycle,
-
-    exchanges: {
-
-      BINANCE: {
-
-        available:
-          exchangeAvailable(),
-
-        blockedForSeconds:
-
-          Math.max(
-
-            0,
-
-            Math.ceil(
-
-              (
-                exchangeHealth
-                  .BINANCE
-                  .blockedUntil -
-
-                Date.now()
-
-              ) /
-              1000
-            )
-          ),
-
-        lastError:
-
-          exchangeHealth
-            .BINANCE
-            .lastError,
-
-        lastSuccess:
-
-          exchangeHealth
-            .BINANCE
-            .lastSuccess
-      }
-    },
 
     guards: {
 
@@ -6577,18 +6049,25 @@ function dashboardData() {
       dailyPause,
 
       drawdownPause
+
     },
 
     config: {
-
-      startingBalance:
-        C.startingBalance,
 
       entryTimeframe:
         C.entryInterval,
 
       contextTimeframe:
         C.contextInterval,
+
+      fixedStopLossPct:
+        C.fixedStopLossPct,
+
+      fixedTakeProfitPct:
+        C.fixedTakeProfitPct,
+
+      riskReward:
+        '1:2',
 
       maxEntriesPerCycle:
         C.maxEntriesPerCycle,
@@ -6602,56 +6081,13 @@ function dashboardData() {
       spreadGuardBps:
         C.maxEntrySpreadBps,
 
-      atrShadowThreshold:
-        C.atrPctShadowThreshold,
+      exitMode:
+        'FIXED_SL_TP_ONLY'
 
-      entryStrategy:
-        'V6.3.1 FROZEN — MOMENTUM + RETEST UNCHANGED',
-
-      profitManager: {
-
-        capitalTriggerPct:
-          C.capitalProtectionTriggerPct,
-
-        targetNetLockPct:
-          C.capitalNetLockPct,
-
-        grossMoveNeededForNetLockPct:
-
-          +capitalProtectionGrossLockPct()
-            .toFixed(
-              4
-            ),
-
-        trailingStartPct:
-          C.trailingStartPct,
-
-        stagedTrail:
-          true,
-
-        failureControl: {
-
-          enabled:
-            C.failureStopEnabled,
-
-          minAgeMinutes:
-            C.failureMinAgeMinutes,
-
-          maxMfePct:
-            C.failureMaxMfePct,
-
-          drawdownPct:
-            C.failureDrawdownPct
-        }
-      },
-
-      telemetry:
-        'ENTRY_CANDLE + POSITION_PATH_EVERY_5M',
-
-      microstructure:
-        'EXECUTION_SAFETY_ONLY + FLOW_TELEMETRY + SAR'
     }
+
   };
+
 }
 
 
@@ -6671,7 +6107,9 @@ app.get(
     res.json(
       dashboardData()
     );
+
   }
+
 );
 
 
@@ -6695,8 +6133,11 @@ app.post(
 
       ok:
         true
+
     });
+
   }
+
 );
 
 
@@ -6720,8 +6161,11 @@ app.post(
 
       ok:
         true
+
     });
+
   }
+
 );
 
 
@@ -6744,8 +6188,11 @@ app.post(
 
       ok:
         true
+
     });
+
   }
+
 );
 
 
@@ -6783,7 +6230,9 @@ app.post(
           'MANUAL_EMERGENCY_CLOSE',
 
           priceData.source
+
         );
+
       }
 
 
@@ -6791,9 +6240,13 @@ app.post(
 
         ok:
           true
+
       });
 
-    } catch (
+    }
+
+
+    catch (
       error
     ) {
 
@@ -6808,14 +6261,57 @@ app.post(
 
           error:
             error.message
+
         });
+
     }
+
   }
+
 );
 
 
 // ============================================================
-// DASHBOARD HTML
+// TRADINGVIEW WEBHOOK
+// ============================================================
+
+app.post(
+
+  '/webhook',
+
+  (
+    req,
+    res
+  ) => {
+
+    tg(
+
+      `🚨 <b>TradingView Alert</b>\n` +
+
+      `Symbol: ${req.body?.symbol || 'N/A'}\n` +
+
+      `Action: ${req.body?.action || 'N/A'}\n` +
+
+      `Price: ${req.body?.price || 'N/A'}`
+
+    );
+
+
+    res
+      .status(
+        200
+      )
+      .send(
+        'Alert Received'
+      );
+
+  }
+
+);
+
+
+// ============================================================
+// DASHBOARD
 // ============================================================
 
 app.get(
@@ -6846,7 +6342,7 @@ app.get(
 >
 
 <title>
-LOMY V6.3.2
+LOMY ${C.version}
 </title>
 
 <style>
@@ -6861,7 +6357,10 @@ body {
 .grid {
   display: grid;
   grid-template-columns:
-    repeat(auto-fit,minmax(150px,1fr));
+    repeat(
+      auto-fit,
+      minmax(150px,1fr)
+    );
   gap: 10px;
   margin-top: 15px;
 }
@@ -6905,12 +6404,19 @@ pre {
 <body>
 
 <h2>
-LOMY V6.3.2 Profit Manager
+LOMY V6.4.1 — FIXED SL 2% / TP 4%
 </h2>
 
 <div>
-15M Entry + 1H Context • Binance Public Data • PAPER ONLY •
-Capital $1000 • V6.3.1 Entry Frozen • Cost-Aware Protection • Staged Trail
+15M Entry + 1H Context
+•
+PAPER ONLY
+•
+Momentum + Retest
+•
+Fixed RR 1:2
+•
+No Trailing
 </div>
 
 <div
@@ -6920,19 +6426,27 @@ Capital $1000 • V6.3.1 Entry Frozen • Cost-Aware Protection • Staged Trail
 
 <p>
 
-<button onclick="post('/api/scan-now')">
+<button
+  onclick="post('/api/scan-now')"
+>
 Fresh Scan
 </button>
 
-<button onclick="post('/api/pause')">
+<button
+  onclick="post('/api/pause')"
+>
 Pause
 </button>
 
-<button onclick="post('/api/resume')">
+<button
+  onclick="post('/api/resume')"
+>
 Resume
 </button>
 
-<button onclick="post('/api/emergency-close')">
+<button
+  onclick="post('/api/emergency-close')"
+>
 Close All
 </button>
 
@@ -6954,6 +6468,7 @@ async function post(
       method:
         'POST'
     }
+
   );
 
 
@@ -6961,168 +6476,187 @@ async function post(
     load,
     500
   );
+
 }
 
 
 async function load() {
 
-  const response =
+  try {
 
-    await fetch(
-      '/api/data'
-    );
-
-
-  const d =
-    await response.json();
+    const response =
+      await fetch(
+        '/api/data'
+      );
 
 
-  const items = [
-
-    [
-      'Equity',
-      '$' +
-      d.equity
-    ],
-
-    [
-      'Cash',
-      '$' +
-      d.cash
-    ],
-
-    [
-      'Open',
-      Object.keys(
-        d.positions
-      ).length
-    ],
-
-    [
-      'Closed',
-      d.stats.totalTrades
-    ],
-
-    [
-      'Win Rate',
-      d.winRate +
-      '%'
-    ],
-
-    [
-      'Net P/L',
-      '$' +
-      d.stats.netProfit.toFixed(
-        2
-      )
-    ],
-
-    [
-      'PF',
-      d.profitFactor
-    ],
-
-    [
-      'Failure Stops',
-      d.stats.failureStops ||
-      0
-    ],
-
-    [
-      'Candidates',
-      d.cycle.lastScanCandidates
-    ],
-
-    [
-      'Scanned',
-      d.cycle.lastScanned
-    ],
-
-    [
-      'Cycle',
-      d.cycle.entries +
-      '/' +
-      d.config.maxEntriesPerCycle
-    ],
-
-    [
-      'Universe',
-      d.cycle.lastUniverseSource ||
-      '-'
-    ]
-  ];
+    const data =
+      await response.json();
 
 
-  document
-    .getElementById(
-      'cards'
-    )
-    .innerHTML =
+    const cards = [
 
-      items
-        .map(
-          item =>
+      [
+        'Version',
+        data.version
+      ],
 
-            '<div class="card">' +
+      [
+        'Mode',
+        data.mode
+      ],
 
-            '<div class="label">' +
-            item[0] +
-            '</div>' +
+      [
+        'Cash',
+        '$' +
+        data.cash
+      ],
 
-            '<div class="value">' +
-            item[1] +
-            '</div>' +
+      [
+        'Equity',
+        '$' +
+        data.equity
+      ],
 
-            '</div>'
+      [
+        'Open',
+        Object.keys(
+          data.positions
+        ).length
+      ],
+
+      [
+        'Trades',
+        data.stats.totalTrades
+      ],
+
+      [
+        'Wins',
+        data.stats.wins
+      ],
+
+      [
+        'Losses',
+        data.stats.losses
+      ],
+
+      [
+        'WR',
+        data.winRate +
+        '%'
+      ],
+
+      [
+        'PF',
+        data.profitFactor
+      ],
+
+      [
+        'Net',
+        '$' +
+        Number(
+          data.stats.netProfit ||
+          0
+        ).toFixed(
+          2
         )
-        .join(
-          ''
+      ],
+
+      [
+        'Stop Loss',
+        '2% FIXED'
+      ],
+
+      [
+        'Take Profit',
+        '4% FIXED'
+      ],
+
+      [
+        'RR',
+        '1:2'
+      ],
+
+      [
+        'Cycle',
+        data.cycle.entries +
+        '/20'
+      ],
+
+      [
+        'Duplicate Rejects',
+        data.stats.duplicateRejects
+      ]
+
+    ];
+
+
+    document
+      .getElementById(
+        'cards'
+      )
+      .innerHTML =
+
+        cards
+          .map(
+            item =>
+
+              '<div class="card">' +
+
+              '<div class="label">' +
+              item[0] +
+              '</div>' +
+
+              '<div class="value">' +
+              item[1] +
+              '</div>' +
+
+              '</div>'
+
+          )
+          .join(
+            ''
+          );
+
+
+    document
+      .getElementById(
+        'detail'
+      )
+      .textContent =
+
+        JSON.stringify(
+          data,
+          null,
+          2
         );
 
+  }
 
-  document
-    .getElementById(
-      'detail'
-    )
-    .textContent =
 
-      JSON.stringify(
+  catch (
+    error
+  ) {
 
-        {
+    document
+      .getElementById(
+        'detail'
+      )
+      .textContent =
+        error.message;
 
-          guards:
-            d.guards,
+  }
 
-          setupStats:
-            d.stats.setupStats,
-
-          exitStats:
-            d.stats.exitStats,
-
-          config:
-            d.config,
-
-          positions:
-            d.positions,
-
-          exchange:
-            d.exchanges
-        },
-
-        null,
-
-        2
-      );
 }
-
-
-load();
 
 
 setInterval(
   load,
-  5000
+  4000
 );
+
+
+load();
 
 </script>
 
@@ -7130,8 +6664,10 @@ setInterval(
 
 </html>
 
-`);
+    `);
+
   }
+
 );
 
 
@@ -7142,96 +6678,186 @@ setInterval(
 async function main() {
 
   console.log(
-    '=============================================='
+    '\n======================================'
   );
 
 
   console.log(
+
     `LOMY ${C.version}`
-  );
 
-
-  console.log(
-    'PAPER ONLY'
-  );
-
-
-  console.log(
-    'STARTING CAPITAL: $1000'
-  );
-
-
-  console.log(
-    '15M ENTRY + 1H CONTEXT'
-  );
-
-
-  console.log(
-    'V6.3.1 ENTRY STRATEGY FROZEN / UNCHANGED'
-  );
-
-
-  console.log(
-    'MOMENTUM ENTRY + RETEST ENTRY ONLY'
-  );
-
-
-  console.log(
-    'BINANCE PUBLIC DATA-API'
-  );
-
-
-  console.log(
-    'SPREAD GUARD + LIQUIDITY + SAR'
-  );
-
-
-  console.log(
-    'ATR% 0.50 = SHADOW ONLY, NOT ENTRY FILTER'
-  );
-
-
-  console.log(
-    'V6.3.2 COST-AWARE CAPITAL PROTECTION'
-  );
-
-
-  console.log(
-    'V6.3.2 STAGED DYNAMIC TRAIL'
-  );
-
-
-  console.log(
-    'V6.3.2 CONSERVATIVE FAILURE CONTROL'
-  );
-
-
-  console.log(
-    'ENTRY CANDLE + POSITION PATH TELEMETRY'
   );
 
 
   console.log(
 
-    `CAPITAL NET TARGET: ` +
+    `PAPER ONLY`
 
-    `${C.capitalNetLockPct.toFixed(2)}% | ` +
-
-    `RAW LOCK NEEDED: ` +
-
-    `${capitalProtectionGrossLockPct().toFixed(3)}%`
   );
 
 
   console.log(
-    '=============================================='
+
+    `Starting Balance: $${C.startingBalance}`
+
   );
 
 
-  await connectCloud();
+  console.log(
+
+    `Fixed Stop Loss: ${C.fixedStopLossPct}%`
+
+  );
 
 
-  await loadState();
+  console.log(
+
+    `Fixed Take Profit: ${C.fixedTakeProfitPct}%`
+
+  );
+
+
+  console.log(
+
+    `Risk Reward: 1:2`
+
+  );
+
+
+  console.log(
+
+    `Trailing: OFF`
+
+  );
+
+
+  console.log(
+
+    `Break-even: OFF`
+
+  );
+
+
+  console.log(
+    '======================================\n'
+  );
+
+
+  try {
+
+    await connectCloud();
+
+
+    await loadState();
+
+  }
+
+
+  catch (
+    error
+  ) {
+
+    console.error(
+
+      'Mongo startup:',
+
+      error.message
+
+    );
+
+  }
+
+
+  try {
+
+    await refreshUniverse(
+      true
+    );
+
+  }
+
+
+  catch (
+    error
+  ) {
+
+    console.error(
+
+      'Universe:',
+
+      error.message
+
+    );
+
+  }
+
+
+  setInterval(
+
+    () =>
+
+      saveState()
+        .catch(
+          () => {}
+        ),
+
+    C.stateSaveMs
+
+  );
+
+
+  setInterval(
+
+    () =>
+
+      managePositions()
+        .catch(
+          error =>
+            console.error(
+              'Manager:',
+              error.message
+            )
+        ),
+
+    C.pricePollMs
+
+  );
+
+
+  setInterval(
+
+    () =>
+
+      runFreshScan()
+        .catch(
+          error =>
+            console.error(
+              'Scanner:',
+              error.message
+            )
+        ),
+
+    C.scanEveryMs
+
+  );
+
+
+  setTimeout(
+
+    () =>
+
+      runFreshScan()
+        .catch(
+          error =>
+            console.error(
+              'Initial scan:',
+              error.message
+            )
+        ),
+
+    1500
+
+  );
 
 
   app.listen(
@@ -7242,168 +6868,33 @@ async function main() {
 
       console.log(
 
-        `SERVER LISTENING ${PORT}`
+        `Server running on port ${PORT}`
+
       );
+
     }
+
   );
-
-
-  await cloudJournal({
-
-    type:
-      'BOOT',
-
-    startingState: {
-
-      cash,
-
-      startingBalance:
-        C.startingBalance,
-
-      openPositions:
-
-        Object.keys(
-          positions
-        ).length,
-
-      cycle:
-        cycle.id,
-
-      cycleEntries:
-        cycle.entries
-    },
-
-    architecture: {
-
-      entryTimeframe:
-        C.entryInterval,
-
-      contextTimeframe:
-        C.contextInterval,
-
-      cycleLimit:
-        C.maxEntriesPerCycle,
-
-      marketData:
-        'BINANCE_PUBLIC_DATA_API',
-
-      universeSize:
-        C.universeSize,
-
-      spreadGuardBps:
-        C.maxEntrySpreadBps,
-
-      atrPctShadowThreshold:
-        C.atrPctShadowThreshold,
-
-      entryStrategy:
-        'V6.3.1_FROZEN',
-
-      profitManager:
-        'COST_AWARE_PROTECTION + STAGED_TRAIL + CONSERVATIVE_FAILURE_CONTROL',
-
-      telemetry:
-        'ENTRY_CANDLE + POSITION_PATH_5M',
-
-      microstructure:
-        'EXECUTION_SAFETY_ONLY + FLOW_TELEMETRY + SAR'
-    },
-
-    managerConfig: {
-
-      capitalProtectionTriggerPct:
-        C.capitalProtectionTriggerPct,
-
-      capitalNetLockPct:
-        C.capitalNetLockPct,
-
-      capitalGrossLockPct:
-        capitalProtectionGrossLockPct(),
-
-      trailingStartPct:
-        C.trailingStartPct,
-
-      failureMinAgeMinutes:
-        C.failureMinAgeMinutes,
-
-      failureMaxMfePct:
-        C.failureMaxMfePct,
-
-      failureDrawdownPct:
-        C.failureDrawdownPct
-    }
-  });
 
 
   tg(
 
-    `🚀 <b>LOMY ${C.version}</b>\n` +
+    `🤖 <b>LOMY ${C.version} STARTED</b>\n` +
 
     `PAPER ONLY\n` +
 
-    `Capital: $1000\n` +
+    `SL ${C.fixedStopLossPct}% FIXED\n` +
 
-    `15m + 1H | Momentum + Retest\n` +
+    `TP ${C.fixedTakeProfitPct}% FIXED\n` +
 
-    `V6.3.1 ENTRY FROZEN\n` +
+    `Risk/Reward 1:2\n` +
 
-    `Cost-aware protection + staged trail\n` +
+    `No trailing\n` +
 
-    `Public Binance Data | Spread + SaR\n` +
+    `No break-even`
 
-    `Cycle ${cycle.id}: ${cycle.entries}/${C.maxEntriesPerCycle}`
   );
 
-
-  if (
-
-    cycle.state ===
-      'WAITING_CLOSE'
-
-    &&
-
-    Object.keys(
-      positions
-    ).length ===
-      0
-
-  ) {
-
-    await startNewCycle(
-      'RECOVERED_EMPTY_CYCLE'
-    );
-
-  } else {
-
-    setTimeout(
-      runFreshScan,
-      1500
-    );
-  }
-
-
-  setInterval(
-
-    runFreshScan,
-
-    C.scanEveryMs
-  );
-
-
-  setInterval(
-
-    managePositions,
-
-    C.pricePollMs
-  );
-
-
-  setInterval(
-
-    saveState,
-
-    C.stateSaveMs
-  );
 }
 
 
@@ -7411,13 +6902,16 @@ async function main() {
 // SAFE SHUTDOWN
 // ============================================================
 
-async function shutdown() {
+async function shutdown(
+  signal
+) {
 
   if (
     shuttingDown
   ) {
 
     return;
+
   }
 
 
@@ -7425,15 +6919,20 @@ async function shutdown() {
     true;
 
 
+  console.log(
+
+    `Shutdown: ${signal}`
+
+  );
+
+
   try {
 
     await saveState();
 
-  } catch (
-    error
-  ) {
-
   }
+
+  catch {}
 
 
   try {
@@ -7443,34 +6942,83 @@ async function shutdown() {
     ) {
 
       await mongoClient.close();
+
     }
 
-  } catch (
-    error
-  ) {
-
   }
+
+  catch {}
 
 
   process.exit(
     0
   );
+
 }
 
 
 process.on(
-  'SIGTERM',
-  shutdown
+
+  'SIGINT',
+
+  () =>
+    shutdown(
+      'SIGINT'
+    )
+
 );
 
 
 process.on(
-  'SIGINT',
-  shutdown
+
+  'SIGTERM',
+
+  () =>
+    shutdown(
+      'SIGTERM'
+    )
+
 );
 
 
+process.on(
+
+  'unhandledRejection',
+
+  error =>
+    console.error(
+
+      'UNHANDLED REJECTION:',
+
+      error
+
+    )
+
+);
+
+
+process.on(
+
+  'uncaughtException',
+
+  error =>
+    console.error(
+
+      'UNCAUGHT EXCEPTION:',
+
+      error
+
+    )
+
+);
+
+
+// ============================================================
+// START
+// ============================================================
+
 main()
+
   .catch(
     error => {
 
@@ -7479,11 +7027,13 @@ main()
         'FATAL:',
 
         error
+
       );
 
 
       process.exit(
         1
       );
+
     }
   );
